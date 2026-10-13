@@ -1,28 +1,37 @@
-# Lumina Photo Core
+# Lumina
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Engine: FastAPI](https://img.shields.io/badge/backend-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
-[![Vector DB: Qdrant](https://img.shields.io/badge/vector--db-Qdrant-red.svg)](https://qdrant.tech/)
-[![ML: OpenAI CLIP](https://img.shields.io/badge/ml-OpenAI%20CLIP-violet.svg)](https://github.com/openai/CLIP)
-[![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
+A local desktop photo library with semantic search and a small non-destructive editor, built for large libraries (1 TB+) including Canon `.CR3` RAW files.
 
-An intelligent, self-hosted local photo indexing and semantic search system built to handle high-volume photo libraries (~1 TB+), including modern Canon `.CR3` RAW files. 
+Lumina indexes your photos offline, lets you search them in plain language ("sunset over a lake") using local CLIP/SigLIP embeddings, and lets you adjust tone curves and matte looks without ever touching the originals. Nothing is uploaded anywhere.
 
-Lumina uses local vision-language embeddings (CLIP/SigLIP) to enable natural language search over your entire offline photo collection—without uploading anything to the cloud.
+**Status:** planning. There is no code yet. See [PLAN.md](PLAN.md) for the design and phases.
 
----
+## Planned features
 
-## 🏗️ Architecture & RAW Processing Pipeline
+- Fast indexing of RAW and JPEG libraries, including `.CR3`, using the embedded preview instead of a full decode
+- EXIF and GPS metadata, filters by date, camera and lens
+- Thumbnail grid that stays responsive with hundreds of thousands of photos
+- Natural-language search and "similar photos", running locally
+- Non-destructive Develop view: exposure, white balance, tone curves (RGB and per channel), matte look, crop, export
+- Resumable background indexing that copes with unplugged drives
 
-To process terabytes of data efficiently, Lumina uses a dual-path ingestion engine. Instead of performing costly full sensor demosaicing on `.CR3` RAW files during ingestion, it extracts embedded full-resolution JPEGs using `rawpy`/`LibRaw` for lightning-fast indexing and thumbnail generation.
+## Stack
+
+Python 3.12+, PySide6 (Qt Widgets), rawpy/LibRaw, exiftool, numpy, ONNX Runtime, SQLite.
+
+## How it works
 
 ```text
-                                 ┌──> Extract Embedded JPEG ──> Generate WebP Thumbnails
-                                 │    (~10-50ms / file)             │
-.CR3 / RAW / JPEG File ──────────┤                                  ▼
-                                 │                         CLIP Vector Encoder
-                                 │                                  │
-                                 └──> Extract EXIF/GPS Metadata    ▼
-                                              │             Qdrant Vector Store
-                                              ▼                     │
-                                     SQLite / PostgreSQL <──────────┘
+                              ┌─> embedded JPEG ─> WebP thumbnails ─> CLIP embeddings ─┐
+.CR3 / RAW / JPEG ────────────┤                                                        ├─> SQLite + vector store
+                              └─> EXIF / GPS (exiftool) ───────────────────────────────┘
+
+Develop view:  original RAW ─> linear decode (cached) ─> pipeline(edit params) ─> preview / export
+```
+
+Originals are read-only. Edits are stored as small parameter sets in the Lumina database and rendered on demand.
+
+## Docs
+
+- [PLAN.md](PLAN.md): design, decisions, phases
+- [CLAUDE.md](CLAUDE.md): conventions and rules for working in this repo
