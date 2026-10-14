@@ -13,6 +13,7 @@ from lumina.integration import style, theme
 from lumina.integration.theme_watcher import ThemeWatcher
 from lumina.qt_models import workers
 from lumina.qt_models.library import LibraryService, NewerDatabase
+from lumina.qt_models.search import SearchService
 from lumina.ui.main_window import MainWindow
 
 # How often the garbage is collected, in milliseconds
@@ -45,13 +46,17 @@ def run(folder=None):
     except NewerDatabase as error:
         QMessageBox.critical(None, "Lumina", f"{error}\n\nIt was left as it is.")
         return 1
-    # A scan in progress stops and is queued for the next start
+    # Nothing is fetched until the user asks: without the model, no indexing
+    search = SearchService(service, parent=app)
+    # A scan or indexing in progress stops and is queued for the next start
+    app.aboutToQuit.connect(search.close)
     app.aboutToQuit.connect(service.close)
     app.aboutToQuit.connect(workers.shutdown)
 
     window = MainWindow(service)
     window.show()
     service.start()
+    search.start()
     if folder:
         window.add_folder(folder)
     return app.exec()

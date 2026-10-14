@@ -9,7 +9,7 @@ The sibling project `../filehouse` uses the same stack and conventions; look the
 - Python 3.12+, **PySide6 with Qt Widgets** (not Qt Quick/QML)
 - **rawpy (LibRaw)** for RAW, **exiftool** (`-stay_open`) for metadata
 - **numpy** for the edit pipeline, **onnxruntime** for CLIP/SigLIP
-- **SQLite** for metadata and edits; vector store is an embedded one, chosen in Phase 4
+- **SQLite** for metadata, edits and search vectors (float16 blobs, searched with numpy; no vector store)
 - pytest for `core/`, pytest-qt for the few UI tests, ruff for lint and format
 
 ## Setup and commands
@@ -18,7 +18,7 @@ The sibling project `../filehouse` uses the same stack and conventions; look the
 python3 -m venv .venv
 source .venv/bin/activate
 sudo dnf install perl-Image-ExifTool   # metadata; its tests skip without it
-pip install -e '.[dev]'     # PySide6-Essentials, rawpy, numpy, Pillow from PyPI
+pip install -e '.[dev]'     # PySide6-Essentials, rawpy, numpy, Pillow, onnxruntime, tokenizers
 
 lumina [FOLDER]             # run the app; without a folder it opens the last one
 ruff check . && ruff format --check .
@@ -29,7 +29,7 @@ pytest tests/ui             # runs offscreen
 
 Every push runs `ruff` and `pytest` on GitHub (`.github/workflows/tests.yml`). The tests run in a `fedora:44` container with Fedora's exiftool, with Python 3.12 and 3.14, as an ordinary user; `LUMINA_REQUIRE_EXIFTOOL=1` makes a test that needs exiftool fail there instead of skipping. The checks must pass before a pull request can be merged into `main`.
 
-Real camera files go in the git-ignored `tests/samples/` (or `$LUMINA_SAMPLES`): `tests/core/test_samples.py` runs on them and skips without them. Everything else uses the tiny DNGs `tests/rawfiles.py` writes.
+Real camera files go in the git-ignored `tests/samples/` (or `$LUMINA_SAMPLES`): `tests/core/test_samples.py` runs on them and skips without them. Everything else uses the tiny DNGs `tests/rawfiles.py` writes. Likewise the search model (785 MB): `tests/core/test_embed.py` uses it from `$LUMINA_MODELS` (a models folder, as `$XDG_DATA_HOME/lumina/models`) and skips without it; everything else uses `FakeEncoder` from `tests/fakes.py`.
 
 Do not mix a PyPI PySide6 with the Fedora `python3-pyside6` in one environment.
 
