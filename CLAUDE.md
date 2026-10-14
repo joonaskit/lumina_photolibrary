@@ -60,7 +60,7 @@ These are requirements, not guidelines. Any change touching files, the DB or exp
 
 - **CR3**: use the larger embedded preview for indexing, check `extract_thumb()`'s `format` (JPEG or bitmap) and fall back to a half-size `postprocess`. Apply EXIF orientation. Editing uses a one-time linear 16-bit decode that is cached. Pin a recent `rawpy`; new Canon bodies need a recent LibRaw.
 - **Edit parameters** are versioned JSON, with a migration for every schema change. The rendered image is always `render(original, params)`.
-- **Pipeline** works in linear float32 and converts to display space last. Curves are 1D LUTs from monotone (PCHIP) splines, never ones that can overshoot.
+- **Pipeline** works in linear float32 and converts to display space last. Curves are 1D LUTs from monotone (PCHIP) splines, never ones that can overshoot; they act on sRGB-encoded values inside the tone step, which is one LUT per channel. Geometry runs first because every other step is per pixel.
 - **Rendering** uses a ~2 MP proxy while a control moves (debounced, on a worker, cancelled when a newer request arrives) and full resolution on release. Never block the UI thread on a render, decode or DB scan.
 - Heavy CPU work (CLIP, decode, thumbnailing) runs in worker processes, not threads, so the GIL does not stall the UI.
 - Memory: a 45 MP linear float32 image is about 540 MB. Do not hold more than one at once; tile or use 16-bit for full-resolution passes.

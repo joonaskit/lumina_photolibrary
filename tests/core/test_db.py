@@ -154,3 +154,73 @@ def test_an_unfinished_job_is_not_queued_twice(library):
     assert library.add_job("scan", folder) == job
     library.update_job(job, state=dbm.DONE)
     assert library.add_job("scan", folder) != job
+
+
+def test_a_library_from_schema_1_is_brought_up_to_date_with_its_data(tmp_path, monkeypatch):
+    path = tmp_path / "library.sqlite3"
+    # As the first release wrote it
+    monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:1])
+    monkeypatch.setattr(dbm, "SCHEMA_VERSION", 1)
+    with Library(path) as old:
+        folder = old.add_folder("uuid:A", "p")
+        old.write_scan(folder, old.volume_id("uuid:A"), new=[("p/a.jpg", 1, 1, "2020")])
+    monkeypatch.undo()
+
+    with Library(path) as library:
+        assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == 2
+        photo = library.photos()[0]
+        assert photo.path == "p/a.jpg"
+        library.save_edit(photo.id, '{"version": 1}')
+        assert library.edit(photo.id) == '{"version": 1}'
+
+
+def test_edits_and_virtual_copies(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    photo = add_photos(library, folder, volume, ["p/a.jpg"])["p/a.jpg"]
+
+    assert library.edit(photo) is None
+    library.save_edit(photo, '{"exposure": 1}')
+    library.save_edit(photo, '{"exposure": 2}')
+    copy = library.new_copy(photo, '{"exposure": -1}')
+
+    assert library.edit(photo) == '{"exposure": 2}'
+    assert library.edit(photo, copy) == '{"exposure": -1}'
+    assert library.copies(photo) == [0, 1]
+    library.delete_edit(photo)
+    assert library.edit(photo) is None and library.copies(photo) == [1]
+
+
+def test_a_photo_forgotten_with_its_folder_takes_its_edits(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    photo = add_photos(library, folder, volume, ["p/a.jpg"])["p/a.jpg"]
+    library.save_edit(photo, "{}")
+
+    library.remove_folder(folder)
+
+    assert library.db.execute("SELECT COUNT(*) FROM edits").fetchone()[0] == 0
+
+
+def test_a_missing_photo_keeps_its_edit(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    photo = add_photos(library, folder, volume, ["p/a.jpg"])["p/a.jpg"]
+    library.save_edit(photo, '{"exposure": 1}')
+
+    library.mark_missing([photo])
+
+    assert library.edit(photo) == '{"exposure": 1}'
+
+
+def test_presets_by_name(library):
+    library.save_preset("Matte", '{"matte": {}}')
+    library.save_preset("bright", '{"exposure": 1}')
+    library.save_preset("Matte", '{"matte": {"black": 0.1}}')
+
+    assert library.presets() == [
+        ("bright", '{"exposure": 1}'),
+        ("Matte", '{"matte": {"black": 0.1}}'),
+    ]
+    library.delete_preset("bright")
+    assert [name for name, _ in library.presets()] == ["Matte"]
