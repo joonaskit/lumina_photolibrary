@@ -17,6 +17,7 @@ The sibling project `../filehouse` uses the same stack and conventions; look the
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
+sudo dnf install perl-Image-ExifTool   # metadata; its tests skip without it
 pip install -e '.[dev]'     # PySide6-Essentials, rawpy, numpy, Pillow from PyPI
 
 lumina [FOLDER]             # run the app; without a folder it opens the last one
@@ -26,7 +27,9 @@ pytest tests/core           # no display needed
 pytest tests/ui             # runs offscreen
 ```
 
-Every push runs `ruff` and `pytest` on GitHub (`.github/workflows/tests.yml`), on Ubuntu with Python 3.12 and 3.14. The checks must pass before a pull request can be merged into `main`.
+Every push runs `ruff` and `pytest` on GitHub (`.github/workflows/tests.yml`). The tests run in a `fedora:44` container with Fedora's exiftool, with Python 3.12 and 3.14, as an ordinary user; `LUMINA_REQUIRE_EXIFTOOL=1` makes a test that needs exiftool fail there instead of skipping. The checks must pass before a pull request can be merged into `main`.
+
+Real camera files go in the git-ignored `tests/samples/` (or `$LUMINA_SAMPLES`): `tests/core/test_samples.py` runs on them and skips without them. Everything else uses the tiny DNGs `tests/rawfiles.py` writes.
 
 Do not mix a PyPI PySide6 with the Fedora `python3-pyside6` in one environment.
 
@@ -65,5 +68,5 @@ These are requirements, not guidelines. Any change touching files, the DB or exp
 - Colours and fonts come from `QPalette` and `QFont`; no literal colours in stylesheets and nothing that assumes a dark background. Stylesheet colours, radii and sizes come from `integration/style.py`. Sizes are unscaled pixels times the theme scale (`style.px`).
 - Worker processes use the `forkserver` context, which re-imports the main module: every entry point and script needs an `if __name__ == "__main__"` guard, or starting a worker starts the app again.
 - Photos are stored by path relative to a library root plus a volume id, so moved drives do not break the index.
-- Tests run against `tmp_path` and small generated or checked-in sample files; never touch the real home directory or a real photo library. Keep sample CR3 files small and few.
+- Tests run against `tmp_path` and small generated sample files; never touch the real home directory or a real photo library. Real CR3 samples stay out of git (see above).
 - No network calls except the optional first-run model download.

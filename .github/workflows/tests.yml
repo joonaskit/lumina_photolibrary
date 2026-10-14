@@ -27,6 +27,9 @@ jobs:
   test:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
+    # Fedora, as the app is developed on: exiftool comes from the distribution, and
+    # Ubuntu's is much older. Everything else is from PyPI and the same on both
+    container: fedora:44
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -34,24 +37,32 @@ jobs:
         # The oldest Python pyproject.toml allows, and the one the app is developed on
         python-version: ["3.12", "3.14"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
-      # PyPI's Qt is self-contained but for what every desktop has: these let it run
-      # offscreen on the runner
-      - name: Install the libraries Qt needs
+      # Besides Python and exiftool: the few libraries PyPI's Qt needs to run offscreen
+      - name: Install what the app and its tests need
         run: >
-          sudo apt-get update &&
-          sudo apt-get install -y --no-install-recommends
-          libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 fonts-dejavu-core
+          dnf install -y --setopt=install_weak_deps=False
+          git python${{ matrix.python-version }} perl-Image-ExifTool
+          mesa-libEGL mesa-libGL libxkbcommon fontconfig dbus-libs dejavu-sans-fonts
+
+      - uses: actions/checkout@v5
+
+      # The steps of a container run as root, and root is refused nothing: the tests of
+      # what happens when a file cannot be read or written would be skipped
+      - name: Hand the checkout to an ordinary user
+        run: |
+          useradd --create-home ci
+          chown -R ci "$GITHUB_WORKSPACE"
 
       - name: Install the app
-        run: pip install -e '.[dev]'
+        run: |
+          runuser -u ci -- env HOME=/home/ci bash -e -c "
+            python${{ matrix.python-version }} -m venv /home/ci/venv
+            /home/ci/venv/bin/pip install --disable-pip-version-check -e '.[dev]'
+          "
 
-      # Offscreen, in a home of their own: tests/conftest.py sees to both
+      # Offscreen, in a home of their own: tests/conftest.py sees to both. A test that
+      # needs exiftool fails here rather than being skipped
       - name: Test
-        run: pytest -rs
+        run: >
+          runuser -u ci -- env HOME=/home/ci LUMINA_REQUIRE_EXIFTOOL=1
+          /home/ci/venv/bin/pytest -rs
