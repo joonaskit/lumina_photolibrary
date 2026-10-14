@@ -1,7 +1,7 @@
-"""Year, camera and lens, above the grid."""
+"""Year, camera and lens, above the grid, and the search field at the right."""
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QWidget
 
 from lumina.integration import style
 
@@ -22,12 +22,18 @@ class FilterBar(QWidget):
             layout.addWidget(combo)
         layout.addStretch(1)
 
+    def add_trailing(self, widget):
+        """A widget at the right end of the row: the search field."""
+        self.layout().addWidget(widget)
+
     def _combo(self, everything):
         combo = QComboBox()
         combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         combo.setMinimumWidth(style.px(120))
         # A long lens name is cut short rather than making the row wider than the window
         combo.setMaximumWidth(style.px(280))
+        # Never narrower than its text: the search field beside them gives way first
+        combo.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         combo.addItem(everything, None)
         combo.currentIndexChanged.connect(lambda _index: self.changed.emit())
         return combo

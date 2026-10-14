@@ -85,3 +85,26 @@ class FakeEncoder:
             colour = [sum(data[i::3]) / (len(data) / 3) / 255 for i in range(3)]
             results.append(embed.to_blob(colour_vector(colour)))
         return results
+
+
+def install_model(root):
+    """The search model as is_installed sees it: every file at its size, sparse, so
+    nothing the size of the real one is written."""
+    import os
+
+    from lumina.core import embed, models
+
+    folder = models.directory(embed.MODEL, root)
+    for f in embed.MODEL.files:
+        path = os.path.join(folder, f.path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.truncate(f.size)
+
+
+# What the fake text encoder understands: a colour by name
+COLOURS = {"red": (0.8, 0.15, 0.15), "green": (0.04, 0.8, 0.04), "blue": (0.1, 0.1, 0.8)}
+
+
+def encode_colour_text(text):
+    return colour_vector(COLOURS.get(text.lower(), (0.5, 0.5, 0.5)))

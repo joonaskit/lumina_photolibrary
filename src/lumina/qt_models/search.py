@@ -49,9 +49,9 @@ class SearchService(QObject):
     # More photos can be found
     index_changed = Signal()
 
-    def __init__(self, library, model_root=None, encode=None, parent=None):
-        """`library` is the LibraryService. `encode(folder, paths)` replaces the
-        worker process, for the tests."""
+    def __init__(self, library, model_root=None, encode=None, encode_text=None, parent=None):
+        """`library` is the LibraryService. For the tests: `encode(folder, paths)`
+        replaces the worker process, `encode_text(text)` the text model."""
         super().__init__(parent)
         self.library = library
         self.model_root = model_root
@@ -63,7 +63,7 @@ class SearchService(QObject):
         self._indexing = None
         self._again = False
         self._generation = 0
-        self._searcher = _Searcher(library.path, self.folder)
+        self._searcher = _Searcher(library.path, self.folder, encode_text)
         # Kept for the tests, which wait for them
         self.download_future = self.index_future = None
         library.job_ended.connect(lambda _status: self.index())
@@ -231,9 +231,10 @@ class SearchService(QObject):
 class _Searcher:
     """On the search thread only: the index, a connection, and the text encoder."""
 
-    def __init__(self, path, folder):
+    def __init__(self, path, folder, encode_text=None):
         self.path = path
         self.folder = folder
+        self._encode_text = encode_text
         self.index = searching.Index()
         self._library = None
         self._encoder = None
@@ -242,10 +243,13 @@ class _Searcher:
         if not text.strip():
             return []
         self._refresh()
-        if self._encoder is None:
-            # Two threads: a query is short, and indexing may be using the rest
-            self._encoder = embed.Encoder(self.folder, threads=2)
-        query = self._encoder.texts([text])[0]
+        if self._encode_text is not None:
+            query = self._encode_text(text)
+        else:
+            if self._encoder is None:
+                # Two threads: a query is short, and indexing may be using the rest
+                self._encoder = embed.Encoder(self.folder, threads=2)
+            query = self._encoder.texts([text])[0]
         return self.index.rank(photos, query, floor=searching.text_floor())
 
     def similar(self, content_id, photos):

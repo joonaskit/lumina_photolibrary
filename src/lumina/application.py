@@ -53,7 +53,7 @@ def run(folder=None):
     app.aboutToQuit.connect(service.close)
     app.aboutToQuit.connect(workers.shutdown)
 
-    window = MainWindow(service)
+    window = MainWindow(service, search)
     window.show()
     service.start()
     search.start()

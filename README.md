@@ -4,7 +4,7 @@ A local desktop photo library with semantic search and a small non-destructive e
 
 Lumina indexes your photos offline, lets you search them in plain language ("sunset over a lake") using local CLIP/SigLIP embeddings, and lets you adjust tone curves and matte looks without ever touching the originals. Nothing is uploaded anywhere.
 
-**Status:** early. A library of folders, kept in step with the disk (new, changed and missing photos, unplugged drives), with metadata from exiftool, a thumbnail grid filtered by year, camera and lens, and a viewer, for JPEG, PNG, TIFF and RAW files including CR3. No editing or search yet. See [PLAN.md](PLAN.md) for the design and phases.
+**Status:** early. A library of folders, kept in step with the disk (new, changed and missing photos, unplugged drives), with metadata from exiftool, a thumbnail grid filtered by year, camera and lens, and a viewer, for JPEG, PNG, TIFF and RAW files including CR3. A Develop view edits photos non-destructively (exposure, white balance, curves, matte, crop and straighten) and exports them. Search finds photos by a description in English, Finnish or other languages, or by likeness to a photo; it needs a one-time 785 MB model download, offered when search is first used, after which it runs entirely on your computer. See [PLAN.md](PLAN.md) for the design and phases.
 
 ```sh
 python3 -m venv .venv && source .venv/bin/activate

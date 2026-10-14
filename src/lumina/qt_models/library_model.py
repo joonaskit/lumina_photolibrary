@@ -4,11 +4,17 @@ The query runs on a worker thread with a connection of its own, so a library of 
 few hundred thousand photos never stalls the window. While a scan writes, the rows
 are read again every few seconds (the service says when); the view keeps its place
 through `about_to_refresh` and `refreshed`.
+
+With a search (a text, or "like this photo"), the same rows are shown ranked by the
+SearchService, best first, and only those that match. The search is run again when
+the rows are read again and while indexing makes more photos findable.
 """
 
 import os
+import time
+from dataclasses import dataclass
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal
+from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, QTimer, Signal
 
 from lumina.core import db as dbm
 from lumina.qt_models import workers
@@ -20,17 +26,37 @@ Filter = dbm.Filter
 PATH_ROLE = Qt.ItemDataRole.UserRole + 1
 ID_ROLE = Qt.ItemDataRole.UserRole + 2
 
+# While indexing, a search is run again at most this often, in seconds
+_RESEARCH_EVERY = 3.0
+
+TEXT, SIMILAR = "text", "similar"
+
+
+@dataclass(frozen=True)
+class Search:
+    kind: str
+    # The text, or the content id of the photo
+    query: str
+    # The text, or the photo's name: what the UI shows
+    label: str
+
 
 class LibraryModel(QAbstractListModel):
     # Before and after the rows are read again: the view saves and restores its place
     about_to_refresh = Signal()
     refreshed = Signal()
     loading_changed = Signal(bool)
+    # The search changed, or its results came
+    search_changed = Signal()
 
-    def __init__(self, service, parent=None):
+    def __init__(self, service, search=None, parent=None):
         super().__init__(parent)
         self.service = service
+        self.search_service = search
         self.filter = dbm.Filter()
+        self.search = None
+        # Every row of the filter; `_rows` is what is shown, ranked while searching
+        self._all = []
         self._rows = []
         self._index = {}
         self._loading = False
@@ -40,6 +66,12 @@ class LibraryModel(QAbstractListModel):
         self.failed = self.thumbnails.failed
         service.photos_changed.connect(self.refresh)
         service.mounts_changed.connect(self._on_mounts_changed)
+        self._searched = 0.0
+        self._research = QTimer(self)
+        self._research.setSingleShot(True)
+        self._research.timeout.connect(self._run_search)
+        if search is not None:
+            search.index_changed.connect(self._on_index_changed)
 
     def is_loading(self):
         return self._loading
@@ -53,6 +85,64 @@ class LibraryModel(QAbstractListModel):
     def refresh(self):
         """Read the rows again with the same filter: after a scan wrote some."""
         self._load(reset=False)
+
+    # Searching
+
+    def search_text(self, text):
+        """Show the photos that match `text`, best first; an empty text ends the search."""
+        text = text.strip()
+        self._start_search(Search(TEXT, text, text) if text else None)
+
+    def find_similar(self, row):
+        """Show the photos most like the one in `row`, best first. Returns False when it
+        has no vector yet (not indexed, or not read)."""
+        photo = self._rows[row]
+        if photo.content_id is None or self.search_service is None:
+            return False
+        self._start_search(Search(SIMILAR, photo.content_id, os.path.basename(photo.path)))
+        return True
+
+    def clear_search(self):
+        self._start_search(None)
+
+    def is_searching(self):
+        return self.search is not None
+
+    def _start_search(self, search):
+        if search == self.search:
+            return
+        self.search = search
+        self.thumbnails.clear()
+        self.search_changed.emit()
+        if search is None:
+            self._show(self._all, reset=True)
+        else:
+            self._run_search(reset=True)
+
+    def _run_search(self, reset=False):
+        search = self.search
+        if search is None or self.search_service is None:
+            return
+        self._searched = time.monotonic()
+        self._set_loading(True)
+        generation = self._generation
+
+        def done(ranked):
+            if generation == self._generation and search == self.search:
+                self._show([photo for photo, _cosine in ranked], reset)
+                self._set_loading(False)
+                self.search_changed.emit()
+
+        if search.kind == TEXT:
+            self.search_service.search_text(search.query, self._all, done)
+        else:
+            self.search_service.similar(search.query, self._all, done)
+
+    def _on_index_changed(self):
+        if self.search is None or self._research.isActive():
+            return
+        wait = _RESEARCH_EVERY - (time.monotonic() - self._searched)
+        self._research.start(max(0, int(wait * 1000)))
 
     def _load(self, reset):
         self._generation += 1
@@ -71,6 +161,14 @@ class LibraryModel(QAbstractListModel):
     def _loaded(self, generation, rows, reset):
         if generation != self._generation:
             return
+        self._all = rows
+        if self.search is not None:
+            self._run_search(reset)
+            return
+        self._show(rows, reset)
+        self._set_loading(False)
+
+    def _show(self, rows, reset):
         if reset or rows != self._rows:
             if not reset:
                 self.about_to_refresh.emit()
@@ -80,7 +178,6 @@ class LibraryModel(QAbstractListModel):
             self.endResetModel()
             if not reset:
                 self.refreshed.emit()
-        self._set_loading(False)
 
     def _set_loading(self, on):
         if on != self._loading:
