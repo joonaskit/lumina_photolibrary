@@ -6,6 +6,9 @@ import tempfile
 
 import pytest
 
+# On CI exiftool is installed, and a test that needs it must not pass by being skipped
+_REQUIRE_EXIFTOOL = os.environ.get("LUMINA_REQUIRE_EXIFTOOL") == "1"
+
 # UI tests must not open windows on the developer's desktop
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -18,6 +21,12 @@ os.environ["XDG_CONFIG_HOME"] = os.path.join(_home, ".config")
 os.environ["XDG_CACHE_HOME"] = os.path.join(_home, ".cache")
 
 
+@pytest.fixture(autouse=True)
+def fresh_cache(monkeypatch, tmp_path_factory):
+    """Each test its own cache folder, so thumbnails one made are not found by the next."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
+
+
 # Python's garbage collector runs in whichever thread allocates enough, and a Qt object
 # whose wrapper it collects in a worker thread aborts the process. Collecting is for the
 # main thread, after each test.
@@ -28,3 +37,18 @@ gc.disable()
 def collect_garbage_on_the_main_thread():
     yield
     gc.collect()
+
+
+@pytest.fixture
+def exiftool():
+    """A running ExifTool. Skipped where exiftool is not installed, failed on CI."""
+    from lumina.core.metadata import ExifTool, MetadataUnavailable
+
+    try:
+        tool = ExifTool()
+    except MetadataUnavailable as error:
+        if _REQUIRE_EXIFTOOL:
+            pytest.fail(f"LUMINA_REQUIRE_EXIFTOOL is set, but {error}")
+        pytest.skip(str(error))
+    yield tool
+    tool.close()
