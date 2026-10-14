@@ -88,7 +88,7 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 
 ## Phases
 
-**Phase 0: scaffold.** `pyproject.toml`, `src/lumina/` layout, `CLAUDE.md`, ruff, pytest, CI, layer test, rewrite `README.md`. Resolve the PySide6 source decision. Done except CI.
+**Phase 0: scaffold.** `pyproject.toml`, `src/lumina/` layout, `CLAUDE.md`, ruff, pytest, CI, layer test, rewrite `README.md`. Resolve the PySide6 source decision. Done.
 
 **Proof of concept (done).** A thin slice through every layer, ahead of Phases 1 and 2: open a folder, scan it on a thread (`core/scanner.py`), a lazy thumbnail grid (`qt_models/photo_model.py`, decoded in worker processes by `core/images.py`, bounded in-memory cache), a viewer with arrow-key stepping (`qt_models/previews.py`, newest request wins), the filehouse theme. RAW goes through `core/raw.py` (embedded preview, LibRaw flip, half-size fallback). No database, no disk cache, no metadata. Known gaps: not yet tried on real CR3 files; thumbnail requests for rows scrolled past are not cancelled; no `.desktop` file or app icon.
 
