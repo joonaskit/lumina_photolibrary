@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lumina"
+version = "0.1.0a1"
+description = "A local desktop photo library with semantic search and a non-destructive editor"
+readme = "README.md"
+requires-python = ">=3.12"
+# PySide6-Essentials has Qt Widgets without WebEngine and the other add-ons.
+# Not to be mixed with the distribution's python3-pyside6: see CLAUDE.md.
+dependencies = [
+    "PySide6-Essentials>=6.8",
+    "rawpy>=0.27",
+    "numpy>=2.0",
+    "Pillow>=11.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-qt", "ruff"]
+
+[project.scripts]
+lumina = "lumina.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# For the small photos the tests make: tests/photos.py
+pythonpath = ["tests"]
+qt_api = "pyside6"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# pyflakes, pycodestyle, bugbear, import sorting
+select = ["F", "E", "W", "B", "I"]
+
+[tool.ruff.lint.flake8-bugbear]
+# The usual default for a model's `parent` argument
+extend-immutable-calls = ["PySide6.QtCore.QModelIndex"]

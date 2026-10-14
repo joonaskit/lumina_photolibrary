@@ -1,0 +1,10 @@
+.agents/*
+.venv/*
+uploads/*
+thumbnails/*
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
