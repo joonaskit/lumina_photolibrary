@@ -179,6 +179,15 @@ class LibraryService(QObject):
         """Everything the library knows of one photo, as a dict, or None."""
         return self.db.photo(photo_id)
 
+    # Flags
+
+    def set_flags(self, flags):
+        """{photo id: flag}. The grid's model keeps its rows up to date itself."""
+        self.db.set_flags(flags)
+
+    def flags(self, ids):
+        return self.db.flags(ids)
+
     # Edits and presets
 
     def edit_json(self, photo_id):

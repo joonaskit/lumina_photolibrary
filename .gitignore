@@ -9,3 +9,4 @@ __pycache__/
 build/
 dist/
 tests/samples/
+poc_streamlit_upload/

@@ -1,14 +1,24 @@
-"""Year, camera and lens, above the grid, and the search field at the right."""
+"""Year, camera, lens and flag, above the grid, and the search field at the right."""
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QWidget
+from PySide6.QtCore import QTimer, Signal
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QToolButton, QWidget
 
 from lumina.integration import style
+from lumina.qt_models.library_model import PICKED, REJECTED, UNFLAGGED
+
+FLAG_CHOICES = (
+    ("All flags", None),
+    ("Thumbs up", PICKED),
+    ("Not flagged", UNFLAGGED),
+    ("Thumbs down", REJECTED),
+)
 
 
 class FilterBar(QWidget):
     # Something was chosen: read `values()`
     changed = Signal()
+    # A flag to show only, or None for all
+    flag_changed = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -18,13 +28,41 @@ class FilterBar(QWidget):
         self.year = self._combo("All years")
         self.camera = self._combo("All cameras")
         self.lens = self._combo("All lenses")
-        for combo in (self.year, self.camera, self.lens):
+        # Not one of the library's choices: the same four whatever the folder
+        self.flag = QComboBox()
+        self.flag.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.flag.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        for text, value in FLAG_CHOICES:
+            self.flag.addItem(text, value)
+        self.flag.currentIndexChanged.connect(
+            lambda _index: self.flag_changed.emit(self.flag.currentData())
+        )
+        for combo in (self.year, self.camera, self.lens, self.flag):
             layout.addWidget(combo)
         layout.addStretch(1)
 
+    def flag_value(self):
+        """The flag to show only, or None for all."""
+        return self.flag.currentData()
+
     def add_trailing(self, widget):
-        """A widget at the right end of the row: the search field."""
+        """A widget at the right end of the row: the buttons, the search field. Square
+        buttons in it are as tall as the combos beside them."""
         self.layout().addWidget(widget)
+        self._fit_buttons()
+
+    def _fit_buttons(self):
+        # The combos' height comes from the font, which the desktop chooses
+        side = self.year.sizeHint().height()
+        for button in self.findChildren(QToolButton):
+            if button.objectName() == "segment":
+                button.setFixedSize(side, side)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (event.Type.FontChange, event.Type.StyleChange):
+            # Once the combos have their new size
+            QTimer.singleShot(0, self, self._fit_buttons)
 
     def _combo(self, everything):
         combo = QComboBox()
