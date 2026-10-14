@@ -180,3 +180,17 @@ def test_describe_photo():
         "  ·  1/250 s  ·  f/5.6  ·  ISO 400"
     )
     assert describe_photo(None) == ""
+
+
+def test_a_selected_thumbnail_keeps_its_colours(qtbot, service, drive):
+    # The style tints a selected icon with the highlight colour unless it has its own
+    window = open_window(qtbot, service)
+    add_and_wait(qtbot, window, drive / "Photos")
+    ask_for_thumbnails(window)
+    qtbot.waitUntil(lambda: window.model.thumbnail_pixmap(0) is not None, timeout=TIMEOUT)
+    icon = window.model.data(window.model.index(0), Qt.ItemDataRole.DecorationRole)
+
+    normal = icon.pixmap(64, QIcon.Mode.Normal).toImage()
+    selected = icon.pixmap(64, QIcon.Mode.Selected).toImage()
+
+    assert normal == selected

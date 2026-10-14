@@ -34,3 +34,13 @@ def set_selected_folder(folder_id):
 
 def clear():
     _settings().clear()
+
+
+def export_choices():
+    """What the export dialog had last time: a dict, empty at first."""
+    value = _settings().value("export/choices")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def set_export_choices(choices):
+    _settings().setValue("export/choices", choices)

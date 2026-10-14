@@ -128,6 +128,11 @@ def layer(name):
     )
 
 
+def palette_color(name):
+    """One of the theme's eight decoration colours: "green", "blue", "orange", …"""
+    return QColor(_theme["colors"]["palette"][name])
+
+
 def radius(name):
     """`small`, `medium` or `large`, in pixels. Follows the shell's corner roundness."""
     return px(_theme["radius"][name])
@@ -357,6 +362,46 @@ def _stylesheet():
         }}
         QPushButton:hover {{ background: {hover}; }}
         QPushButton:pressed {{ background: {pressed}; }}
+
+        QPushButton:checked {{ background: {selected}; }}
+        QPushButton:disabled {{ color: {colors["textTertiary"]}; }}
+        /* A button that reads as a link: "Reset Curve" */
+        QPushButton#link {{
+            background: transparent; padding: {px(2)}px {px(4)}px; color: {colors["accent"]};
+        }}
+        QPushButton#link:hover {{ background: {hover}; }}
+
+        /* RGB / R / G / B: one row of buttons, one of them on */
+        QToolButton#segment {{
+            border-radius: {small}px; padding: {px(4)}px; background: {raised};
+        }}
+        QToolButton#segment:hover {{ background: {hover}; }}
+        QToolButton#segment:checked {{ background: {selected}; }}
+
+        QSlider {{ min-height: {px(20)}px; }}
+        QSlider::groove:horizontal {{
+            height: {px(4)}px; border-radius: {px(2)}px; background: {raised};
+        }}
+        QSlider::sub-page:horizontal {{
+            height: {px(4)}px; border-radius: {px(2)}px; background: {colors["accent"]};
+        }}
+        QSlider[bipolar="true"]::sub-page:horizontal {{ background: {raised}; }}
+        QSlider::handle:horizontal {{
+            width: {px(14)}px; height: {px(14)}px; margin: -{px(5)}px 0;
+            border-radius: {px(7)}px; background: {colors["textPrimary"]};
+        }}
+        QSlider::handle:horizontal:hover {{ background: {colors["accent"]}; }}
+
+        QSpinBox {{
+            border: 1px solid {divider}; border-radius: {medium}px;
+            padding: {px(4)}px {px(8)}px; background: {raised};
+        }}
+        QSpinBox:focus {{ border-color: {colors["accent"]}; }}
+        QSpinBox::up-button, QSpinBox::down-button {{ width: 0; border: none; }}
+
+        QScrollArea#developScroll, QScrollArea#developScroll > QWidget > QWidget {{
+            background: transparent;
+        }}
 
         QLineEdit {{
             border: 1px solid {divider}; border-radius: {medium}px;

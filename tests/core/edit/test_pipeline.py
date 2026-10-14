@@ -154,3 +154,108 @@ def test_the_input_is_not_changed():
     render(image, Params(exposure=1, matte=Matte(shadow_desaturation=1.0)), bits=16)
 
     assert np.array_equal(image, before)
+
+
+# Mirroring and straightening
+
+
+def marked(height=40, width=60):
+    """Black, with the top left pixel white."""
+    image = np.zeros((height, width, 3), dtype=np.uint16)
+    image[0, 0] = 65535
+    return image
+
+
+def test_mirroring():
+    assert render(marked(), Params(flip_horizontal=True))[0, -1, 0] == 255
+    assert render(marked(), Params(flip_vertical=True))[-1, 0, 0] == 255
+    assert render(marked(), Params(flip_horizontal=True, flip_vertical=True))[-1, -1, 0] == 255
+
+
+def asymmetric(height=7, width=11):
+    rng = np.random.default_rng(3)
+    return rng.integers(0, 65535, size=(height, width, 3), dtype=np.uint16)
+
+
+@pytest.mark.parametrize("rotate", range(4))
+@pytest.mark.parametrize("flip_horizontal", [False, True])
+@pytest.mark.parametrize("flip_vertical", [False, True])
+def test_turning_an_edit_turns_what_it_shows(rotate, flip_horizontal, flip_vertical):
+    image = asymmetric()
+    edit = Params(
+        rotate=rotate,
+        flip_horizontal=flip_horizontal,
+        flip_vertical=flip_vertical,
+        crop=Crop(0.1, 0.2, 0.9, 0.8),
+    )
+    shown = render(image, edit)
+
+    assert np.array_equal(render(image, edit.turned(1)), np.rot90(shown, k=-1))
+    assert np.array_equal(render(image, edit.turned(-1)), np.rot90(shown, k=1))
+    assert np.array_equal(render(image, edit.flipped(True)), shown[:, ::-1])
+    assert np.array_equal(render(image, edit.flipped(False)), shown[::-1])
+
+
+def test_straightening_by_nothing_changes_nothing():
+    image = asymmetric()
+
+    assert np.array_equal(render(image, Params(straighten=0.0)), render(image, Params()))
+
+
+def test_straightening_keeps_the_size_and_leaves_no_empty_corners():
+    grey = np.full((40, 60, 3), 30000, dtype=np.uint16)
+
+    for degrees in (-45, -10, 3.5, 30):
+        out = render(grey, Params(straighten=degrees), bits=16)
+        assert out.shape == (40, 60, 3)
+        # Filled: every pixel, corners too, came from inside the photo
+        assert out.min() == out.max()
+
+
+def test_a_positive_angle_turns_clockwise():
+    # Dark left half, light right half: turned clockwise, the line between them leans
+    # right at the top, so just right of the centre at the top is still dark
+    image = np.zeros((100, 100, 3), dtype=np.uint16)
+    image[:, 50:] = 65535
+
+    clockwise = render(image, Params(straighten=10))
+    counter = render(image, Params(straighten=-10))
+
+    assert clockwise[2, 55, 0] < 64 and counter[2, 55, 0] > 192
+    assert clockwise[97, 45, 0] > 192 and counter[97, 45, 0] < 64
+
+
+def test_straightening_is_sampled_only_inside_the_crop_and_matches_the_whole():
+    image = asymmetric(40, 60)
+    whole = render(image, Params(straighten=7.0), bits=16)
+
+    cropped = render(image, Params(straighten=7.0, crop=Crop(0.25, 0.5, 0.75, 1.0)), bits=16)
+
+    assert np.array_equal(cropped, whole[20:40, 15:45])
+
+
+def test_mirroring_a_straightened_edit_mirrors_what_it_shows():
+    image = asymmetric(30, 50)
+    edit = Params(straighten=6.0, crop=Crop(0.1, 0.1, 0.7, 0.9))
+
+    shown = render(image, edit).astype(int)
+    mirrored = render(image, edit.flipped(True)).astype(int)
+
+    assert np.abs(mirrored - shown[:, ::-1]).max() <= 1
+
+
+@pytest.mark.parametrize("bits", [8, 16])
+def test_straightened_tiles_match_one_pass(bits, monkeypatch):
+    image = asymmetric(37, 23)
+    edit = Params(straighten=-12.0, flip_vertical=True, crop=Crop(0, 0.1, 0.9, 1))
+    whole = render(image, edit, bits=bits, tile_rows=None)
+    monkeypatch.setattr(pipeline, "_STRAIGHTEN_ROWS", 4)
+
+    assert np.array_equal(render(image, edit, bits=bits, tile_rows=5), whole)
+
+
+def test_output_size_follows_turns_and_crop_not_straightening():
+    edit = Params(rotate=1, straighten=12, crop=Crop(0, 0, 0.5, 1))
+
+    assert pipeline.output_size(60, 40, edit) == (20, 60)
+    assert render(np.zeros((40, 60, 3), np.uint16), edit).shape[:2] == (60, 20)

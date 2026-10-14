@@ -116,22 +116,31 @@ class LibraryModel(QAbstractListModel):
             return photo.id
         path = self.path(index.row())
         if role == Qt.ItemDataRole.DecorationRole:
-            return self.thumbnails.icon(photo.id, path, photo.content_id)
+            return self.thumbnails.icon(self._key(photo), path, photo.content_id, photo.edit)
         if role == Qt.ItemDataRole.ToolTipRole:
             if path is None:
                 return f"{photo.path}\nOn a drive that is not connected"
-            error = self.thumbnails.error(photo.id)
+            error = self.thumbnails.error(self._key(photo))
             return f"{path}\n{error}" if error else path
         if role == PATH_ROLE:
             return path
         return None
 
+    def edit(self, row):
+        """The parameters JSON of the photo's edit, or None."""
+        return self._rows[row].edit
+
     def thumbnail_pixmap(self, row):
         """The thumbnail of a row if it is made already, else None."""
-        return self.thumbnails.pixmap(self._rows[row].id)
+        return self.thumbnails.pixmap(self._key(self._rows[row]))
 
-    def _thumbnail_changed(self, photo_id):
-        row = self._index.get(photo_id)
+    @staticmethod
+    def _key(photo):
+        # A new edit is a new thumbnail
+        return (photo.id, photo.edit)
+
+    def _thumbnail_changed(self, key):
+        row = self._index.get(key[0])
         if row is not None:
             index = self.index(row)
             self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])

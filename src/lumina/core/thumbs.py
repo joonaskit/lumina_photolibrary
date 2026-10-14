@@ -13,6 +13,8 @@ from pathlib import Path
 from PIL import Image
 
 from lumina.core import images
+from lumina.core.edit import params as edit_params
+from lumina.core.edit.preview import edited_pixels
 from lumina.core.fingerprint import content_id
 from lumina.core.images import Pixels
 
@@ -80,19 +82,49 @@ def _remove(path):
         pass
 
 
-def load_thumbnail(path, side, cache_root):
-    """The thumbnail of the photo at `path`, from the cache under `cache_root` or made
-    and kept there. Raises PhotoError naming the photo when it cannot be read."""
+def load_thumbnail(path, side, cache_root, edit_json=None):
+    """The thumbnail of the photo at `path`, with its edit if it has one, from the cache
+    under `cache_root` or made and kept there. Raises PhotoError naming the photo when
+    it cannot be read.
+
+    An edited photo's thumbnail is filed under its content id and the edit's
+    fingerprint, so changing the edit makes a new one. An edit from a newer Lumina
+    can't be rendered here: the photo's own preview is shown."""
     cache = ThumbnailCache(cache_root)
     cid = content_id(path)
-    pixels = cache.get(cid, side)
+    key = cid
+    edit = None
+    if edit_json is not None:
+        try:
+            edit = edit_params.from_json(edit_json)
+        except edit_params.NewerParams:
+            edit = None
+        if edit is not None and not edit.is_identity():
+            key = f"{cid}-{edit.fingerprint()}"
+        else:
+            edit = None
+    pixels = cache.get(key, side)
     if pixels is None:
-        pixels = images.load_pixels(path, side)
-        cache.put(cid, side, pixels)
+        if edit is not None:
+            pixels = edited_pixels(path, side, edit_json)
+        else:
+            pixels = images.load_pixels(path, side)
+        cache.put(key, side, pixels)
     return pixels
 
 
-def cached_thumbnail(cid, side, cache_root):
-    """The cached thumbnail of content id `cid`, or None: for a photo whose drive is not
-    connected, which can't be read but may have been seen before."""
-    return ThumbnailCache(cache_root).get(cid, side)
+def cached_thumbnail(cid, side, cache_root, edit_json=None):
+    """The cached thumbnail of content id `cid` (with its edit), or None: for a photo
+    whose drive is not connected, which can't be read but may have been seen before.
+    Without one for the edit, the unedited one."""
+    cache = ThumbnailCache(cache_root)
+    if edit_json is not None:
+        try:
+            edit = edit_params.from_json(edit_json)
+        except edit_params.NewerParams:
+            edit = None
+        if edit is not None and not edit.is_identity():
+            found = cache.get(f"{cid}-{edit.fingerprint()}", side)
+            if found is not None:
+                return found
+    return cache.get(cid, side)

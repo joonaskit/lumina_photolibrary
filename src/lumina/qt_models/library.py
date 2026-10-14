@@ -70,6 +70,7 @@ class LibraryService(QObject):
     photos_changed = Signal()
     # The drives connected changed
     mounts_changed = Signal()
+    presets_changed = Signal()
     # A JobStatus, while one runs and when it ends
     job_changed = Signal(object)
     # The job ended: a JobStatus
@@ -177,6 +178,31 @@ class LibraryService(QObject):
     def photo_details(self, photo_id):
         """Everything the library knows of one photo, as a dict, or None."""
         return self.db.photo(photo_id)
+
+    # Edits and presets
+
+    def edit_json(self, photo_id):
+        """The photo's edit as parameters JSON, or None."""
+        return self.db.edit(photo_id)
+
+    def save_edit(self, photo_id, params_json):
+        """Store an edit (None: none, the original). The grid hears of it."""
+        if params_json is None:
+            self.db.delete_edit(photo_id)
+        else:
+            self.db.save_edit(photo_id, params_json)
+        self.photos_changed.emit()
+
+    def presets(self):
+        return self.db.presets()
+
+    def save_preset(self, name, params_json):
+        self.db.save_preset(name, params_json)
+        self.presets_changed.emit()
+
+    def delete_preset(self, name):
+        self.db.delete_preset(name)
+        self.presets_changed.emit()
 
     # Drives
 

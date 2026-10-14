@@ -22,6 +22,15 @@ THUMB_SIDE = 320
 _CACHE_SIZE = 800
 
 
+def photo_icon(pixmap):
+    """An icon of a photo that looks the same selected: the style would otherwise tint
+    a selected icon with the highlight colour, and a photo's colours are the point."""
+    icon = QIcon()
+    for mode in (QIcon.Mode.Normal, QIcon.Mode.Selected, QIcon.Mode.Active):
+        icon.addPixmap(pixmap, mode)
+    return icon
+
+
 class Thumbnails(QObject):
     # The key of a thumbnail that is now made, or failed
     changed = Signal(object)
@@ -55,9 +64,10 @@ class Thumbnails(QObject):
         icon = self._icons.get(key)
         return icon.pixmap(THUMB_SIDE) if icon is not None else None
 
-    def icon(self, key, path, content_id=None):
+    def icon(self, key, path, content_id=None, edit_json=None):
         """The thumbnail of `key` if made, else a placeholder while it is made. `path`
-        is None for a photo that can't be read now: then only the cache is looked in."""
+        is None for a photo that can't be read now: then only the cache is looked in.
+        `edit_json` is the photo's edit: the key must change when it does."""
         icon = self._icons.get(key)
         if icon is not None:
             self._icons.move_to_end(key)
@@ -72,9 +82,9 @@ class Thumbnails(QObject):
             # Read here, not in the worker: a worker keeps the environment it began with
             root = thumbs.default_cache_dir()
             if path is not None:
-                call = (thumbs.load_thumbnail, path, THUMB_SIDE, root)
+                call = (thumbs.load_thumbnail, path, THUMB_SIDE, root, edit_json)
             else:
-                call = (thumbs.cached_thumbnail, content_id, THUMB_SIDE, root)
+                call = (thumbs.cached_thumbnail, content_id, THUMB_SIDE, root, edit_json)
             self._pending[key] = workers.submit(
                 *call,
                 on_done=lambda pixels: self._made(generation, key, path, pixels),
@@ -91,7 +101,7 @@ class Thumbnails(QObject):
             # Not connected, and never seen
             self._errors[key] = "Not connected"
         else:
-            self._icons[key] = QIcon(QPixmap.fromImage(to_image(pixels)))
+            self._icons[key] = photo_icon(QPixmap.fromImage(to_image(pixels)))
             while len(self._icons) > _CACHE_SIZE:
                 self._icons.popitem(last=False)
         self.changed.emit(key)

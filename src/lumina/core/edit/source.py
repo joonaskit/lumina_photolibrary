@@ -21,15 +21,16 @@ from lumina.core.errors import PhotoError
 PROXY_PIXELS = 2_000_000
 
 
-def load_linear(path):
-    """The photo at `path` as H x W x 3 uint16 linear light, upright. Raises PhotoError
-    naming it."""
+def load_linear(path, half=False):
+    """The photo at `path` as H x W x 3 uint16 linear light, upright. With `half`, a RAW
+    is decoded at half size, four times faster: for thumbnails and the viewer. Raises
+    PhotoError naming it."""
     if raw.is_raw(path):
-        return _raw_linear(path)
+        return _raw_linear(path, half)
     return _image_linear(path)
 
 
-def _raw_linear(path):
+def _raw_linear(path, half=False):
     try:
         with rawpy.imread(str(path)) as file:
             # postprocess() turns the image by the file's flip itself
@@ -39,6 +40,7 @@ def _raw_linear(path):
                 output_bps=16,
                 use_camera_wb=True,
                 output_color=rawpy.ColorSpace.sRGB,
+                half_size=half,
             )
     except (rawpy.LibRawError, OSError, ValueError) as error:
         raise PhotoError(path, f"cannot decode RAW ({error})") from error
@@ -82,6 +84,20 @@ def fit(width, height, pixels=None, side=None):
     return max(1, round(width * factor)), max(1, round(height * factor))
 
 
+def fitted(linear, params, max_side):
+    """`linear` made smaller so that what `params` renders of it is at most `max_side`
+    on its longest side, after the turns and the crop. Unchanged if it is already."""
+    from lumina.core.edit import pipeline
+
+    height, width = linear.shape[:2]
+    longest = max(pipeline.output_size(width, height, params))
+    if longest <= max_side:
+        return linear
+    factor = max_side / longest
+    size = (max(1, round(width * factor)), max(1, round(height * factor)))
+    return resize(linear, *size, quality=True)
+
+
 def make_proxy(linear, pixels=PROXY_PIXELS):
     """A float32 copy of about `pixels`, for renders while a control moves."""
     height, width = linear.shape[:2]
@@ -111,6 +127,10 @@ class EditSource:
         if self._proxy is None:
             self._proxy = make_proxy(self.full)
         return self._proxy
+
+    def make_ready(self):
+        """Decode and make the proxy now."""
+        return self.proxy is not None
 
     def size(self):
         height, width = self.full.shape[:2]

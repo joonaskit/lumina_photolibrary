@@ -39,6 +39,10 @@ class _Relay(QObject):
 _relay = None
 _processes = None
 _threads = None
+# One process for the Develop view: it keeps the open photo decoded between renders
+# (core/edit/session.py), and thumbnails never queue in front of a render
+_develop = None
+DEVELOP = "develop"
 
 
 def _the_relay():
@@ -58,6 +62,14 @@ def _process_pool():
     return _processes
 
 
+def _develop_pool():
+    global _develop
+    if _develop is None:
+        context = multiprocessing.get_context("forkserver")
+        _develop = ProcessPoolExecutor(max_workers=1, mp_context=context)
+    return _develop
+
+
 def _thread_pool():
     global _threads
     if _threads is None:
@@ -66,19 +78,20 @@ def _thread_pool():
 
 
 def submit(fn, *args, on_done, on_error, owner, process=True):
-    """Run `fn(*args)` in a worker process (or a thread, with `process=False`), then
-    `on_done(result)` or `on_error(exception)` on the main thread, unless the QObject
-    `owner` has been deleted by then. Call from the main thread. Returns the future;
-    cancelling it before it starts calls neither."""
-    global _processes
+    """Run `fn(*args)` in a worker process (or a thread, with `process=False`, or the
+    Develop view's own process, with `process=DEVELOP`), then `on_done(result)` or
+    `on_error(exception)` on the main thread, unless the QObject `owner` has been
+    deleted by then. Call from the main thread. Returns the future; cancelling it
+    before it starts calls neither."""
     relay = _the_relay()
-    pool = _process_pool() if process else _thread_pool()
+    pick = _pool_for(process)
+    pool = pick()
     try:
         future = pool.submit(fn, *args)
     except BrokenProcessPool:
         # A worker died (a decoder crashed on a broken file): start over with a new pool
-        _processes = None
-        pool = _process_pool()
+        _forget_pool(pool)
+        pool = pick()
         future = pool.submit(fn, *args)
 
     def finished(done):
@@ -94,10 +107,18 @@ def submit(fn, *args, on_done, on_error, owner, process=True):
     return future
 
 
+def _pool_for(process):
+    if process == DEVELOP:
+        return _develop_pool
+    return _process_pool if process else _thread_pool
+
+
 def _forget_pool(pool):
-    global _processes
+    global _processes, _develop
     if _processes is pool:
         _processes = None
+    if _develop is pool:
+        _develop = None
 
 
 def call_on_main(owner, fn, *args):
@@ -108,8 +129,8 @@ def call_on_main(owner, fn, *args):
 
 def shutdown():
     """Drop what has not started and let the workers go. For the app's exit."""
-    global _processes, _threads
-    for pool in (_processes, _threads):
+    global _processes, _threads, _develop
+    for pool in (_processes, _threads, _develop):
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
-    _processes = _threads = None
+    _processes = _threads = _develop = None

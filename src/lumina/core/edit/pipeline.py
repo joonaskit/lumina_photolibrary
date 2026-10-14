@@ -3,8 +3,11 @@
 The image comes in as linear light in sRGB primaries (16-bit integers, or floats
 in [0, 1]) and every step works on linear floats until the output encoding:
 
-1. Geometry: quarter turns and crop. Done first, as every later step treats each
-   pixel on its own: cropping first gives the same result for less work.
+1. Geometry: quarter turns, mirroring, straightening and crop. Done first, as every
+   later step treats each pixel on its own: cropping first gives the same result for
+   less work. Straightening turns the photo about its centre and scales it just
+   enough to fill the frame, so no empty corners show; the crop is then taken of
+   that, and only the pixels inside it are sampled.
 2. White balance and exposure: one gain per channel.
 3. Tone: the curves and the matte. Curves act on sRGB-encoded values, where they
    feel as curves do in other editors; the whole step, encode, RGB curve, channel
@@ -159,21 +162,94 @@ def _lookup(values, table):
 # Geometry
 
 
-def geometry(image, params):
-    """`image` turned and cropped, as a view where it can be."""
+# Rows sampled at a time when straightening: bounds the float temporaries
+_STRAIGHTEN_ROWS = 256
+
+
+def _oriented(image, params):
+    """Turned and mirrored: views, nothing copied."""
     if params.rotate:
         image = np.rot90(image, k=-params.rotate, axes=(0, 1))
-    crop = params.crop
-    height, width = image.shape[:2]
+    if params.flip_horizontal:
+        image = image[:, ::-1]
+    if params.flip_vertical:
+        image = image[::-1]
+    return image
+
+
+def _crop_box(width, height, crop):
     top, bottom = round(crop.top * height), round(crop.bottom * height)
     left, right = round(crop.left * width), round(crop.right * width)
-    return image[top : max(bottom, top + 1), left : max(right, left + 1)]
+    return top, max(bottom, top + 1), left, max(right, left + 1)
+
+
+def geometry(image, params):
+    """`image` turned, mirrored, straightened and cropped: a view when not straightened,
+    a new array of the same type when it is."""
+    image = _oriented(image, params)
+    height, width = image.shape[:2]
+    top, bottom, left, right = _crop_box(width, height, params.crop)
+    if params.straighten == 0:
+        return image[top:bottom, left:right]
+    return _straightened(image, params.straighten, (top, bottom, left, right))
+
+
+def straighten_scale(width, height, degrees):
+    """How much a `width` x `height` photo turned by `degrees` is scaled up to fill
+    its own frame."""
+    angle = np.radians(abs(degrees))
+    cos, sin = np.cos(angle), np.sin(angle)
+    return max((width * cos + height * sin) / width, (width * sin + height * cos) / height)
+
+
+def _straightened(image, degrees, box):
+    """The `box` (top, bottom, left, right) of `image` turned `degrees` clockwise about
+    its centre and scaled to fill, sampled bilinearly."""
+    height, width, channels = image.shape
+    top, bottom, left, right = box
+    angle = np.radians(degrees)
+    scale = straighten_scale(width, height, degrees)
+    cos, sin = np.float32(np.cos(angle) / scale), np.float32(np.sin(angle) / scale)
+    cx, cy = np.float32((width - 1) / 2), np.float32((height - 1) / 2)
+    # Rows of pixels, read by flat index: far faster than indexing in two dimensions
+    flat = np.ascontiguousarray(image).reshape(-1, channels)
+    out = np.empty((bottom - top, right - left, channels), dtype=image.dtype)
+    xs = np.arange(left, right, dtype=np.float32) - cx
+    integer = np.issubdtype(image.dtype, np.integer)
+    for start in range(top, bottom, _STRAIGHTEN_ROWS):
+        ys = np.arange(start, min(start + _STRAIGHTEN_ROWS, bottom), dtype=np.float32) - cy
+        # Where each output pixel comes from: the turn undone (y points down, so this
+        # turns the photo clockwise for a positive angle)
+        sx = cos * xs[None, :] + (sin * ys + cx)[:, None]
+        sy = (-sin) * xs[None, :] + (cos * ys + cy)[:, None]
+        np.clip(sx, 0, max(width - 1.001, 0), out=sx)
+        np.clip(sy, 0, max(height - 1.001, 0), out=sy)
+        x0 = sx.astype(np.int32)
+        y0 = sy.astype(np.int32)
+        fx = (sx - x0).ravel()[:, None]
+        fy = (sy - y0).ravel()[:, None]
+        index = (y0 * width + x0).ravel()
+        step_x = 1 if width > 1 else 0
+        step_y = width if height > 1 else 0
+        a = flat.take(index, axis=0).astype(np.float32)
+        b = flat.take(index + step_x, axis=0)
+        a += (b - a) * fx
+        c = flat.take(index + step_y, axis=0).astype(np.float32)
+        d = flat.take(index + step_y + step_x, axis=0)
+        c += (d - c) * fx
+        a += (c - a) * fy
+        if integer:
+            a += np.float32(0.5)
+        out[start - top : start - top + len(ys)] = a.reshape(len(ys), right - left, channels)
+    return out
 
 
 def output_size(width, height, params):
     """The size `render` gives for a source of `width` x `height`."""
-    probe = geometry(np.empty((height, width, 0), dtype=np.uint8), params)
-    return probe.shape[1], probe.shape[0]
+    if params.rotate % 2:
+        width, height = height, width
+    top, bottom, left, right = _crop_box(width, height, params.crop)
+    return right - left, bottom - top
 
 
 # The whole
