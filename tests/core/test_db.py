@@ -174,6 +174,8 @@ def test_a_library_from_schema_1_is_brought_up_to_date_with_its_data(tmp_path, m
         assert photo.path == "p/a.jpg"
         library.save_edit(photo.id, '{"version": 1}')
         assert library.edit(photo.id) == '{"version": 1}'
+        # Schema 4: not flagged
+        assert photo.flag == dbm.UNFLAGGED
 
 
 def test_edits_and_virtual_copies(library):
@@ -226,3 +228,46 @@ def test_presets_by_name(library):
     ]
     library.delete_preset("bright")
     assert [name for name, _ in library.presets()] == ["Matte"]
+
+
+def test_flags_are_kept_and_read_back(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    ids = add_photos(library, folder, volume, ["p/a.jpg", "p/b.jpg", "p/c.jpg"])
+
+    library.set_flags({ids["p/a.jpg"]: dbm.PICKED, ids["p/b.jpg"]: dbm.REJECTED})
+
+    assert {photo.path: photo.flag for photo in library.photos()} == {
+        "p/a.jpg": dbm.PICKED,
+        "p/b.jpg": dbm.REJECTED,
+        "p/c.jpg": dbm.UNFLAGGED,
+    }
+    assert library.flags([ids["p/a.jpg"], ids["p/c.jpg"], 999]) == {
+        ids["p/a.jpg"]: dbm.PICKED,
+        ids["p/c.jpg"]: dbm.UNFLAGGED,
+    }
+    with pytest.raises(ValueError):
+        library.set_flags({ids["p/a.jpg"]: 2})
+    assert library.flags([ids["p/a.jpg"]]) == {ids["p/a.jpg"]: dbm.PICKED}
+
+
+def test_flags_are_read_for_more_photos_than_sqlite_takes_at_once(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    ids = list(add_photos(library, folder, volume, [f"p/{n}.jpg" for n in range(1200)]).values())
+
+    library.set_flags(dict.fromkeys(ids, dbm.REJECTED))
+
+    assert library.flags(ids) == dict.fromkeys(ids, dbm.REJECTED)
+
+
+def test_a_flag_outlives_a_missing_file_and_a_changed_one(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    photo = add_photos(library, folder, volume, ["p/a.jpg"])["p/a.jpg"]
+    library.set_flags({photo: dbm.REJECTED})
+
+    library.mark_missing([photo])
+    library.write_scan(folder, volume, changed=[(photo, 2, 2, "2021")])
+
+    assert library.flags([photo]) == {photo: dbm.REJECTED}

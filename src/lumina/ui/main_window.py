@@ -3,7 +3,7 @@ and the grid, one photo, or, with no folders yet, a way to add one."""
 
 import os
 
-from PySide6.QtCore import QEvent, QMargins, QPoint, QSize, Qt
+from PySide6.QtCore import QEvent, QMargins, QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QStyle,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -25,9 +27,18 @@ from PySide6.QtWidgets import (
 
 from lumina.integration import style
 from lumina.qt_models.develop import DevelopSession
-from lumina.qt_models.library_model import SIMILAR, Filter, LibraryModel
+from lumina.qt_models.library_model import (
+    DIMMED_ROLE,
+    FLAG_ROLE,
+    PICKED,
+    REJECTED,
+    SIMILAR,
+    UNFLAGGED,
+    Filter,
+    LibraryModel,
+)
 from lumina.qt_models.previews import PreviewLoader
-from lumina.ui import settings
+from lumina.ui import flags, settings
 from lumina.ui.develop_view import DevelopView
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.filters import FilterBar
@@ -49,6 +60,10 @@ VIEWER_MAX_SIDE = 3840
 
 # Space between neighbouring cells, so their hover and selection backgrounds stay apart
 GRID_GAP = 8
+# How much of a dimmed thumbs-down photo shows
+DIMMED_OPACITY = 0.35
+
+FLAG_NAMES = {PICKED: "Thumbs up", REJECTED: "Thumbs down"}
 
 _EMPTY, _GRID, _VIEWER, _DEVELOP = range(4)
 
@@ -67,6 +82,28 @@ class _CellDelegate(QStyledItemDelegate):
 
     def sizeHint(self, _option, _index):
         return self._size
+
+    def paint(self, painter, option, index):
+        """The cell, greyed out for a dimmed thumbs-down photo, and its flag's badge on
+        the photo's corner."""
+        painter.save()
+        if index.data(DIMMED_ROLE):
+            painter.setOpacity(DIMMED_OPACITY)
+        super().paint(painter, option, index)
+        painter.restore()
+        flag = index.data(FLAG_ROLE)
+        if flag not in flags.COLOURS:
+            return
+        item = QStyleOptionViewItem(option)
+        self.initStyleOption(item, index)
+        widget = option.widget
+        area = widget.style().subElementRect(
+            QStyle.SubElement.SE_ItemViewItemDecoration, item, widget
+        )
+        # The photo within its square: the icon keeps the photo's shape
+        photo = QRect(QPoint(0, 0), item.icon.actualSize(item.decorationSize))
+        photo.moveCenter(area.center())
+        flags.paint_badge(painter, photo, flag)
 
 
 class MainWindow(QMainWindow):
@@ -107,6 +144,15 @@ class MainWindow(QMainWindow):
         self.sidebar.remove_requested.connect(self.remove_folder)
         self.filters = FilterBar()
         self.filters.changed.connect(self._apply_filter)
+        self.filters.flag_changed.connect(self.set_flag_filter)
+        self.flag_options = flags.FlagOptions()
+        self.flag_options.set_values(settings.rejected_photos(), settings.advance_after_flag())
+        self.flag_options.rejected_changed.connect(self.set_rejected)
+        self.flag_options.advance_changed.connect(settings.set_advance_after_flag)
+        self.model.set_rejected(settings.rejected_photos())
+        self.model.flags_changed.connect(self._update_flag_actions)
+        self.model.rowsRemoved.connect(self._update_status)
+        self.filters.add_trailing(self.flag_options)
         self.grid_size = GridSizeSwitch()
         self.grid_size.changed.connect(self.set_grid_size)
         self.filters.add_trailing(self.grid_size)
@@ -207,6 +253,33 @@ class MainWindow(QMainWindow):
         self.similar_action.setToolTip("Show the photos most like this one (S)")
         self.similar_action.triggered.connect(self.find_similar)
         self.addAction(self.similar_action)
+        self.pick_action = QAction("Thumbs Up", self)
+        self.pick_action.setShortcut(QKeySequence(Qt.Key.Key_P))
+        self.pick_action.setToolTip("Thumbs up (P)")
+        self.pick_action.setCheckable(True)
+        self.pick_action.triggered.connect(lambda: self.flag_photos(PICKED))
+        self.reject_action = QAction("Thumbs Down", self)
+        self.reject_action.setShortcut(QKeySequence(Qt.Key.Key_X))
+        self.reject_action.setToolTip("Thumbs down (X)")
+        self.reject_action.setCheckable(True)
+        self.reject_action.triggered.connect(lambda: self.flag_photos(REJECTED))
+        self.unflag_action = QAction("Clear Flag", self)
+        self.unflag_action.setShortcut(QKeySequence(Qt.Key.Key_U))
+        self.unflag_action.triggered.connect(lambda: self.flag_photos(UNFLAGGED))
+        # In the grid and the viewer; the Develop view's Undo is its edit's
+        self.undo_flag_action = QAction("Undo Flag", self)
+        self.undo_flag_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_flag_action.triggered.connect(self.undo_flags)
+        self.redo_flag_action = QAction("Redo Flag", self)
+        self.redo_flag_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_flag_action.triggered.connect(self.redo_flags)
+        self.flag_actions = (
+            self.pick_action,
+            self.reject_action,
+            self.unflag_action,
+            self.undo_flag_action,
+            self.redo_flag_action,
+        )
         self.larger_action = QAction("Larger Thumbnails", self)
         self.larger_action.setShortcuts([QKeySequence.StandardKey.ZoomIn, QKeySequence("Ctrl+=")])
         self.larger_action.triggered.connect(lambda: self.step_grid_size(1))
@@ -219,8 +292,10 @@ class MainWindow(QMainWindow):
             self.next_action,
             self.undo_action,
             self.redo_action,
+            *self.flag_actions,
         ):
-            # Only while a photo is shown: in the grid the arrows move the selection
+            # Only while a photo is shown: in the grid the arrows move the selection.
+            # The flags' keys are the grid's and the viewer's, not the search field's
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
     def _make_toolbar(self):
@@ -245,6 +320,7 @@ class MainWindow(QMainWindow):
         self.editing = toolbar.addWidget(
             self._group(self.undo_action, self.redo_action, self.reset_action, self.export_action)
         )
+        self.flagging = toolbar.addWidget(self._group(self.pick_action, self.reject_action))
         self.browsing = toolbar.addWidget(self._group(self.edit_action))
 
     def _group(self, *actions):
@@ -321,6 +397,9 @@ class MainWindow(QMainWindow):
         self.grid.setWordWrap(False)
         self.grid.setSelectionMode(QListView.SelectionMode.ExtendedSelection)
         self.grid.activated.connect(lambda index: self.show_photo(index.row()))
+        self.grid.addActions(list(self.flag_actions))
+        self.grid.selectionModel().selectionChanged.connect(self._update_flag_actions)
+        self.grid.selectionModel().currentChanged.connect(self._on_current_changed)
         # Escape in the grid ends a search
         self.end_search_action = QAction("Show All Photos", self.grid)
         self.end_search_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
@@ -339,7 +418,9 @@ class MainWindow(QMainWindow):
 
     def _make_viewer(self):
         self.viewer = ImageView()
-        self.viewer.addActions([self.back_action, self.previous_action, self.next_action])
+        self.viewer.addActions(
+            [self.back_action, self.previous_action, self.next_action, *self.flag_actions]
+        )
         return self.viewer
 
     def _draw_icons(self):
@@ -353,6 +434,9 @@ class MainWindow(QMainWindow):
         self.previous_action.setIcon(style.icon("go-previous"))
         self.next_action.setIcon(style.icon("go-next"))
         self.similar_action.setIcon(style.icon("edit-find", "system-search"))
+        ratio = self.devicePixelRatioF()
+        self.pick_action.setIcon(flags.icon(PICKED, ratio))
+        self.reject_action.setIcon(flags.icon(REJECTED, ratio))
         self.search_field.draw_icons()
 
     # Folders
@@ -523,12 +607,90 @@ class MainWindow(QMainWindow):
         index = self.grid.indexAt(point)
         if not index.isValid():
             return
-        self.grid.setCurrentIndex(index)
+        if not self.grid.selectionModel().isSelected(index):
+            self.grid.setCurrentIndex(index)
+        else:
+            # Keep the selection: flagging from the menu is for all of it
+            self.grid.selectionModel().setCurrentIndex(
+                index, self.grid.selectionModel().SelectionFlag.NoUpdate
+            )
         menu = QMenu(self)
         menu.addAction(self.edit_action)
         if self.search is not None:
             menu.addAction(self.similar_action)
+        menu.addSeparator()
+        menu.addAction(self.pick_action)
+        menu.addAction(self.reject_action)
+        menu.addAction(self.unflag_action)
         menu.exec(self.grid.viewport().mapToGlobal(point))
+
+    # Flags
+
+    def flag_photos(self, flag):
+        """Thumbs up (PICKED), down (REJECTED) or neither for the photo shown, or the
+        ones chosen in the grid; when they have it already, clear it."""
+        page = self.pages.currentIndex()
+        rows = self._flag_rows()
+        given = self.model.toggle_flag(rows, flag) if rows else None
+        if given in (PICKED, REJECTED) and page == _VIEWER and settings.advance_after_flag():
+            self.step(1)
+        self._update_flag_actions()
+        self._update_status()
+
+    def undo_flags(self):
+        if self.model.undo_flags():
+            self.statusBar().showMessage("Flag change undone", 3000)
+        self._update_flag_actions()
+        self._update_status()
+
+    def redo_flags(self):
+        if self.model.redo_flags():
+            self.statusBar().showMessage("Flag change redone", 3000)
+        self._update_flag_actions()
+        self._update_status()
+
+    def set_flag_filter(self, flag):
+        """Show only photos with a thumbs up, with none, or with a thumbs down, or all."""
+        self.model.set_flag_filter(flag)
+        self._update_status()
+
+    def set_rejected(self, mode):
+        """Show, dim or hide thumbs-down photos, and remember it."""
+        settings.set_rejected_photos(mode)
+        self.model.set_rejected(mode)
+        self.grid.viewport().update()
+        self._update_status()
+
+    def _flag_rows(self):
+        page = self.pages.currentIndex()
+        if page == _VIEWER:
+            row = self._viewed_row()
+            return [row] if row is not None else []
+        if page == _GRID:
+            rows = sorted(index.row() for index in self.grid.selectionModel().selectedIndexes())
+            if not rows and self.grid.currentIndex().isValid():
+                rows = [self.grid.currentIndex().row()]
+            return rows
+        return []
+
+    def _update_flag_actions(self, *_args):
+        rows = self._flag_rows()
+        given = {self.model.flag(row) for row in rows}
+        for action, flag in ((self.pick_action, PICKED), (self.reject_action, REJECTED)):
+            action.setEnabled(bool(rows))
+            action.setChecked(given == {flag})
+        self.unflag_action.setEnabled(bool(rows))
+        page = self.pages.currentIndex()
+        browsing = page in (_GRID, _VIEWER)
+        self.undo_flag_action.setEnabled(browsing and self.model.can_undo_flags())
+        self.redo_flag_action.setEnabled(browsing and self.model.can_redo_flags())
+
+    def _on_current_changed(self, current, _previous):
+        self._update_flag_actions()
+        if current.isValid():
+            photo_id = self.model.photo_id(current.row())
+            # Not while the selection model is telling of the change
+            QTimer.singleShot(0, self, lambda: self.model.settle(photo_id))
 
     # The grid's thumbnail size
 
@@ -614,6 +776,9 @@ class MainWindow(QMainWindow):
         if not 0 <= row < self.model.rowCount():
             return
         self._viewed_id = self.model.photo_id(row)
+        # Moved on: photos flagged out of the view leave it
+        self.model.settle(self._viewed_id)
+        row = self.model.row_of(self._viewed_id)
         path = self.model.path(row)
         # The thumbnail at once, while the larger one is decoded
         thumbnail = self.model.thumbnail_pixmap(row)
@@ -684,6 +849,8 @@ class MainWindow(QMainWindow):
             return
         self.previews.cancel()
         self._viewed_id = self.model.photo_id(row)
+        self.model.settle(self._viewed_id)
+        row = self.model.row_of(self._viewed_id)
         self.develop.show_loading(self.model.name(row))
         self.session.screen_side = self._viewer_side()
         self._show_page(_DEVELOP)
@@ -763,12 +930,14 @@ class MainWindow(QMainWindow):
         self.navigation.setVisible(viewing)
         self.editing.setVisible(developing)
         self.browsing.setVisible(not developing)
+        self.flagging.setVisible(page in (_GRID, _VIEWER))
         for action in (self.back_action, self.previous_action, self.next_action):
             action.setEnabled(viewing)
         for action in (self.reset_action, self.export_action):
             action.setEnabled(developing)
         self.edit_action.setEnabled(page in (_GRID, _VIEWER))
         self._update_history()
+        self._update_flag_actions()
         if not viewing:
             self._update_title()
         self._update_status()
@@ -790,7 +959,9 @@ class MainWindow(QMainWindow):
         elif self.pages.currentIndex() in (_VIEWER, _DEVELOP) and row is not None:
             details = describe_photo(self.service.photo_details(self._viewed_id))
             where = self.model.path(row) or f"{self.model.name(row)} (not connected)"
-            text = "  ·  ".join(part for part in (f"{row + 1} of {count}", details, where) if part)
+            flag = FLAG_NAMES.get(self.model.flag(row))
+            parts = (f"{row + 1} of {count}", flag, details, where)
+            text = "  ·  ".join(part for part in parts if part)
         else:
             text = f"{count} photo" + ("" if count == 1 else "s")
             search = self.model.search
@@ -809,6 +980,9 @@ class MainWindow(QMainWindow):
                     if count
                     else f"No photos match “{search.label}”"
                 )
+            hidden = self.model.hidden_count()
+            if hidden and not self.model.is_loading():
+                text += f"  ·  {hidden} hidden by flags"
             if search is not None and self.search.is_indexing():
                 text += "  ·  more as indexing goes on"
         self.status.setText(text)

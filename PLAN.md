@@ -179,6 +179,16 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 
 **Phase 5: later.** HSL and colour grading, crop tools, lens corrections, GPU rendering, soft proof, packaging (AppImage/Flatpak), keywords and collections, ratings.
 
+**Phase 5a as built: thumbs up and down, for going through new photos before editing.** The base that ratings, keywords and smarter filters build on.
+
+- **Flag** (schema 4): `photos.flag`, thumbs up (1), none (0) or thumbs down (-1). One per photo, not per virtual copy. Kept while the file or drive is missing and when the file changes, as edits are; never written to the original (an XMP sidecar can come with ratings and keywords).
+- **Setting it**: P thumbs up, X thumbs down, U clears; the same key again clears it too. Two buttons in the toolbar (filled in the flag's colour while set) and the grid's context menu. In the grid it is for every chosen photo (all get it unless all have it already); in the viewer for the photo shown. Ctrl+Z and Ctrl+Shift+Z undo and redo flag changes in the grid and the viewer, also of photos no longer shown; in the Develop view they stay the edit's. The keys are the grid's and the viewer's, so typing in the search field does not flag.
+- **Showing it**: a badge on the thumbnail's corner (a thumb in the theme's success or danger colour on a card-coloured disc). Thumbs-down photos are dimmed (default), shown as any other, or hidden, from the button by the thumbnail sizes; the choice is remembered. Hidden ones are left out of the grid and the viewer's stepping, and the status bar says how many the flags hide. The viewer's status bar names the flag.
+- **Flag filter**: all, thumbs up, not flagged, thumbs down, beside the year, camera and lens. "Not flagged" is the pile still to go through. A thumbs-down photo asked for is not dimmed.
+- **Flagged out of the view**: the flags narrow the rows in the model (`qt_models/library_model.py`), not in the query, so flagging is instant. A photo flagged out of the view (a thumbs down while they are hidden, or any flag under "Not flagged") stays, dimmed if it is a thumbs down, until the user moves on: another current photo in the grid, the next photo in the viewer. Then it leaves the grid as a removed row, so the selection stays.
+- **Next photo after flagging**: opt-in, from the same button, until there is a settings window (#13). In the viewer only; clearing a flag does not step on.
+- **Not yet:** flags in the Develop view, stars and colour labels, sidecars, a count per flag in the filter.
+
 ## Risks
 
 - Python render speed on 24–45 MP images: mitigated by proxy rendering and cached stages, GPU shader as fallback.

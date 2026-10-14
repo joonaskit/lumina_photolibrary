@@ -54,3 +54,22 @@ def grid_size():
 
 def set_grid_size(name):
     _settings().setValue("library/grid_size", name)
+
+
+def rejected_photos():
+    """What the grid does with thumbs-down photos: "show", "dim" or "hide"."""
+    value = _settings().value("library/rejected")
+    return value if value in ("show", "dim", "hide") else "dim"
+
+
+def set_rejected_photos(mode):
+    _settings().setValue("library/rejected", mode)
+
+
+def advance_after_flag():
+    """Whether the viewer steps to the next photo after one is flagged. Off at first."""
+    return _settings().value("viewer/advance_after_flag") in (True, "true")
+
+
+def set_advance_after_flag(on):
+    _settings().setValue("viewer/advance_after_flag", bool(on))

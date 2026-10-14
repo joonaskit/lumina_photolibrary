@@ -377,6 +377,8 @@ def _stylesheet():
         }}
         QToolButton#segment:hover {{ background: {hover}; }}
         QToolButton#segment:checked {{ background: {selected}; }}
+        /* A segment with a menu: its icon says so, no arrow on top of it */
+        QToolButton#segment::menu-indicator {{ image: none; width: 0; }}
 
         /* "Like IMG_1234.CR3" in front of the search field: click to end it */
         QToolButton#chip {{

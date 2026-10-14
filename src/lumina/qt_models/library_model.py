@@ -8,11 +8,17 @@ through `about_to_refresh` and `refreshed`.
 With a search (a text, or "like this photo"), the same rows are shown ranked by the
 SearchService, best first, and only those that match. The search is run again when
 the rows are read again and while indexing makes more photos findable.
+
+Flags (thumbs up or down) narrow what is shown here, not in the query, so that
+flagging is instant and a photo flagged out of the view stays until the user moves
+on (`settle`): a photo given a thumbs down while thumbs-down photos are hidden does
+not vanish under the pointer. Flag changes can be undone, for any photo, also one no
+longer shown.
 """
 
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, QTimer, Signal
 
@@ -22,12 +28,21 @@ from lumina.qt_models.thumbnails import Thumbnails
 
 # For the UI, which does not import core/
 Filter = dbm.Filter
+PICKED, UNFLAGGED, REJECTED = dbm.PICKED, dbm.UNFLAGGED, dbm.REJECTED
 
 PATH_ROLE = Qt.ItemDataRole.UserRole + 1
 ID_ROLE = Qt.ItemDataRole.UserRole + 2
+FLAG_ROLE = Qt.ItemDataRole.UserRole + 3
+# Whether the cell is drawn greyed out: a thumbs-down photo, while they are dimmed
+DIMMED_ROLE = Qt.ItemDataRole.UserRole + 4
+
+# What becomes of thumbs-down photos when no flag filter is chosen
+SHOW, DIM, HIDE = "show", "dim", "hide"
 
 # While indexing, a search is run again at most this often, in seconds
 _RESEARCH_EVERY = 3.0
+# Flag changes that can be undone
+_HISTORY = 200
 
 TEXT, SIMILAR = "text", "similar"
 
@@ -48,6 +63,8 @@ class LibraryModel(QAbstractListModel):
     loading_changed = Signal(bool)
     # The search changed, or its results came
     search_changed = Signal()
+    # Flags were set, undone or redone: what can be undone changed
+    flags_changed = Signal()
 
     def __init__(self, service, search=None, parent=None):
         super().__init__(parent)
@@ -55,11 +72,23 @@ class LibraryModel(QAbstractListModel):
         self.search_service = search
         self.filter = dbm.Filter()
         self.search = None
-        # Every row of the filter; `_rows` is what is shown, ranked while searching
+        # A flag to show only, or None for any
+        self.flag_filter = None
+        self.rejected = DIM
+        # Every row of the filter; `_ranked` the ids a search found, best first; `_rows`
+        # what is shown
         self._all = []
+        # Photo id: its position in `_all`
+        self._positions = {}
+        self._ranked = None
         self._rows = []
         self._index = {}
+        # Photos flagged out of the view, shown until the user moves on
+        self._kept = set()
+        self._undo = []
+        self._redo = []
         self._loading = False
+        self._querying = False
         self._generation = 0
         self.thumbnails = Thumbnails(self)
         self.thumbnails.changed.connect(self._thumbnail_changed)
@@ -79,6 +108,7 @@ class LibraryModel(QAbstractListModel):
     def set_filter(self, shown):
         """Show what `shown` (a db.Filter) selects."""
         self.filter = shown
+        self._kept.clear()
         self.thumbnails.clear()
         self._load(reset=True)
 
@@ -112,10 +142,12 @@ class LibraryModel(QAbstractListModel):
         if search == self.search:
             return
         self.search = search
+        self._kept.clear()
         self.thumbnails.clear()
         self.search_changed.emit()
         if search is None:
-            self._show(self._all, reset=True)
+            self._ranked = None
+            self._show(self._compose(), reset=True)
         else:
             self._run_search(reset=True)
 
@@ -129,7 +161,8 @@ class LibraryModel(QAbstractListModel):
 
         def done(ranked):
             if generation == self._generation and search == self.search:
-                self._show([photo for photo, _cosine in ranked], reset)
+                self._ranked = [photo.id for photo, _cosine in ranked]
+                self._show(self._compose(), reset)
                 self._set_loading(False)
                 self.search_changed.emit()
 
@@ -148,6 +181,7 @@ class LibraryModel(QAbstractListModel):
         self._generation += 1
         generation = self._generation
         self._set_loading(True)
+        self._querying = True
         workers.submit(
             _query,
             self.service.path,
@@ -161,28 +195,161 @@ class LibraryModel(QAbstractListModel):
     def _loaded(self, generation, rows, reset):
         if generation != self._generation:
             return
+        self._querying = False
         self._all = rows
+        self._positions = {row.id: number for number, row in enumerate(rows)}
         if self.search is not None:
             self._run_search(reset)
             return
-        self._show(rows, reset)
+        self._show(self._compose(), reset)
         self._set_loading(False)
 
+    # What is shown
+
+    def _compose(self):
+        if self._ranked is None:
+            base = self._all
+        else:
+            base = [self._all[self._positions[i]] for i in self._ranked if i in self._positions]
+        return [photo for photo in base if self._passes(photo)]
+
+    def _passes(self, photo):
+        if photo.id in self._kept:
+            return True
+        if self.flag_filter is not None:
+            return photo.flag == self.flag_filter
+        return not (self.rejected == HIDE and photo.flag == REJECTED)
+
     def _show(self, rows, reset):
-        if reset or rows != self._rows:
-            if not reset:
-                self.about_to_refresh.emit()
+        old = [photo.id for photo in self._rows]
+        new = [photo.id for photo in rows]
+        if reset:
             self.beginResetModel()
-            self._rows = rows
-            self._index = {row.id: number for number, row in enumerate(rows)}
+            self._set_rows(rows)
             self.endResetModel()
-            if not reset:
-                self.refreshed.emit()
+        elif new == old:
+            changed = [n for n, (a, b) in enumerate(zip(self._rows, rows, strict=True)) if a != b]
+            self._set_rows(rows)
+            if changed:
+                self.dataChanged.emit(self.index(changed[0]), self.index(changed[-1]))
+        elif _is_subsequence(new, old):
+            # Rows left out (flags settled): removed as such, so the selection stays
+            keep = set(new)
+            for first, last in reversed(_runs([n for n, i in enumerate(old) if i not in keep])):
+                self.beginRemoveRows(QModelIndex(), first, last)
+                # The index too before the views hear of it: they may ask for a row
+                self._set_rows(self._rows[:first] + self._rows[last + 1 :])
+                self.endRemoveRows()
+            changed = rows != self._rows
+            self._set_rows(rows)
+            if changed and rows:
+                self.dataChanged.emit(self.index(0), self.index(len(rows) - 1))
+        else:
+            self.about_to_refresh.emit()
+            self.beginResetModel()
+            self._set_rows(rows)
+            self.endResetModel()
+            self.refreshed.emit()
+
+    def _set_rows(self, rows):
+        self._rows = list(rows)
+        self._index = {row.id: number for number, row in enumerate(self._rows)}
 
     def _set_loading(self, on):
         if on != self._loading:
             self._loading = on
             self.loading_changed.emit(on)
+
+    # Flags
+
+    def set_flag_filter(self, flag):
+        """Show only photos with `flag` (PICKED, UNFLAGGED or REJECTED), or any (None)."""
+        if flag != self.flag_filter:
+            self.flag_filter = flag
+            self._kept.clear()
+            self._show(self._compose(), reset=False)
+
+    def set_rejected(self, mode):
+        """SHOW, DIM or HIDE thumbs-down photos (with no flag filter)."""
+        if mode != self.rejected:
+            self.rejected = mode
+            self._kept.clear()
+            self._show(self._compose(), reset=False)
+
+    def hidden_count(self):
+        """How many photos of the filter or search the flags leave out."""
+        if self.flag_filter is None and self.rejected != HIDE:
+            return 0
+        if self._ranked is None:
+            base = len(self._all)
+        else:
+            base = sum(1 for i in self._ranked if i in self._positions)
+        return base - len(self._rows)
+
+    def flag(self, row):
+        return self._rows[row].flag
+
+    def toggle_flag(self, rows, flag):
+        """Give the photos of `rows` `flag`; when they all have it already, clear it, as
+        pressing the key again does. Returns the flag given, or None for no change."""
+        photos = [self._rows[row] for row in rows if 0 <= row < len(self._rows)]
+        if not photos:
+            return None
+        if all(photo.flag == flag for photo in photos):
+            flag = UNFLAGGED
+        changes = {photo.id: flag for photo in photos if photo.flag != flag}
+        if not changes:
+            return None
+        before = {photo.id: photo.flag for photo in photos if photo.id in changes}
+        self._write(changes)
+        self._undo = [*self._undo[-(_HISTORY - 1) :], before]
+        self._redo.clear()
+        self.flags_changed.emit()
+        return flag
+
+    def can_undo_flags(self):
+        return bool(self._undo)
+
+    def can_redo_flags(self):
+        return bool(self._redo)
+
+    def undo_flags(self):
+        """Put back the flags before the last change. Returns how many photos it set."""
+        return self._step_history(self._undo, self._redo)
+
+    def redo_flags(self):
+        return self._step_history(self._redo, self._undo)
+
+    def _step_history(self, source, target):
+        if not source:
+            return 0
+        flags = source.pop()
+        # From the library: a photo not in the rows still has its flag there
+        target.append(self.service.flags(flags))
+        self._write(flags)
+        self.flags_changed.emit()
+        return len(flags)
+
+    def _write(self, flags):
+        self.service.set_flags(flags)
+        for photo_id, flag in flags.items():
+            position = self._positions.get(photo_id)
+            if position is not None:
+                self._all[position] = replace(self._all[position], flag=flag)
+            if photo_id in self._index:
+                self._kept.add(photo_id)
+        if self._querying:
+            # The rows coming were read before this
+            self._load(reset=False)
+        self._show(self._compose(), reset=False)
+
+    def settle(self, keep=None):
+        """The user moved on: photos flagged out of the view leave it, all but `keep`
+        (a photo id), the one they are on now."""
+        kept = self._kept & {keep}
+        if kept != self._kept:
+            self._kept = kept
+            self._show(self._compose(), reset=False)
 
     # The model
 
@@ -211,6 +378,10 @@ class LibraryModel(QAbstractListModel):
             return os.path.basename(photo.path)
         if role == ID_ROLE:
             return photo.id
+        if role == FLAG_ROLE:
+            return photo.flag
+        if role == DIMMED_ROLE:
+            return photo.flag == REJECTED and self.rejected != SHOW and self.flag_filter != REJECTED
         path = self.path(index.row())
         if role == Qt.ItemDataRole.DecorationRole:
             return self.thumbnails.icon(self._key(photo), path, photo.content_id, photo.edit)
@@ -247,6 +418,22 @@ class LibraryModel(QAbstractListModel):
         self.thumbnails.clear()
         if self._rows:
             self.dataChanged.emit(self.index(0), self.index(len(self._rows) - 1))
+
+
+def _is_subsequence(part, whole):
+    items = iter(whole)
+    return all(any(item == wanted for item in items) for wanted in part)
+
+
+def _runs(numbers):
+    """[(first, last)] of the runs of consecutive numbers in sorted `numbers`."""
+    runs = []
+    for number in numbers:
+        if runs and runs[-1][1] == number - 1:
+            runs[-1] = (runs[-1][0], number)
+        else:
+            runs.append((number, number))
+    return runs
 
 
 def _query(path, shown):

@@ -158,3 +158,20 @@ def test_indexing_shows_in_the_status_bar(qtbot, open_window):
 
     assert window.search_status.isVisible()
     assert window.search_status.label.text() == "3 photos indexed for search"
+
+
+def test_flags_narrow_a_search_and_keep_its_order(qtbot, open_window):
+    from lumina.qt_models.library_model import HIDE
+
+    window = open_window()
+    type_search(qtbot, window, "green")
+    ranked = names(window)
+    window.grid.setCurrentIndex(window.model.index(0))
+
+    window.reject_action.trigger()
+    window.model.set_rejected(HIDE)
+
+    assert names(window) == ranked[1:]
+    assert window.status.text() == "2 photos match “green”  ·  1 hidden by flags"
+    window.undo_flags()
+    assert names(window) == ranked
