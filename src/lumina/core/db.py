@@ -117,8 +117,33 @@ def _migrate_1(db):
     )
 
 
+def _migrate_2(db):
+    db.executescript(
+        """
+        -- An edit is its parameters as JSON (core/edit/params.py), rendered from the
+        -- original. Copy 0 is the photo's edit; more are virtual copies
+        CREATE TABLE edits (
+            id INTEGER PRIMARY KEY,
+            photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+            copy INTEGER NOT NULL DEFAULT 0,
+            params TEXT NOT NULL,
+            updated_at REAL NOT NULL,
+            UNIQUE (photo_id, copy)
+        );
+
+        -- Saved parts of an edit, applied over another
+        CREATE TABLE presets (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            params TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        """
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
-_MIGRATIONS = [_migrate_1]
+_MIGRATIONS = [_migrate_1, _migrate_2]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
 
@@ -389,6 +414,65 @@ class Library:
             ]
 
         return years, distinct("model"), distinct("lens")
+
+    # Edits
+
+    def edit(self, photo_id, copy=0):
+        """The stored parameters JSON of a photo's edit, or None for no edit."""
+        row = self.db.execute(
+            "SELECT params FROM edits WHERE photo_id = ? AND copy = ?", (photo_id, copy)
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    def save_edit(self, photo_id, params_json, copy=0):
+        with self.db:
+            self.db.execute(
+                "INSERT INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (photo_id, copy) DO UPDATE SET "
+                "params = excluded.params, updated_at = excluded.updated_at",
+                (photo_id, copy, params_json, time.time()),
+            )
+
+    def delete_edit(self, photo_id, copy=0):
+        """Back to the original. The photo's own edit and its copies are separate."""
+        with self.db:
+            self.db.execute("DELETE FROM edits WHERE photo_id = ? AND copy = ?", (photo_id, copy))
+
+    def copies(self, photo_id):
+        """The numbers of a photo's edits: 0 for its own, then its virtual copies."""
+        rows = self.db.execute(
+            "SELECT copy FROM edits WHERE photo_id = ? ORDER BY copy", (photo_id,)
+        )
+        return [row[0] for row in rows]
+
+    def new_copy(self, photo_id, params_json):
+        """A virtual copy of a photo with these parameters. Returns its number."""
+        with self.db:
+            row = self.db.execute(
+                "SELECT COALESCE(MAX(copy), 0) + 1 FROM edits WHERE photo_id = ?", (photo_id,)
+            ).fetchone()
+            self.db.execute(
+                "INSERT INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?)",
+                (photo_id, row[0], params_json, time.time()),
+            )
+        return row[0]
+
+    def presets(self):
+        """[(name, parameters JSON)] by name."""
+        rows = self.db.execute("SELECT name, params FROM presets ORDER BY name COLLATE NOCASE")
+        return [tuple(row) for row in rows]
+
+    def save_preset(self, name, params_json):
+        with self.db:
+            self.db.execute(
+                "INSERT INTO presets (name, params, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT (name) DO UPDATE SET params = excluded.params",
+                (name, params_json, time.time()),
+            )
+
+    def delete_preset(self, name):
+        with self.db:
+            self.db.execute("DELETE FROM presets WHERE name = ?", (name,))
 
     # Jobs
 
