@@ -6,8 +6,20 @@ selection colours. Colours and fonts go through `QPalette` and `QFont`; the
 stylesheet is for shapes and takes every colour, radius and size from here.
 """
 
-from PySide6.QtCore import QObject, QSize, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPalette
+import os
+
+from PySide6.QtCore import QObject, QPointF, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontDatabase,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QPixmap,
+)
 
 from lumina import APP_ID
 from lumina.integration import theme as theme_reader
@@ -231,6 +243,46 @@ def _font():
     return font
 
 
+# The combo box's chevron and the room it has, unscaled
+_ARROW = 10
+_ARROW_BOX = 16
+
+
+def _arrow_image():
+    """`image: url(...);` for a chevron in the secondary text colour, drawn for this
+    theme into Lumina's cache folder: a stylesheet can only show an image from a file.
+    Nothing when it can't be written: the style's own arrow is shown then."""
+    colour = color("textSecondary")
+    # Drawn at twice the size, for dense screens
+    side = px(_ARROW) * 2
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    folder = os.path.join(base, "lumina", "style")
+    path = os.path.join(folder, f"chevron-{colour.name()[1:]}-{side}.png")
+    if not os.path.exists(path):
+        pixmap = QPixmap(side, side)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(colour, side * 0.14)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        chevron = QPainterPath(QPointF(side * 0.2, side * 0.38))
+        chevron.lineTo(side * 0.5, side * 0.66)
+        chevron.lineTo(side * 0.8, side * 0.38)
+        painter.drawPath(chevron)
+        painter.end()
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            return ""
+        partial = f"{path}.{os.getpid()}.part"
+        if not pixmap.save(partial, "PNG"):
+            return ""
+        os.replace(partial, path)
+    return f"image: url({path});"
+
+
 def _stylesheet():
     colors = _theme["colors"]
     small, medium, large = radius("small"), radius("medium"), radius("large")
@@ -304,10 +356,19 @@ def _stylesheet():
             padding: {px(4)}px {px(8)}px;
         }}
 
+        /* The arrow sits inside the rounded box, in the padding, not in a square
+           button of the platform style's own */
         QComboBox {{
             border: 1px solid {divider}; border-radius: {medium}px;
-            padding: {px(4)}px {px(10)}px; background: {raised};
+            padding: {px(4)}px {px(10)}px; padding-right: {px(10 + _ARROW_BOX)}px;
+            background: {raised};
         }}
+        QComboBox::drop-down {{
+            subcontrol-origin: padding; subcontrol-position: center right;
+            width: {px(_ARROW_BOX)}px; border: none; background: transparent;
+            margin-right: {px(6)}px;
+        }}
+        QComboBox::down-arrow {{ {_arrow_image()} width: {px(_ARROW)}px; height: {px(_ARROW)}px; }}
         QComboBox:hover {{ border-color: {overlay(0.2)}; }}
         QComboBox:focus {{ border-color: {colors["accent"]}; }}
         QComboBox QAbstractItemView {{
