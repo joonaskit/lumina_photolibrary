@@ -1,7 +1,7 @@
 """Year, camera, lens and flag, above the grid, and the search field at the right."""
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QWidget
+from PySide6.QtCore import QTimer, Signal
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QToolButton, QWidget
 
 from lumina.integration import style
 from lumina.qt_models.library_model import PICKED, REJECTED, UNFLAGGED
@@ -46,8 +46,23 @@ class FilterBar(QWidget):
         return self.flag.currentData()
 
     def add_trailing(self, widget):
-        """A widget at the right end of the row: the search field."""
+        """A widget at the right end of the row: the buttons, the search field. Square
+        buttons in it are as tall as the combos beside them."""
         self.layout().addWidget(widget)
+        self._fit_buttons()
+
+    def _fit_buttons(self):
+        # The combos' height comes from the font, which the desktop chooses
+        side = self.year.sizeHint().height()
+        for button in self.findChildren(QToolButton):
+            if button.objectName() == "segment":
+                button.setFixedSize(side, side)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (event.Type.FontChange, event.Type.StyleChange):
+            # Once the combos have their new size
+            QTimer.singleShot(0, self, self._fit_buttons)
 
     def _combo(self, everything):
         combo = QComboBox()

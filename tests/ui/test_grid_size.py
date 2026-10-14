@@ -76,3 +76,16 @@ def test_ctrl_and_the_wheel_zoom_and_the_wheel_alone_scrolls(qtbot, service):
     assert window.grid_size.value() == "small"
     wheel(window, True, Qt.KeyboardModifier.NoModifier)
     assert window.grid_size.value() == "small"
+
+
+def test_the_buttons_beside_the_filters_are_as_tall_as_the_combos(qtbot, service):
+    from lumina.ui.main_window import MainWindow
+
+    window = MainWindow(service)
+    qtbot.addWidget(window)
+    window.show()
+    height = window.filters.year.sizeHint().height()
+
+    for button in (*window.grid_size.buttons.values(), window.flag_options):
+        assert button.size().height() == height
+        assert button.size().width() == height
