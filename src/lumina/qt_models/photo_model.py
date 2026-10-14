@@ -1,8 +1,9 @@
 """The photos of a folder as a list model, with thumbnails made as they are shown.
 
 The folder is scanned on a thread and the rows arrive in batches. A thumbnail is
-asked for the first time its row is painted, decoded in a worker process, and kept
-in a bounded cache: a row whose thumbnail was dropped asks again.
+asked for the first time its row is painted, read from the cache on disk or decoded
+in a worker process, and kept in a bounded cache in memory: a row whose thumbnail
+was dropped from it asks again.
 """
 
 import os
@@ -12,7 +13,7 @@ from collections import OrderedDict
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QIcon, QPixmap
 
-from lumina.core import images, scanner
+from lumina.core import scanner, thumbs
 from lumina.integration import style
 from lumina.qt_models import workers
 from lumina.qt_models.images import to_image
@@ -156,9 +157,11 @@ class PhotoModel(QAbstractListModel):
         if path not in self._pending:
             generation = self._generation
             self._pending[path] = workers.submit(
-                images.load_pixels,
+                thumbs.load_thumbnail,
                 path,
                 THUMB_SIDE,
+                # Read here, not in the worker: a worker keeps the environment it began with
+                thumbs.default_cache_dir(),
                 on_done=lambda pixels: self._thumb_made(generation, path, pixels),
                 on_error=lambda error: self._thumb_failed(generation, path, error),
                 owner=self,

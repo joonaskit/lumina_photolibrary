@@ -9,6 +9,7 @@ Lumina indexes your photos offline, lets you search them in plain language ("sun
 ```sh
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
+sudo dnf install perl-Image-ExifTool   # for metadata
 lumina ~/Pictures
 ```
 

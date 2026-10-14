@@ -44,6 +44,7 @@ Planned `core/` modules:
 
 - `raw.py`: `load_preview(path)` (embedded JPEG, EXIF orientation applied; falls back to `postprocess(half_size=True)` when there is no JPEG) and `load_linear(path)` (16-bit linear, for editing).
 - `metadata.py`: batched exiftool wrapper: capture time, GPS, camera, lens, orientation.
+- `fingerprint.py`: content id (size plus the first and last 64 KiB), the same for a moved or renamed file.
 - `thumbs.py`: WebP thumbnails, cache keyed by content id, invalidated on edit.
 - `db.py`: schema and migrations (photos, edits, keywords, jobs).
 - `scanner.py`: incremental library walk, skip unchanged (mtime+size, hash on change), handle missing volumes by marking, not deleting.
@@ -92,7 +93,12 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 
 **Proof of concept (done).** A thin slice through every layer, ahead of Phases 1 and 2: open a folder, scan it on a thread (`core/scanner.py`), a lazy thumbnail grid (`qt_models/photo_model.py`, decoded in worker processes by `core/images.py`, bounded in-memory cache), a viewer with arrow-key stepping (`qt_models/previews.py`, newest request wins), the filehouse theme. RAW goes through `core/raw.py` (embedded preview, LibRaw flip, half-size fallback). No database, no disk cache, no metadata. Known gaps: not yet tried on real CR3 files; thumbnail requests for rows scrolled past are not cancelled; no `.desktop` file or app icon.
 
-**Phase 1: CR3 ingest, no UI.** `raw.py`, `metadata.py`, `thumbs.py`, tests with small sample CR3, JPEG, a RAW with no JPEG preview, and a corrupt file. Proves CR3 handling first. Move the CI test jobs to a `fedora:44` container (Fedora's `python3.12` for the oldest version) when `metadata.py` brings in exiftool: it comes from the distribution, and Ubuntu's is much older than Fedora's. Until then Ubuntu is enough, since everything else comes from PyPI wheels that are the same on both.
+**Phase 1: CR3 ingest, no UI.** `raw.py`, `metadata.py`, `thumbs.py`, tests with small sample CR3, JPEG, a RAW with no JPEG preview, and a corrupt file. Proves CR3 handling first. Built, except the check against real CR3 files:
+
+- **RAW samples.** Real CR3s are 20 to 50 MB, so they are not in git: `tests/core/test_samples.py` reads them from the git-ignored `tests/samples/` (or `$LUMINA_SAMPLES`) and skips without them. It checks that the full-size preview is used (not the 160 x 120 one), that it is upright, and that the files are left as they were. Everywhere else, including CI, RAW handling is tested with tiny DNG files the tests write (`tests/rawfiles.py`): JPEG preview, bitmap preview, no preview (half-size decode), turned, cut short. LibRaw reads them through the same paths as CR3.
+- **Metadata.** One `exiftool -stay_open` process fed batches through stdin, `-json -n`, only reading. Paths are passed absolute (a name starting with `-` is never an option) and as `#[CSTR]` lines when they have a newline or leading or trailing space. A missing or unreadable file is a `PhotoError` naming it; a file exiftool reads as something else (`FileType` "TXT") or reads past a fault in (`Warning`) is not an error here: telling a bad photo apart is the decoder's job. A process that dies is started again; one that hangs is killed after a timeout.
+- **Thumbnail cache.** `$XDG_CACHE_HOME/lumina/thumbnails/v1/<id[:2]>/<id>-<side>.webp`, written to a temporary file and renamed, never next to a photo. A damaged file is removed and made again; a cache that cannot be written still gives thumbnails. About 10 KiB a thumbnail at 320 px; a hit is about 1 ms against 18 ms to decode a 1 MB JPEG. No size limit or pruning yet.
+- **CI** runs the tests in a `fedora:44` container with Fedora's exiftool, as an ordinary user, and fails rather than skips a test that needs exiftool (`LUMINA_REQUIRE_EXIFTOOL=1`).
 
 **Phase 2: library.** `db.py`, `scanner.py`, persistent job queue with progress, grid view (`QListView` IconMode, lazy thumbnails), basic filters (date, camera, lens), single-photo viewer. Watch folders, handle unplugged drives.
 
