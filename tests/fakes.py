@@ -41,3 +41,47 @@ class FakeExifTool:
     @classmethod
     def reset(cls):
         cls.calls, cls.models, cls.delay = [], {}, 0.0
+
+
+def colour_vector(colour):
+    """A unit vector from an RGB colour, in the model's dimensions: photos of one
+    colour are alike, and a query is a colour."""
+    import numpy as np
+
+    from lumina.core import embed
+
+    vector = np.zeros(embed.DIMENSIONS, np.float32)
+    vector[:3] = colour
+    vector[3] = 1
+    return vector / np.linalg.norm(vector)
+
+
+class FakeEncoder:
+    """encode(paths) as core/indexing.py takes it, without the model: a photo's vector
+    is its mean colour. `calls` records the batches; a path in `crashes` makes a call
+    that has it raise, as a worker a decoder crashed in does; `broken` raises always."""
+
+    def __init__(self, crashes=(), broken=False):
+        self.calls = []
+        self.crashes = set(map(str, crashes))
+        self.broken = broken
+
+    def __call__(self, paths):
+        from lumina.core import embed, images
+
+        self.calls.append(list(paths))
+        if self.broken:
+            raise RuntimeError("the model could not be loaded")
+        if self.crashes & set(paths):
+            raise RuntimeError("A process in the process pool was terminated abruptly")
+        results = []
+        for path in paths:
+            try:
+                pixels = images.load_pixels(path, 16)
+            except PhotoError as error:
+                results.append(error)
+                continue
+            data = pixels.data
+            colour = [sum(data[i::3]) / (len(data) / 3) / 255 for i in range(3)]
+            results.append(embed.to_blob(colour_vector(colour)))
+        return results

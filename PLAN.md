@@ -12,10 +12,10 @@ This is the source of truth for design, phases and open decisions. Update it whe
 | UI | PySide6, Qt Widgets (same as `../filehouse`). |
 | Language | Python 3.12+. No Rust or custom GPU code for now. |
 | Metadata and edits | SQLite. No PostgreSQL. |
-| Vectors | Embedded store: `sqlite-vec` or Qdrant local mode (`QdrantClient(path=...)`). Chosen in Phase 4. No server. |
+| Vectors | No vector store: float16 blobs in the library database, searched by numpy in memory (decided in Phase 4 by benchmark). No server. |
 | RAW | `rawpy` (LibRaw): embedded JPEG for indexing, full linear decode for editing. |
 | EXIF | `exiftool`, long-running `-stay_open` process. |
-| Embeddings | CLIP/SigLIP through ONNX Runtime (CPU by default). Weights downloaded on first run, not bundled. |
+| Embeddings | SigLIP 2 (`google/siglip2-base-patch16-224`, multilingual, Apache 2.0), fp16 ONNX through ONNX Runtime on the CPU. Weights downloaded once, with consent, not bundled. |
 | Editing | Non-destructive: edit parameters in SQLite, rendered from the original. |
 | Layout and tooling | Same as filehouse: `src/` layout, setuptools, ruff, pytest, pytest-qt offscreen, layer-rules test. |
 | PySide6 source | PyPI `PySide6-Essentials` in a plain venv (Widgets without WebEngine). Tested on Python 3.14 with PySide6 6.12, rawpy 0.27.1 (LibRaw 0.22.1). |
@@ -24,8 +24,6 @@ This is the source of truth for design, phases and open decisions. Update it whe
 
 ## Open decisions
 
-- **Vector store**: `sqlite-vec` (one file, one dependency) vs Qdrant local mode. Decide with a benchmark of ~200k vectors in Phase 4.
-- **CLIP vs SigLIP** and which ONNX export to use.
 - **Platforms.** Linux first (Fedora/KDE). Windows and macOS only if the app is distributed, which also brings signing and installers.
 
 ## Architecture
@@ -142,6 +140,33 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 - **Not yet:** virtual copies in the UI (the database has them), zoom to 100 %, crop aspect ratios, a fine grid while straightening, choosing which sections a preset keeps, cancelling an export in progress.
 
 **Phase 4: semantic search.** First-run model download, ONNX CLIP, batch embedding job, vector store choice, text search UI, "similar photos".
+
+**Phase 4 decisions** (measured 2026-10-14 on this machine, 12 cores, Python 3.14).
+
+- **Vector store: none.** Benchmark, 200k random 512-dim vectors, top 50: numpy over a float32 matrix in memory 12 ms a query (loaded from float16 blobs in SQLite in 0.4 s, 274 MB on disk); sqlite-vec 160 ms (416 MB, brute force too); Qdrant local mode not run (its local mode is pure-Python brute force and brings pydantic and grpc). So vectors are a table in the library database, under its migrations and safety rules, and search is one matrix product. Memory: 768 dims x 4 bytes, about 600 MB at 200k photos; search in float16 chunks if that becomes a problem.
+- **Model: SigLIP 2 base, multilingual** (`google/siglip2-base-patch16-224`, Apache 2.0), because queries are in Finnish as well as English. The ONNX export is `onnx-community/siglip2-base-patch16-224-ONNX`, pinned to revision `ba1f3b0843f24bc5417d38e19c37b287d719b2f4`, files checked by SHA-256:
+  - `onnx/vision_model_fp16.onnx`, 186 MB, `a1959f7bd3993a607e48839f6d01e25b876fe76afda301b028b78eef68aabd95`
+  - `onnx/text_model_fp16.onnx`, 565 MB, `711da56ada0a4aa11c7dd3320df741081a3cae4f0ae1b5e5c6d5b294738d0eb0`
+  - `tokenizer.json`, 34 MB, `cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322`
+- **Why fp16.** Against fp32 on the 20 sample CR3s: fp16 vision cosine 0.999997 and 105 ms a photo (fp32 127 ms); fp16 text 0.9999994 and 21 ms a query. int8 is not usable: vision drops to cosine 0.70 and stops finding the rocks for "rocks on the shore"; int8 text (0.84) loses "kiviä rannalla".
+- **Preprocessing.** Image: the preview Lumina already decodes (embedded JPEG for RAW), squashed to 224 x 224 bilinear, scaled to [-1, 1], NCHW float32 (the fp16 models take float32 in and out). Text: lowercased (SigLIP 2 was trained on lowercase text), the `tokenizers` package on `tokenizer.json` (it adds `<eos>`), padded with id 0 to 64 tokens. Output: `pooler_output`, L2-normalised.
+- **Scores.** SigLIP's `logit_scale` 4.7245 (x 112.67) and `logit_bias` -16.7717 are not in the split ONNX files; they come from the original weights and are constants in the code. p = sigmoid(112.67 cos - 16.77) is a match probability: on the samples, "majakka talvella" to the sea mark 0.95, "rocks on the shore" to the rocks 0.12, "lunta ja jäätä" to the sea mark 0.006, "a dog" to anything 0.0001 or less. Results are ranked by cos; the cut-off for "no matches" is tuned in 4b on a real library.
+
+**Phase 4 design.**
+
+- **4a, engine without UI:** `core/models.py` (download to `$XDG_DATA_HOME/lumina/models/<name>/<revision>/`, to a temporary file, checked, then renamed; resumable; the only network code in Lumina, and it runs only when the user asked for it), `core/embed.py` (ONNX sessions, preprocessing, tokenizer; image and text), schema 3: `embeddings` (content id, model, float16 vector), keyed by content id so a moved, renamed or duplicated photo reuses its vector and a missing one keeps it, `core/search.py` (load, rank by text or by photo, combine with the grid's filters). An embed job after a scan's details step, in batches, in one worker process of its own at low priority (`os.nice`; about 8 photos a second here, 3.5 h per 100k), resumable because what is left is just the photos without a vector for the model. The unedited photo is embedded, not the edit.
+- **4b, UI:** a search field over the grid (results in rank order, filters still apply), "Similar photos" from a photo, the download offer (made when the search field is first used, never at startup; the app works fully without it) and its progress, the embed job's progress in the status bar.
+
+**Phase 4a as built: the engine, no UI.**
+
+- **Model files** (`core/models.py`): pinned revision, size and SHA-256 per file, in `$XDG_DATA_HOME/lumina/models/<name>/<revision>/`. Each file goes to a `.part`, continues from where it stopped (HTTP Range), is checked, then renamed; a wrong file is removed, a cancel or a network error keeps the part. Installed means every file at its size. Tested against a local server; no test touches the network.
+- **Encoder** (`core/embed.py`): `Encoder` (vision and text sessions loaded when first used), `encode_files` for the worker process (decodes at 512 px, encodes the batch, a PhotoError for a file it cannot read; lowers its own priority once). Measured through the app's process on the sample CR3s: 20 photos indexed in 5.8 s with the model load, 132 ms a photo warm.
+- **Storage**: database schema 3 adds `embeddings` (content id, model, float16 vector or the error). A photo that could not be read is not tried again until its bytes change. Removing a folder drops the vectors no remaining photo has; a missing photo keeps its vector.
+- **Indexing job** (`core/indexing.py`, kind `embed`, no folder): what is left is the photos with no vector, on connected drives, newest first, one per content id, in batches of 16. A batch that raises (a decoder crashed the worker) is tried photo by photo, so the culprit is named; when every photo of a batch raises, the encoder is broken and the job fails without marking anything. A photo gone while it ran (a drive unplugged) is passed over, not marked.
+- **Search** (`core/search.py`): `Index`, the vectors in a growing float32 matrix, refreshed by row id so only new vectors are read; `rank(photos, query, floor)` within the grid's rows. Text results stop at p = 0.001 for now.
+- **Service** (`qt_models/search.py`): `SearchService` next to `LibraryService`: download on request only, with progress and cancel; indexing at the start (when the model is there), after every scan and when the drives change, on a thread of its own (`workers.INDEXING`) with the encoding in a process of its own (`workers.EMBED`); searches on one thread (`workers.SEARCH`) holding the index and the text model (2 threads), newest search wins. First text search 2.2 s (loading the text model), then about 53 ms; similar photos the same. A quit leaves indexing queued; Cancel in the status bar stops scans only.
+- **Fixed on the way:** `workers.submit` called back inside itself when the work was done before it returned (the relay's signal is now always queued), which made a test fail on a fast machine.
+- **Not yet (4b):** the search field and its results in the grid, "Similar photos", the download offer, indexing progress in the status bar, the text cut-off tuned on a real library.
 
 **Phase 5: later.** HSL and colour grading, crop tools, lens corrections, GPU rendering, soft proof, packaging (AppImage/Flatpak), keywords and collections, ratings.
 

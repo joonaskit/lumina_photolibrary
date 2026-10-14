@@ -15,6 +15,9 @@ dependencies = [
     "rawpy>=0.27",
     "numpy>=2.0",
     "Pillow>=11.0",
+    # Search (Phase 4): SigLIP 2 on the CPU, and its tokenizer
+    "onnxruntime>=1.20",
+    "tokenizers>=0.21",
 ]
 
 [project.optional-dependencies]

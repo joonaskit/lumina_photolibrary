@@ -167,7 +167,9 @@ def test_a_library_from_schema_1_is_brought_up_to_date_with_its_data(tmp_path, m
     monkeypatch.undo()
 
     with Library(path) as library:
-        assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == 2
+        assert (
+            sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == dbm.SCHEMA_VERSION
+        )
         photo = library.photos()[0]
         assert photo.path == "p/a.jpg"
         library.save_edit(photo.id, '{"version": 1}')

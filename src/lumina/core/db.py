@@ -142,8 +142,27 @@ def _migrate_2(db):
     )
 
 
+def _migrate_3(db):
+    db.executescript(
+        """
+        -- A photo's vector for search (core/embed.py), by content id: a moved, renamed
+        -- or copied photo has the same one, and a missing one keeps it. A vector of
+        -- NULL is a photo that could not be read, with the reason in `error`; it is
+        -- tried again when its bytes change, as that is a new content id
+        CREATE TABLE embeddings (
+            id INTEGER PRIMARY KEY,
+            content_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            vector BLOB,
+            error TEXT,
+            UNIQUE (content_id, model)
+        );
+        """
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
-_MIGRATIONS = [_migrate_1, _migrate_2]
+_MIGRATIONS = [_migrate_1, _migrate_2, _migrate_3]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
 
@@ -289,6 +308,11 @@ class Library:
             self.db.execute("DELETE FROM jobs WHERE folder_id = ?", (folder_id,))
             self.db.execute("DELETE FROM photos WHERE folder_id = ?", (folder_id,))
             self.db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+            # Vectors of photos no longer in the library, copies elsewhere kept
+            self.db.execute(
+                "DELETE FROM embeddings WHERE content_id NOT IN "
+                "(SELECT content_id FROM photos WHERE content_id IS NOT NULL)"
+            )
 
     def mark_scanned(self, folder_id):
         with self.db:
@@ -477,6 +501,56 @@ class Library:
         with self.db:
             self.db.execute("DELETE FROM presets WHERE name = ?", (name,))
 
+    # Embeddings
+
+    def pending_embeddings(self, model, volume_keys, limit, skip=0):
+        """[(content_id, volume_key, path)] of photos with no vector for `model` yet,
+        one per content id, on the volumes `volume_keys` (the connected ones), newest
+        first: recent photos are searchable soonest. `skip` leaves out the first ones,
+        those a job passed over."""
+        where, args = _pending_embeddings(model, volume_keys)
+        rows = self.db.execute(
+            "SELECT p.content_id, v.key, p.path, MAX(COALESCE(p.captured, p.file_time)) AS t "
+            f"{where} GROUP BY p.content_id ORDER BY t DESC, p.content_id LIMIT ? OFFSET ?",
+            (*args, limit, skip),
+        )
+        return [tuple(row[:3]) for row in rows]
+
+    def count_pending_embeddings(self, model, volume_keys):
+        where, args = _pending_embeddings(model, volume_keys)
+        return self.db.execute(f"SELECT COUNT(DISTINCT p.content_id) {where}", args).fetchone()[0]
+
+    def write_embeddings(self, model, vectors=(), failed=()):
+        """`vectors`: (content_id, float16 blob); `failed`: (content_id, message)."""
+        with self.db:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO embeddings (content_id, model, vector, error) "
+                "VALUES (?, ?, ?, NULL)",
+                [(cid, model, blob) for cid, blob in vectors],
+            )
+            self.db.executemany(
+                "INSERT OR REPLACE INTO embeddings (content_id, model, vector, error) "
+                "VALUES (?, ?, NULL, ?)",
+                [(cid, model, message) for cid, message in failed],
+            )
+
+    def embeddings(self, model, after=0):
+        """[(row id, content_id, float16 blob)] of `model`'s vectors written after row
+        `after`, in order: a search index reads only what is new."""
+        rows = self.db.execute(
+            "SELECT id, content_id, vector FROM embeddings "
+            "WHERE model = ? AND id > ? AND vector IS NOT NULL ORDER BY id",
+            (model, after),
+        )
+        return [tuple(row) for row in rows]
+
+    def embedding(self, content_id, model):
+        row = self.db.execute(
+            "SELECT vector FROM embeddings WHERE content_id = ? AND model = ?",
+            (content_id, model),
+        ).fetchone()
+        return row[0] if row is not None else None
+
     # Jobs
 
     def add_job(self, kind, folder_id):
@@ -557,6 +631,18 @@ def _where(shown):
         clauses.append("p.lens = ?")
         args.append(shown.lens)
     return ("WHERE " + " AND ".join(clauses)) if clauses else "", args
+
+
+def _pending_embeddings(model, volume_keys):
+    keys = list(volume_keys)
+    marks = ", ".join("?" * len(keys))
+    return (
+        "FROM photos p JOIN volumes v ON v.id = p.volume_id "
+        f"WHERE p.available = 1 AND p.content_id IS NOT NULL AND v.key IN ({marks}) "
+        "AND NOT EXISTS (SELECT 1 FROM embeddings e "
+        "WHERE e.content_id = p.content_id AND e.model = ?)",
+        (*keys, model),
+    )
 
 
 def _metadata_columns(data):

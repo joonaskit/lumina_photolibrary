@@ -8,11 +8,12 @@ QObject that asked for it still exists: a window can be closed while its work ru
 
 import multiprocessing
 import os
+import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import partial
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, Qt, Signal, Slot
 from shiboken6 import isValid
 
 # One process is left for the UI and the system
@@ -27,7 +28,9 @@ class _Relay(QObject):
 
     def __init__(self):
         super().__init__()
-        self.deliver.connect(self._run)
+        # Queued even from the main thread: work that is done before submit() returns
+        # must not call back from inside it
+        self.deliver.connect(self._run, Qt.ConnectionType.QueuedConnection)
 
     @Slot(object, object)
     def _run(self, owner, call):
@@ -39,10 +42,20 @@ class _Relay(QObject):
 _relay = None
 _processes = None
 _threads = None
+# Pools of their own, by name: made when first used, from any thread
+_named = {}
+_named_lock = threading.Lock()
 # One process for the Develop view: it keeps the open photo decoded between renders
 # (core/edit/session.py), and thumbnails never queue in front of a render
-_develop = None
 DEVELOP = "develop"
+# One process for indexing for search, at low priority, keeping the model loaded
+# between batches (core/embed.py); it never holds up thumbnails or a render
+EMBED = "embed"
+# One thread for indexing jobs, which wait on EMBED for hours, and one for searches,
+# so neither waits behind a scan or the grid's reads
+INDEXING = "indexing"
+SEARCH = "search"
+_NAMED_PROCESSES = {DEVELOP, EMBED}
 
 
 def _the_relay():
@@ -62,12 +75,22 @@ def _process_pool():
     return _processes
 
 
-def _develop_pool():
-    global _develop
-    if _develop is None:
+def _named_pool(name):
+    def pick():
+        with _named_lock:
+            return _named.get(name) or _make(name)
+
+    return pick
+
+
+def _make(name):
+    if name in _NAMED_PROCESSES:
         context = multiprocessing.get_context("forkserver")
-        _develop = ProcessPoolExecutor(max_workers=1, mp_context=context)
-    return _develop
+        pool = ProcessPoolExecutor(max_workers=1, mp_context=context)
+    else:
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"lumina-{name}")
+    _named[name] = pool
+    return pool
 
 
 def _thread_pool():
@@ -78,8 +101,8 @@ def _thread_pool():
 
 
 def submit(fn, *args, on_done, on_error, owner, process=True):
-    """Run `fn(*args)` in a worker process (or a thread, with `process=False`, or the
-    Develop view's own process, with `process=DEVELOP`), then `on_done(result)` or
+    """Run `fn(*args)` in a worker process (or a thread, with `process=False`, or one
+    of the named pools above, with `process=DEVELOP` and so on), then `on_done(result)` or
     `on_error(exception)` on the main thread, unless the QObject `owner` has been
     deleted by then. Call from the main thread. Returns the future; cancelling it
     before it starts calls neither."""
@@ -108,17 +131,32 @@ def submit(fn, *args, on_done, on_error, owner, process=True):
 
 
 def _pool_for(process):
-    if process == DEVELOP:
-        return _develop_pool
+    if isinstance(process, str):
+        return _named_pool(process)
     return _process_pool if process else _thread_pool
 
 
 def _forget_pool(pool):
-    global _processes, _develop
+    global _processes
     if _processes is pool:
         _processes = None
-    if _develop is pool:
-        _develop = None
+    with _named_lock:
+        for name, named in list(_named.items()):
+            if named is pool:
+                del _named[name]
+
+
+def call(process, fn, *args):
+    """From a worker thread: run `fn(*args)` in the pool `process` (as submit()'s) and
+    wait for it. A worker that died is replaced for the next call, and its
+    BrokenProcessPool raised for this one."""
+    pick = _pool_for(process)
+    pool = pick()
+    try:
+        return pool.submit(fn, *args).result()
+    except BrokenProcessPool:
+        _forget_pool(pool)
+        raise
 
 
 def call_on_main(owner, fn, *args):
@@ -129,8 +167,10 @@ def call_on_main(owner, fn, *args):
 
 def shutdown():
     """Drop what has not started and let the workers go. For the app's exit."""
-    global _processes, _threads, _develop
-    for pool in (_processes, _threads, _develop):
+    global _processes, _threads
+    for pool in (_processes, _threads, *_named.values()):
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
-    _processes = _threads = _develop = None
+    _processes = _threads = None
+    with _named_lock:
+        _named.clear()

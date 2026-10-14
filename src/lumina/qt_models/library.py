@@ -227,8 +227,9 @@ class LibraryService(QObject):
         return self._running is not None
 
     def cancel(self):
-        """Stop the running job and drop the queued ones."""
-        for job in self.db.unfinished_jobs():
+        """Stop the running scan and drop the queued ones. Indexing for search is the
+        SearchService's."""
+        for job in self._scans():
             if self._running is None or job.id != self._running[0]:
                 self.db.update_job(job.id, state=dbm.CANCELLED, message="Cancelled")
         if self._stop is not None:
@@ -237,8 +238,8 @@ class LibraryService(QObject):
     def _next_job(self):
         if self._running is not None or self._quitting.is_set():
             return
-        for job in self.db.unfinished_jobs():
-            if job.kind == scanning.SCAN and self.is_connected(job.folder_id):
+        for job in self._scans():
+            if self.is_connected(job.folder_id):
                 self._run(job)
                 return
         # What is left waits for its drive
@@ -309,10 +310,13 @@ class LibraryService(QObject):
     def _status(self, job_id, name):
         job = self.db.job(job_id)
         failures = tuple(self.db.failures(job_id)[:20]) if job.failures else ()
-        queued = sum(1 for other in self.db.unfinished_jobs() if other.id != job_id)
+        queued = sum(1 for other in self._scans() if other.id != job_id)
         return JobStatus(
             name, job.state, job.phase, job.done, job.total, job.message, failures, queued
         )
+
+    def _scans(self):
+        return [job for job in self.db.unfinished_jobs() if job.kind == scanning.SCAN]
 
     def _folder_name(self, folder_id):
         info = next((f for f in self.folders() if f.id == folder_id), None)
