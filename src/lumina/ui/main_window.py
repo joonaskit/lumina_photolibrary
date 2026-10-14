@@ -437,10 +437,10 @@ class MainWindow(QMainWindow):
             self.show_photo(row + delta)
 
     def go_back(self):
-        """Escape: out of the crop, then out of the Develop view, then to the grid."""
+        """Escape: cancel the crop, then out of the Develop view, then to the grid."""
         if self.pages.currentIndex() == _DEVELOP:
-            if self.develop.crop_button.isChecked():
-                self.develop.set_cropping(False)
+            if self.develop.is_cropping():
+                self.develop.cancel_crop()
                 return
             self.session.close()
             row = self._viewed_row()

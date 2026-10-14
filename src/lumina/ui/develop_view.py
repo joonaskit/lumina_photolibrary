@@ -7,7 +7,7 @@ and edges; dragging inside it moves it.
 """
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainterPath, QPen
+from PySide6.QtGui import QAction, QColor, QKeySequence, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -210,6 +210,22 @@ class DevelopView(QWidget):
         layout.addWidget(frame, 1)
         layout.addWidget(self._make_panel())
 
+        # C opens the crop or accepts it; Enter accepts it. Escape (cancel) is the
+        # window's back action, which asks cancel_crop first
+        self.crop_action = QAction("Crop", self)
+        self.crop_action.setShortcut(QKeySequence(Qt.Key.Key_C))
+        self.crop_action.triggered.connect(self.toggle_cropping)
+        self.accept_action = QAction("Accept Crop", self)
+        self.accept_action.setShortcuts(
+            [QKeySequence(Qt.Key.Key_Return), QKeySequence(Qt.Key.Key_Enter)]
+        )
+        self.accept_action.triggered.connect(self.accept_crop)
+        self.accept_action.setEnabled(False)
+        for action in (self.crop_action, self.accept_action):
+            action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            self.addAction(action)
+        self._crop_before = (Crop(), 0.0)
+
         session.params_changed.connect(self._show_params)
         session.image_ready.connect(self._on_image)
         session.failed.connect(self._on_failed)
@@ -277,23 +293,44 @@ class DevelopView(QWidget):
 
         self._heading(layout, "CROP & ROTATE")
         row = QHBoxLayout()
+        self.crop_button = QPushButton("Crop")
+        self.crop_button.setCheckable(True)
+        self.crop_button.setToolTip("Set the crop on the photo (C); Enter accepts, Escape cancels")
+        self.crop_button.toggled.connect(self.set_cropping)
+        self.reset_crop = QPushButton("Reset Crop")
+        self.reset_crop.setToolTip("No crop and no straightening")
+        self.reset_crop.clicked.connect(
+            lambda: self.session.commit(
+                self.session.params.with_changes(crop=Crop(), straighten=0.0)
+            )
+        )
+        row.addWidget(self.crop_button)
+        row.addWidget(self.reset_crop)
+        layout.addLayout(row)
+        self.straighten = self._slider(
+            layout,
+            "Straighten",
+            *develop.STRAIGHTEN,
+            step=0.1,
+            decimals=1,
+            unit="°",
+            field="straighten",
+        )
+        row = QHBoxLayout()
         self.rotate_left = QPushButton("Rotate Left")
-        self.rotate_left.clicked.connect(lambda: self._rotate(-1))
+        self.rotate_left.clicked.connect(lambda: self._turn(-1))
         self.rotate_right = QPushButton("Rotate Right")
-        self.rotate_right.clicked.connect(lambda: self._rotate(1))
+        self.rotate_right.clicked.connect(lambda: self._turn(1))
         row.addWidget(self.rotate_left)
         row.addWidget(self.rotate_right)
         layout.addLayout(row)
         row = QHBoxLayout()
-        self.crop_button = QPushButton("Crop")
-        self.crop_button.setCheckable(True)
-        self.crop_button.toggled.connect(self.set_cropping)
-        self.reset_crop = QPushButton("Reset Crop")
-        self.reset_crop.clicked.connect(
-            lambda: self.session.commit(self.session.params.with_changes(crop=Crop()))
-        )
-        row.addWidget(self.crop_button)
-        row.addWidget(self.reset_crop)
+        self.flip_horizontal = QPushButton("Flip Horizontal")
+        self.flip_horizontal.clicked.connect(lambda: self._flip(True))
+        self.flip_vertical = QPushButton("Flip Vertical")
+        self.flip_vertical.clicked.connect(lambda: self._flip(False))
+        row.addWidget(self.flip_horizontal)
+        row.addWidget(self.flip_vertical)
         layout.addLayout(row)
 
         self._heading(layout, "PRESETS")
@@ -347,6 +384,7 @@ class DevelopView(QWidget):
         self.matte_black.set_value(params.matte.black)
         self.matte_white.set_value(params.matte.white)
         self.matte_desaturation.set_value(params.matte.shadow_desaturation)
+        self.straighten.set_value(params.straighten)
         self._show_curve()
         self.image.set_crop(params.crop)
 
@@ -384,23 +422,44 @@ class DevelopView(QWidget):
 
     # Geometry
 
-    def _rotate(self, quarter):
-        params = self.session.params
-        crop = params.crop
-        # The crop turns with the photo
-        if quarter > 0:
-            turned = Crop(1 - crop.bottom, crop.left, 1 - crop.top, crop.right)
-        else:
-            turned = Crop(crop.top, 1 - crop.right, crop.bottom, 1 - crop.left)
-        self.session.commit(params.with_changes(rotate=(params.rotate + quarter) % 4, crop=turned))
+    def _turn(self, quarters):
+        # The crop, the mirroring and the straightening go with the photo
+        self.session.commit(self.session.params.turned(quarters))
+
+    def _flip(self, horizontal):
+        self.session.commit(self.session.params.flipped(horizontal))
+
+    def is_cropping(self):
+        return self.crop_button.isChecked()
+
+    def toggle_cropping(self):
+        """C: open the crop, or accept it."""
+        self.set_cropping(not self.is_cropping())
+
+    def accept_crop(self):
+        """Enter: keep the crop as it is and close it."""
+        self.set_cropping(False)
+
+    def cancel_crop(self):
+        """Escape: back to the crop and straightening it had when it was opened."""
+        if not self.is_cropping():
+            return
+        before = self._crop_before
+        current = self.session.params
+        self.set_cropping(False)
+        if (current.crop, current.straighten) != before:
+            self.session.commit(current.with_changes(crop=before[0], straighten=before[1]))
 
     def set_cropping(self, on):
         if self.crop_button.isChecked() != on:
             self.crop_button.setChecked(on)
             return
+        if on:
+            self._crop_before = (self.session.params.crop, self.session.params.straighten)
         self.image.set_cropping(on, self.session.params.crop)
         self.session.set_crop_view(on)
         self.crop_button.setText("Done" if on else "Crop")
+        self.accept_action.setEnabled(on)
 
     # Presets
 

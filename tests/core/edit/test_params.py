@@ -116,3 +116,29 @@ def test_a_newer_preset_is_refused():
 def test_an_unknown_section_is_refused():
     with pytest.raises(ValueError):
         params.preset(Params(), ["sharpness"])
+
+
+def test_a_version_1_edit_is_migrated_and_looks_as_it_did():
+    stored = {"version": 1, "exposure": 0.5, "rotate": 1, "crop": {"left": 0.1}}
+
+    edit = params.from_dict(stored)
+
+    assert edit == Params(exposure=0.5, rotate=1, crop=Crop(left=0.1))
+    assert edit.flip_horizontal is False and edit.straighten == 0.0
+    assert json.loads(edit.to_json())["version"] == 2
+
+
+def test_flip_and_straighten_survive_json_and_are_checked():
+    edit = Params(flip_horizontal=True, straighten=-3.5)
+
+    assert params.from_json(edit.to_json()) == edit
+    odd = params.from_dict({"flip": {"horizontal": "yes"}, "straighten": 100})
+    assert odd.flip_horizontal is False and odd.straighten == params.STRAIGHTEN[1]
+
+
+def test_turning_four_times_is_the_same_edit():
+    edit = Params(flip_horizontal=True, straighten=4, crop=Crop(0.1, 0.2, 0.6, 0.9))
+
+    assert edit.turned(1).turned(1).turned(1).turned(1) == edit
+    assert edit.turned(1).turned(-1) == edit
+    assert edit.flipped(True).flipped(True) == edit

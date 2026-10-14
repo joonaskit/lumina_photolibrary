@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 
 from lumina.core.edit import curves
 
-VERSION = 1
+VERSION = 2
 
 # Ranges, in the units the pipeline uses
 EXPOSURE = (-5.0, 5.0)  # stops
@@ -24,6 +24,7 @@ WARMTH = (-100.0, 100.0)  # see pipeline.white_balance_gains
 MATTE_BLACK = (0.0, 0.5)  # how far black is raised, as a share of white
 MATTE_WHITE = (0.0, 0.5)  # how far white is lowered
 DESATURATION = (0.0, 1.0)
+STRAIGHTEN = (-45.0, 45.0)  # degrees, clockwise
 CHANNELS = ("rgb", "red", "green", "blue")
 
 
@@ -73,8 +74,12 @@ class Params:
     tint: float = 0.0
     curves: Curves = field(default_factory=Curves)
     matte: Matte = field(default_factory=Matte)
-    # Quarter turns clockwise, 0 to 3
+    # Quarter turns clockwise, 0 to 3; then mirrored left to right and top to bottom;
+    # then turned by `straighten` degrees clockwise, scaled to fill the frame; then cropped
     rotate: int = 0
+    flip_horizontal: bool = False
+    flip_vertical: bool = False
+    straighten: float = 0.0
     crop: Crop = field(default_factory=Crop)
 
     def is_identity(self):
@@ -92,6 +97,8 @@ class Params:
                 "shadow_desaturation": float(self.matte.shadow_desaturation),
             },
             "rotate": self.rotate,
+            "flip": {"horizontal": self.flip_horizontal, "vertical": self.flip_vertical},
+            "straighten": float(self.straighten),
             "crop": {
                 "left": float(self.crop.left),
                 "top": float(self.crop.top),
@@ -109,6 +116,43 @@ class Params:
 
     def with_changes(self, **changes):
         return replace(self, **changes)
+
+    # Turning and mirroring the result: the edit that shows what this one shows, turned
+    # or mirrored as a whole, crop and all
+
+    def turned(self, quarters):
+        """This edit with the photo turned `quarters` quarter turns clockwise (negative:
+        counter-clockwise), the crop turning with it."""
+        params = self
+        for _ in range(quarters % 4):
+            c = params.crop
+            params = replace(
+                params,
+                rotate=(params.rotate + 1) % 4,
+                # Mirroring then turning is turning then mirroring the other way
+                flip_horizontal=params.flip_vertical,
+                flip_vertical=params.flip_horizontal,
+                crop=Crop(1 - c.bottom, c.left, 1 - c.top, c.right),
+            )
+        return params
+
+    def flipped(self, horizontal):
+        """This edit mirrored left to right (`horizontal`) or top to bottom. The crop is
+        mirrored, and straightening turns the other way."""
+        c = self.crop
+        if horizontal:
+            return replace(
+                self,
+                flip_horizontal=not self.flip_horizontal,
+                straighten=-self.straighten,
+                crop=Crop(1 - c.right, c.top, 1 - c.left, c.bottom),
+            )
+        return replace(
+            self,
+            flip_vertical=not self.flip_vertical,
+            straighten=-self.straighten,
+            crop=Crop(c.left, 1 - c.bottom, c.right, 1 - c.top),
+        )
 
 
 def from_json(text):
@@ -137,6 +181,7 @@ def from_dict(data):
         # Nothing, or almost nothing, left: the crop is dropped, not the photo
         left, top, right, bottom = 0.0, 0.0, 1.0, 1.0
     rotate = data.get("rotate", 0)
+    flip = _section(data, "flip")
     return Params(
         exposure=_number(data.get("exposure"), 0.0, EXPOSURE),
         temperature=_number(wb.get("temperature"), 0.0, WARMTH),
@@ -148,13 +193,22 @@ def from_dict(data):
             shadow_desaturation=_number(matte.get("shadow_desaturation"), 0.0, DESATURATION),
         ),
         rotate=rotate % 4 if isinstance(rotate, int) and not isinstance(rotate, bool) else 0,
+        flip_horizontal=flip.get("horizontal") is True,
+        flip_vertical=flip.get("vertical") is True,
+        straighten=_number(data.get("straighten"), 0.0, STRAIGHTEN),
         crop=Crop(left, top, right, bottom),
     )
 
 
 # Version n -> the function turning a version-n document into version n + 1. Append
 # one with every schema change, and never change one that was released.
-_MIGRATIONS = {}
+def _to_2(data):
+    # Version 2 added mirroring and straightening: none, so it looks as it did. Only
+    # added where missing: a migration fills in, it never overwrites
+    return {"flip": {"horizontal": False, "vertical": False}, "straighten": 0.0, **data}
+
+
+_MIGRATIONS = {1: _to_2}
 
 
 def migrate(data):
@@ -188,7 +242,16 @@ def _number(value, default, bounds):
 
 # Presets: the sections of an edit, saved apart and applied over another
 
-SECTIONS = ("exposure", "white_balance", "curves", "matte", "rotate", "crop")
+SECTIONS = (
+    "exposure",
+    "white_balance",
+    "curves",
+    "matte",
+    "rotate",
+    "flip",
+    "straighten",
+    "crop",
+)
 
 
 def preset(params, sections):

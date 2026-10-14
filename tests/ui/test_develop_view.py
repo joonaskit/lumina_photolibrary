@@ -315,3 +315,93 @@ def test_the_crop_frame_follows_the_mouse(qtbot, window):
     crop = done.args[0]
     assert crop.left == pytest.approx(0.25, abs=0.02) and crop.top == pytest.approx(0.25, abs=0.02)
     assert window.session.params.crop == crop
+
+
+# Flip, straighten, and the crop's keys
+
+
+def press(qtbot, window, key):
+    window.develop.image.setFocus()
+    qtbot.keyClick(window.develop.image, key)
+
+
+def test_c_opens_the_crop_and_accepts_it(qtbot, window):
+    open_editor(qtbot, window)
+
+    press(qtbot, window, Qt.Key.Key_C)
+    assert window.develop.is_cropping()
+    press(qtbot, window, Qt.Key.Key_C)
+    assert not window.develop.is_cropping()
+    assert window.pages.currentIndex() == 3
+
+
+def test_enter_accepts_the_crop_with_its_changes(qtbot, window):
+    open_editor(qtbot, window)
+    press(qtbot, window, Qt.Key.Key_C)
+    changed = window.session.params.with_changes(crop=Crop(0.1, 0.1, 0.8, 0.9), straighten=3.0)
+    window.session.commit(changed)
+
+    press(qtbot, window, Qt.Key.Key_Return)
+
+    assert not window.develop.is_cropping()
+    assert window.session.params == changed
+    assert window.pages.currentIndex() == 3
+
+
+def test_escape_cancels_the_crop_and_the_straightening(qtbot, window):
+    open_editor(qtbot, window)
+    window.session.commit(Params(exposure=0.5, crop=Crop(0.2, 0.2, 0.8, 0.8)))
+    press(qtbot, window, Qt.Key.Key_C)
+    window.session.commit(window.session.params.with_changes(crop=Crop(), straighten=-4.0))
+
+    press(qtbot, window, Qt.Key.Key_Escape)
+
+    assert not window.develop.is_cropping()
+    assert window.pages.currentIndex() == 3
+    assert window.session.params == Params(exposure=0.5, crop=Crop(0.2, 0.2, 0.8, 0.8))
+    # The cancel is a step of its own: undo brings back what was cancelled
+    window.session.undo()
+    assert window.session.params.straighten == -4.0
+
+
+def test_enter_does_nothing_outside_the_crop(qtbot, window):
+    open_editor(qtbot, window)
+
+    press(qtbot, window, Qt.Key.Key_Return)
+
+    assert not window.develop.is_cropping() and window.pages.currentIndex() == 3
+
+
+def test_flip_buttons_mirror_the_photo_and_its_crop(qtbot, window):
+    open_editor(qtbot, window)
+    window.session.commit(Params(straighten=2.0, crop=Crop(0.1, 0.2, 0.5, 0.6)))
+
+    window.develop.flip_horizontal.click()
+    assert window.session.params.flip_horizontal
+    assert window.session.params.crop == Crop(0.5, 0.2, 0.9, 0.6)
+    assert window.session.params.straighten == -2.0
+
+    window.develop.flip_vertical.click()
+    assert window.session.params.flip_vertical
+    assert window.session.params.crop == Crop(0.5, 0.4, 0.9, 0.8)
+
+
+def test_the_straighten_slider_commits_degrees(qtbot, window):
+    open_editor(qtbot, window)
+    slider = window.develop.straighten
+
+    slider.slider.setSliderDown(True)
+    slider.slider.setValue(-35)
+    slider.slider.setSliderDown(False)
+
+    assert window.session.params.straighten == -3.5
+    assert slider.value_label.text() == "-3.5°"
+
+
+def test_reset_crop_also_straightens(qtbot, window):
+    open_editor(qtbot, window)
+    window.session.commit(Params(straighten=5.0, crop=Crop(0.1, 0.1, 0.9, 0.9)))
+
+    window.develop.reset_crop.click()
+
+    assert window.session.params == Params()
