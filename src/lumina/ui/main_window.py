@@ -1,8 +1,9 @@
-"""The window: a toolbar, then the empty start, the grid of a folder, or one photo."""
+"""The window: a toolbar; the library's folders on the left; on the right the filters
+and the grid, one photo, or, with no folders yet, a way to add one."""
 
 import os
 
-from PySide6.QtCore import QMargins, QSize, Qt
+from PySide6.QtCore import QMargins, QPoint, QSize, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListView,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QStyledItemDelegate,
@@ -21,10 +23,13 @@ from PySide6.QtWidgets import (
 )
 
 from lumina.integration import style
-from lumina.qt_models.photo_model import PhotoModel
+from lumina.qt_models.library_model import Filter, LibraryModel
 from lumina.qt_models.previews import PreviewLoader
 from lumina.ui import settings
+from lumina.ui.filters import FilterBar
 from lumina.ui.image_view import ImageView
+from lumina.ui.job_status import JobStatus
+from lumina.ui.sidebar import Sidebar
 
 APP_NAME = "Lumina"
 # Size of a thumbnail in the grid, and of its cell with the name under it, unscaled
@@ -53,47 +58,67 @@ class _CellDelegate(QStyledItemDelegate):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, parent=None):
+    def __init__(self, service, parent=None):
         super().__init__(parent)
+        self.service = service
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(style.app_icon())
-        self.resize(style.px(1200), style.px(800))
+        self.resize(style.px(1280), style.px(820))
 
-        self.model = PhotoModel(self)
-        self.model.rowsInserted.connect(self._update_status)
+        self.model = LibraryModel(service, self)
         self.model.modelReset.connect(self._update_status)
-        self.model.scanning_changed.connect(self._update_status)
+        self.model.about_to_refresh.connect(self._save_place)
+        self.model.refreshed.connect(self._restore_place)
         self.previews = PreviewLoader(self)
         self.previews.ready.connect(self._on_preview_ready)
         self.previews.failed.connect(self._on_preview_failed)
-        self._viewed_row = None
+        self._viewed_id = None
+        self._place = (None, None)
 
         self._make_actions()
         self._make_toolbar()
+        self.sidebar = Sidebar()
+        self.sidebar.selected.connect(self._on_folder_selected)
+        self.sidebar.add_requested.connect(self.choose_folder)
+        self.sidebar.rescan_requested.connect(service.rescan)
+        self.sidebar.rescan_all_requested.connect(service.rescan)
+        self.sidebar.remove_requested.connect(self.remove_folder)
+        self.filters = FilterBar()
+        self.filters.changed.connect(self._apply_filter)
+
         self.pages = QStackedWidget()
         self.pages.addWidget(self._make_empty_page())
-        self.pages.addWidget(self._framed(self._make_grid()))
+        self.pages.addWidget(self._make_grid_page())
         self.pages.addWidget(self._framed(self._make_viewer()))
         outer = QWidget()
-        layout = QVBoxLayout(outer)
+        layout = QHBoxLayout(outer)
         layout.setContentsMargins(style.px(8), 0, style.px(8), 0)
-        layout.addWidget(self.pages)
+        layout.setSpacing(style.px(8))
+        layout.addWidget(self.sidebar)
+        layout.addWidget(self.pages, 1)
         self.setCentralWidget(outer)
 
         self.status = QLabel()
         self.statusBar().addWidget(self.status, 1)
+        self.job_status = JobStatus()
+        self.job_status.cancel_requested.connect(service.cancel)
+        self.statusBar().addPermanentWidget(self.job_status)
         self.statusBar().setSizeGripEnabled(False)
+
+        service.folders_changed.connect(self._refresh_folders)
+        service.job_changed.connect(self.job_status.show_status)
+        service.job_ended.connect(lambda _status: self._refresh_choices())
 
         self._draw_icons()
         style.themed.changed.connect(self._draw_icons)
-        self._show_page(_EMPTY)
+        self._refresh_folders(select=settings.selected_folder())
 
     # Building
 
     def _make_actions(self):
-        self.open_action = QAction("Open Folder…", self)
-        self.open_action.setShortcut(QKeySequence.StandardKey.Open)
-        self.open_action.triggered.connect(self.choose_folder)
+        self.add_action = QAction("Add Folder…", self)
+        self.add_action.setShortcut(QKeySequence.StandardKey.Open)
+        self.add_action.triggered.connect(self.choose_folder)
         self.back_action = QAction("Back to Grid", self)
         self.back_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.back_action.triggered.connect(self.show_grid)
@@ -126,7 +151,7 @@ class MainWindow(QMainWindow):
             spacer.sizePolicy().Policy.Expanding, spacer.sizePolicy().Policy.Preferred
         )
         toolbar.addWidget(spacer)
-        toolbar.addWidget(self._group(self.open_action))
+        toolbar.addWidget(self._group(self.add_action))
 
     def _group(self, *actions):
         """Buttons in one rounded card, as filehouse's toolbar has them."""
@@ -158,13 +183,16 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.addStretch(1)
-        heading = QLabel("No folder open")
+        heading = QLabel("Your library is empty")
         heading.setObjectName("title")
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint = QLabel("Choose a folder of photos: JPEG, PNG, TIFF, CR3 and other RAW files.")
+        hint = QLabel(
+            "Add a folder of photos: JPEG, PNG, TIFF, CR3 and other RAW files.\n"
+            "Lumina only reads them; nothing in the folder is changed."
+        )
         hint.setObjectName("placeholder")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        button = QPushButton("Open Folder…")
+        button = QPushButton("Add Folder…")
         button.clicked.connect(self.choose_folder)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -178,7 +206,7 @@ class MainWindow(QMainWindow):
         layout.addStretch(2)
         return page
 
-    def _make_grid(self):
+    def _make_grid_page(self):
         self.grid = QListView()
         self.grid.setModel(self.model)
         self.grid.setViewMode(QListView.ViewMode.IconMode)
@@ -196,7 +224,13 @@ class MainWindow(QMainWindow):
         self.grid.setWordWrap(False)
         self.grid.setSelectionMode(QListView.SelectionMode.ExtendedSelection)
         self.grid.activated.connect(lambda index: self.show_photo(index.row()))
-        return self.grid
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.filters)
+        layout.addWidget(self._framed(self.grid), 1)
+        return page
 
     def _make_viewer(self):
         self.viewer = ImageView()
@@ -204,7 +238,7 @@ class MainWindow(QMainWindow):
         return self.viewer
 
     def _draw_icons(self):
-        self.open_action.setIcon(style.icon("folder-open", "document-open"))
+        self.add_action.setIcon(style.icon("list-add", "folder-new", "folder-open"))
         self.back_action.setIcon(style.icon("view-grid", "view-list-icons", "go-previous"))
         self.previous_action.setIcon(style.icon("go-previous"))
         self.next_action.setIcon(style.icon("go-next"))
@@ -212,56 +246,146 @@ class MainWindow(QMainWindow):
     # Folders
 
     def choose_folder(self):
-        start = self.model.folder() or settings.last_folder() or os.path.expanduser("~")
-        folder = QFileDialog.getExistingDirectory(self, "Open Folder", start)
+        start = settings.last_folder() or os.path.expanduser("~")
+        folder = QFileDialog.getExistingDirectory(self, "Add Folder to Library", start)
         if folder:
-            self.open_folder(folder)
+            self.add_folder(folder)
 
-    def open_folder(self, folder):
-        folder = os.path.abspath(folder)
-        self.previews.cancel()
-        self.model.set_folder(folder)
-        settings.set_last_folder(folder)
-        name = os.path.basename(folder.rstrip(os.sep)) or folder
-        self.title.setText(name)
-        self.setWindowTitle(f"{name} — {APP_NAME}")
-        self.show_grid()
+    def add_folder(self, path):
+        """Add a folder to the library and show it. Returns its id, or None when it can't
+        be added (the user is told why)."""
+        try:
+            folder = self.service.add_folder(path)
+        except ValueError as error:
+            QMessageBox.warning(self, "Cannot Add Folder", str(error))
+            return None
+        settings.set_last_folder(os.path.dirname(os.path.realpath(path)))
+        self.sidebar.select(folder)
+        return folder
+
+    def remove_folder(self, folder_id):
+        info = next((f for f in self.service.folders() if f.id == folder_id), None)
+        if info is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Remove from Library",
+            f"Remove “{info.name}” from the library?\n\n"
+            "Lumina forgets its photos and what it knows of them. "
+            "The files themselves are not touched.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Ok:
+            self.service.remove_folder(folder_id)
+
+    def _refresh_folders(self, select=None):
+        folders = self.service.folders()
+        current = select if select is not None else self.sidebar.current_folder()
+        if current is not None and all(f.id != current for f in folders):
+            current = None
+        self.sidebar.set_folders(folders, current)
+        if not folders:
+            self._show_page(_EMPTY)
+        elif self.pages.currentIndex() == _EMPTY:
+            self._show_page(_GRID)
+        self._on_folder_selected(current, force=select is not None)
+
+    def _on_folder_selected(self, folder_id, force=True):
+        changed = folder_id != self.model.filter.folder_id
+        settings.set_selected_folder(folder_id)
+        self._refresh_choices(folder_id)
+        if changed or force:
+            self._apply_filter()
+        if self.pages.currentIndex() == _VIEWER and changed:
+            self.show_grid()
+
+    def _refresh_choices(self, folder_id=None):
+        folder_id = folder_id if folder_id is not None else self.sidebar.current_folder()
+        self.filters.blockSignals(True)
+        self.filters.set_choices(*self.service.choices(folder_id))
+        self.filters.blockSignals(False)
+        self._apply_filter()
+
+    def _apply_filter(self):
+        year, camera, lens = self.filters.values()
+        shown = Filter(self.sidebar.current_folder(), year, camera, lens)
+        if shown != self.model.filter or self.model.rowCount() == 0:
+            self.model.set_filter(shown)
+        self._update_title()
+
+    # Keeping the grid's place while a scan adds photos
+
+    def _save_place(self):
+        top = self.grid.indexAt(self.grid.viewport().rect().topLeft() + _inset())
+        current = self.grid.currentIndex()
+        self._place = (
+            self.model.photo_id(top.row()) if top.isValid() else None,
+            self.model.photo_id(current.row()) if current.isValid() else None,
+        )
+
+    def _restore_place(self):
+        top, current = self._place
+        for photo_id, make_current in ((current, True), (top, False)):
+            row = self.model.row_of(photo_id) if photo_id is not None else None
+            if row is None:
+                continue
+            index = self.model.index(row)
+            if make_current:
+                self.grid.setCurrentIndex(index)
+            else:
+                self.grid.scrollTo(index, QListView.ScrollHint.PositionAtTop)
+        self._update_status()
 
     # The grid and the viewer
 
     def show_grid(self):
         self.previews.cancel()
-        if self.model.folder() is None:
+        if not self.service.folders():
             self._show_page(_EMPTY)
             return
         self._show_page(_GRID)
-        if self._viewed_row is not None and self._viewed_row < self.model.rowCount():
-            index = self.model.index(self._viewed_row)
+        row = self.model.row_of(self._viewed_id) if self._viewed_id is not None else None
+        if row is not None:
+            index = self.model.index(row)
             self.grid.setCurrentIndex(index)
             self.grid.scrollTo(index)
-        self._viewed_row = None
+        self._viewed_id = None
         self.grid.setFocus()
 
     def show_photo(self, row):
         if not 0 <= row < self.model.rowCount():
             return
-        self._viewed_row = row
+        self._viewed_id = self.model.photo_id(row)
         path = self.model.path(row)
         # The thumbnail at once, while the larger one is decoded
         thumbnail = self.model.thumbnail_pixmap(row)
         if thumbnail is not None:
             self.viewer.set_image(thumbnail)
+        elif path is None:
+            self.viewer.set_message(f"{self.model.name(row)} is on a drive that is not connected")
         else:
             self.viewer.set_message("Loading…")
         self._show_page(_VIEWER)
         self.viewer.setFocus()
-        self.title.setText(os.path.basename(path))
-        self.previews.request(path, self._viewer_side())
+        self.title.setText(self.model.name(row))
+        if path is not None:
+            self.previews.request(path, self._viewer_side())
+        else:
+            self.previews.cancel()
         self._update_status()
 
     def step(self, delta):
-        if self._viewed_row is not None:
-            self.show_photo(self._viewed_row + delta)
+        row = self._viewed_row()
+        if row is not None:
+            self.show_photo(row + delta)
+
+    def _viewed_row(self):
+        return self.model.row_of(self._viewed_id) if self._viewed_id is not None else None
+
+    def _viewed_path(self):
+        row = self._viewed_row()
+        return self.model.path(row) if row is not None else None
 
     def _viewer_side(self):
         screen = self.screen()
@@ -276,38 +400,72 @@ class MainWindow(QMainWindow):
         if self._viewed_path() == path:
             self.viewer.set_message(f"Cannot show {os.path.basename(path)}\n{message}")
 
-    def _viewed_path(self):
-        if self._viewed_row is None or self._viewed_row >= self.model.rowCount():
-            return None
-        return self.model.path(self._viewed_row)
-
     def _show_page(self, page):
         self.pages.setCurrentIndex(page)
         viewing = page == _VIEWER
         self.navigation.setVisible(viewing)
         for action in (self.back_action, self.previous_action, self.next_action):
             action.setEnabled(viewing)
-        if not viewing and self.model.folder() is not None:
-            self.title.setText(os.path.basename(self.model.folder().rstrip(os.sep)))
+        if not viewing:
+            self._update_title()
         self._update_status()
+
+    def _update_title(self):
+        if self.pages.currentIndex() == _VIEWER:
+            return
+        folder = self.sidebar.current_folder()
+        info = next((f for f in self.service.folders() if f.id == folder), None)
+        name = info.name if info is not None else "All Photos"
+        self.title.setText(name if self.service.folders() else APP_NAME)
+        self.setWindowTitle(f"{name} — {APP_NAME}" if self.service.folders() else APP_NAME)
 
     def _update_status(self, *_args):
         count = self.model.rowCount()
-        if self.model.folder() is None:
+        row = self._viewed_row()
+        if not self.service.folders():
             text = ""
-        elif self.pages.currentIndex() == _VIEWER and self._viewed_row is not None:
-            text = f"{self._viewed_row + 1} of {count}  ·  {self._viewed_path()}"
+        elif self.pages.currentIndex() == _VIEWER and row is not None:
+            details = describe_photo(self.service.photo_details(self._viewed_id))
+            where = self.model.path(row) or f"{self.model.name(row)} (not connected)"
+            text = "  ·  ".join(part for part in (f"{row + 1} of {count}", details, where) if part)
         else:
-            noun = "photo" if count == 1 else "photos"
-            text = f"{count} {noun}" + ("  ·  Scanning…" if self.model.is_scanning() else "")
+            text = f"{count} photo" + ("" if count == 1 else "s")
         self.status.setText(text)
 
     def closeEvent(self, event):
-        self.model.stop()
         self.previews.cancel()
         super().closeEvent(event)
+
+
+def describe_photo(photo):
+    """When, with what and how a photo was taken, in one line: "2022-05-09 21:03 ·
+    Canon EOS 90D · EF-S55-250mm f/4-5.6 IS STM · 250 mm · 1/250 s · f/5.6 · ISO 400"."""
+    if not photo:
+        return ""
+    parts = []
+    taken = photo.get("captured") or photo.get("file_time")
+    if taken:
+        parts.append(taken[:16])
+    for key in ("model", "lens"):
+        if photo.get(key):
+            parts.append(photo[key])
+    if photo.get("focal_length"):
+        parts.append(f"{photo['focal_length']:g} mm")
+    exposure = photo.get("exposure_time")
+    if exposure:
+        parts.append(f"1/{round(1 / exposure)} s" if exposure < 1 else f"{exposure:g} s")
+    if photo.get("aperture"):
+        parts.append(f"f/{photo['aperture']:g}")
+    if photo.get("iso"):
+        parts.append(f"ISO {photo['iso']}")
+    return "  ·  ".join(parts)
 
 
 def _margins(gap):
     # Half the gap on each side of a cell
     return QMargins(gap // 2, gap // 2, gap - gap // 2, gap - gap // 2)
+
+
+def _inset():
+    # Inside the first cell, past the grid's own margin
+    return QPoint(style.px(GRID_GAP * 2), style.px(GRID_GAP * 2))

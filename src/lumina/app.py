@@ -8,7 +8,9 @@ from lumina import APP_ID, __version__
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog=APP_ID, description="A local photo library.")
-    parser.add_argument("folder", nargs="?", help="a folder of photos to open")
+    parser.add_argument(
+        "folder", nargs="?", help="a folder of photos to add to the library and show"
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 

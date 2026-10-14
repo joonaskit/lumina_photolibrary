@@ -10,12 +10,26 @@ def _settings():
 
 
 def last_folder():
+    """The folder last added, to start the folder chooser in."""
     value = _settings().value("library/last_folder")
     return value if isinstance(value, str) and value else None
 
 
 def set_last_folder(path):
     _settings().setValue("library/last_folder", path)
+
+
+def selected_folder():
+    """The library folder shown last, or None for all photos."""
+    value = _settings().value("library/selected_folder")
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def set_selected_folder(folder_id):
+    _settings().setValue("library/selected_folder", "" if folder_id is None else folder_id)
 
 
 def clear():

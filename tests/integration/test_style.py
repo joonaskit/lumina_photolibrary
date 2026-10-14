@@ -45,3 +45,60 @@ def test_a_changed_theme_file_is_applied_live(qapp, qtbot, tmp_path):
 
     assert qapp.palette().color(QPalette.ColorRole.Highlight).name() == "#30d158"
     style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
+
+
+def test_the_combo_box_arrow_is_drawn_in_the_theme_into_the_cache(qapp, tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
+
+    drawn = list((tmp_path / "lumina" / "style").glob("chevron-*.png"))
+    assert len(drawn) == 1
+    assert style.color("textSecondary").name()[1:] in drawn[0].name
+    assert f"url({drawn[0]})" in qapp.styleSheet()
+    assert not [p for p in os.listdir(drawn[0].parent) if p.endswith(".part")]
+
+
+def test_without_a_writable_cache_the_combo_box_keeps_the_styles_arrow(qapp, tmp_path, monkeypatch):
+    import os
+
+    import pytest
+
+    if os.geteuid() == 0:
+        pytest.skip("root can write anywhere")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(locked / "cache"))
+    try:
+        style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
+    finally:
+        locked.chmod(0o700)
+
+    assert "chevron" not in qapp.styleSheet()
+
+
+def test_menus_and_combo_box_lists_have_round_corners_that_show(qapp, qtbot):
+    # Any of them, also those Qt's own dialogs make: the square window behind the
+    # rounded card is transparent, so nothing shows past the corners
+    from PySide6.QtWidgets import QComboBox, QMenu
+
+    style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
+    combo = QComboBox()
+    combo.addItems(["Directories", "Photos"])
+    qtbot.addWidget(combo)
+    combo.show()
+    menu = QMenu()
+    menu.addAction("Rescan")
+
+    combo.showPopup()
+    menu.popup(combo.mapToGlobal(combo.rect().bottomLeft()))
+    popups = (combo.view().window(), menu)
+    qtbot.waitUntil(lambda: all(p.isVisible() for p in popups))
+
+    for popup in popups:
+        corner = popup.grab().toImage().pixelColor(0, 0)
+        assert corner.alpha() == 0, type(popup).__name__
+    combo.hidePopup()
+    menu.close()

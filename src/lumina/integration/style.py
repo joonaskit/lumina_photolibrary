@@ -6,8 +6,20 @@ selection colours. Colours and fonts go through `QPalette` and `QFont`; the
 stylesheet is for shapes and takes every colour, radius and size from here.
 """
 
-from PySide6.QtCore import QObject, QSize, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPalette
+import os
+
+from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontDatabase,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QPixmap,
+)
 
 from lumina import APP_ID
 from lumina.integration import theme as theme_reader
@@ -47,6 +59,38 @@ class _Themed(QObject):
 
 
 themed = _Themed()
+
+
+# The popup windows the stylesheet rounds: a menu, and the list a combo box opens
+_ROUNDED_POPUPS = ("QMenu", "QComboBoxPrivateContainer")
+
+
+class _RoundedPopups(QObject):
+    """Makes every menu and combo box list a window without a background of its own,
+    so only its rounded shape is painted. Otherwise the popup's square window shows
+    behind the corners. As filehouse's menus are made, but for all of them, those of
+    Qt's own dialogs and text fields too: done as each is polished, before its window
+    is made, which is when it has to be."""
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Polish and _is_popup(watched):
+            round_popup(watched)
+        return False
+
+
+def _is_popup(widget):
+    # inherits() knows the C++ classes, the combo box's private container among them
+    return isinstance(widget, QObject) and any(widget.inherits(n) for n in _ROUNDED_POPUPS)
+
+
+def round_popup(widget):
+    """Let `widget`'s rounded stylesheet corners show: before its window is made."""
+    widget.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+    widget.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint)
+    widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+
+_rounder = None
 
 
 def px(size):
@@ -128,6 +172,10 @@ def apply(app, theme, live=False):
     font = _font()
     app.setFont(font)
     app.setStyleSheet(_stylesheet())
+    global _rounder
+    if _rounder is None:
+        _rounder = _RoundedPopups(app)
+        app.installEventFilter(_rounder)
     # The platform theme gives some kinds of widget a font of its own (Plasma's system
     # font, in points), which would win over the app's font: they are told to use the
     # shell's too. After the style sheet, which makes Qt read the platform's again
@@ -231,6 +279,46 @@ def _font():
     return font
 
 
+# The combo box's chevron and the room it has, unscaled
+_ARROW = 10
+_ARROW_BOX = 16
+
+
+def _arrow_image():
+    """`image: url(...);` for a chevron in the secondary text colour, drawn for this
+    theme into Lumina's cache folder: a stylesheet can only show an image from a file.
+    Nothing when it can't be written: the style's own arrow is shown then."""
+    colour = color("textSecondary")
+    # Drawn at twice the size, for dense screens
+    side = px(_ARROW) * 2
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    folder = os.path.join(base, "lumina", "style")
+    path = os.path.join(folder, f"chevron-{colour.name()[1:]}-{side}.png")
+    if not os.path.exists(path):
+        pixmap = QPixmap(side, side)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(colour, side * 0.14)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        chevron = QPainterPath(QPointF(side * 0.2, side * 0.38))
+        chevron.lineTo(side * 0.5, side * 0.66)
+        chevron.lineTo(side * 0.8, side * 0.38)
+        painter.drawPath(chevron)
+        painter.end()
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            return ""
+        partial = f"{path}.{os.getpid()}.part"
+        if not pixmap.save(partial, "PNG"):
+            return ""
+        os.replace(partial, path)
+    return f"image: url({path});"
+
+
 def _stylesheet():
     colors = _theme["colors"]
     small, medium, large = radius("small"), radius("medium"), radius("large")
@@ -284,6 +372,56 @@ def _stylesheet():
         /* The grid and the viewer have a border around them, as the cards beside them */
         #pane {{
             border: 1px solid {card_border}; border-radius: {large}px; padding: {px(2)}px;
+        }}
+
+        /* The library's folders, as filehouse's sidebar */
+        #sidebar {{
+            padding: {px(8)}px; background: {card}; border: 1px solid {card_border};
+            border-radius: {large}px;
+        }}
+        #sidebar QListWidget {{ border: none; outline: none; background: transparent; }}
+        #sidebar QListWidget::item {{
+            padding: {px(6)}px {px(8)}px; border-radius: {medium}px;
+        }}
+        #sidebar QListWidget::item:hover {{ background: {hover}; }}
+        #sidebar QListWidget::item:selected {{
+            background: {selected}; color: {colors["textPrimary"]};
+        }}
+        #heading {{
+            color: {colors["textSecondary"]}; font-size: {small_font}px; font-weight: 600;
+            padding: {px(4)}px {px(8)}px;
+        }}
+
+        /* The arrow sits inside the rounded box, in the padding, not in a square
+           button of the platform style's own */
+        QComboBox {{
+            border: 1px solid {divider}; border-radius: {medium}px;
+            padding: {px(4)}px {px(10)}px; padding-right: {px(10 + _ARROW_BOX)}px;
+            background: {raised};
+        }}
+        QComboBox::drop-down {{
+            subcontrol-origin: padding; subcontrol-position: center right;
+            width: {px(_ARROW_BOX)}px; border: none; background: transparent;
+            margin-right: {px(6)}px;
+        }}
+        QComboBox::down-arrow {{ {_arrow_image()} width: {px(_ARROW)}px; height: {px(_ARROW)}px; }}
+        QComboBox:hover {{ border-color: {overlay(0.2)}; }}
+        QComboBox:focus {{ border-color: {colors["accent"]}; }}
+        /* The list's window: transparent, the list inside it is the rounded card */
+        QComboBoxPrivateContainer {{ background: transparent; border: none; }}
+        /* A list under the box, not the platform style's menu over it, which the
+           stylesheet can't round: the same card as a menu */
+        QComboBox {{ combobox-popup: 0; }}
+        QComboBox QAbstractItemView {{
+            background: {card}; border: 1px solid {divider}; border-radius: {large}px;
+            padding: {px(6)}px; outline: none;
+            selection-background-color: {hover}; selection-color: {colors["textPrimary"]};
+        }}
+        QComboBox QAbstractItemView::item {{
+            padding: {px(6)}px {px(10)}px; border-radius: {medium}px; min-height: {px(20)}px;
+        }}
+        QComboBox QAbstractItemView::item:selected, QComboBox QAbstractItemView::item:hover {{
+            background: {hover}; color: {colors["textPrimary"]};
         }}
 
         #title {{ font-size: {theme_reader.font_scaled(_theme, 15)}px; font-weight: 600; }}
