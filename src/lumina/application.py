@@ -1,6 +1,7 @@
 """The application: Qt, the theme, the library, the window."""
 
 import gc
+import os
 import signal
 import sys
 
@@ -20,7 +21,17 @@ from lumina.ui.main_window import MainWindow
 _COLLECT_MS = 5000
 
 
+def use_desktop_dialogs(environ=os.environ, platform=sys.platform):
+    """Open and save dialogs from the desktop (the file chooser portal: Plasma's own, or
+    whichever app the user set to serve it), not Qt's own drawn one. PyPI's Qt cannot
+    load Plasma's dialogs; the portal theme wraps the desktop's theme, so icons and
+    fonts are as before. A theme the user chose is left alone. Before the app starts."""
+    if platform.startswith("linux") and not environ.get("QT_QPA_PLATFORMTHEME"):
+        environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
+
+
 def run(folder=None):
+    use_desktop_dialogs()
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP_ID)
     app.setApplicationDisplayName("Lumina")

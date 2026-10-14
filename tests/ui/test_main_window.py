@@ -2,7 +2,7 @@ from conftest import TIMEOUT
 from fakes import FakeExifTool
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox, QToolButton
 
 from lumina.ui import settings
 from lumina.ui.main_window import MainWindow, describe_photo
@@ -194,3 +194,38 @@ def test_a_selected_thumbnail_keeps_its_colours(qtbot, service, drive):
     selected = icon.pixmap(64, QIcon.Mode.Selected).toImage()
 
     assert normal == selected
+
+
+def test_folders_are_added_from_the_sidebar_and_with_ctrl_o(qtbot, service, monkeypatch):
+    window = open_window(qtbot, service)
+    asked = []
+    monkeypatch.setattr(window, "choose_folder", lambda: asked.append(True))
+    window.add_action.triggered.disconnect()
+    window.add_action.triggered.connect(window.choose_folder)
+
+    toolbar_buttons = [
+        button.defaultAction()
+        for button in window.findChildren(QToolButton)
+        if button.defaultAction() is not None and not window.sidebar.isAncestorOf(button)
+    ]
+    assert window.add_action not in toolbar_buttons
+    assert window.sidebar.add_button.isVisibleTo(window)
+    assert window.add_action in window.actions()
+    window.add_action.trigger()
+    assert asked == [True]
+
+
+def test_dialogs_come_from_the_desktop_unless_a_theme_was_chosen():
+    from lumina.application import use_desktop_dialogs
+
+    environ = {}
+    use_desktop_dialogs(environ, "linux")
+    assert environ == {"QT_QPA_PLATFORMTHEME": "xdgdesktopportal"}
+
+    chosen = {"QT_QPA_PLATFORMTHEME": "gtk3"}
+    use_desktop_dialogs(chosen, "linux")
+    assert chosen == {"QT_QPA_PLATFORMTHEME": "gtk3"}
+
+    elsewhere = {}
+    use_desktop_dialogs(elsewhere, "darwin")
+    assert elsewhere == {}

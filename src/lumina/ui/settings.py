@@ -44,3 +44,13 @@ def export_choices():
 
 def set_export_choices(choices):
     _settings().setValue("export/choices", choices)
+
+
+def grid_size():
+    """The grid's thumbnail size: "small", "medium" or "large"."""
+    value = _settings().value("library/grid_size")
+    return value if value in ("small", "medium", "large") else "medium"
+
+
+def set_grid_size(name):
+    _settings().setValue("library/grid_size", name)

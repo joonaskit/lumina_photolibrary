@@ -3,7 +3,7 @@ and the grid, one photo, or, with no folders yet, a way to add one."""
 
 import os
 
-from PySide6.QtCore import QMargins, QPoint, QSize, Qt
+from PySide6.QtCore import QEvent, QMargins, QPoint, QSize, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -31,15 +31,19 @@ from lumina.ui import settings
 from lumina.ui.develop_view import DevelopView
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.filters import FilterBar
+from lumina.ui.grid_size import NAMES as GRID_SIZE_NAMES
+from lumina.ui.grid_size import GridSizeSwitch
 from lumina.ui.image_view import ImageView
 from lumina.ui.job_status import JobStatus
 from lumina.ui.search import SearchField, SearchStatus
 from lumina.ui.sidebar import Sidebar
 
 APP_NAME = "Lumina"
-# Size of a thumbnail in the grid, and of its cell with the name under it, unscaled
-GRID_ICON = 168
-GRID_CELL = QSize(196, 214)
+# Size of a thumbnail in the grid, unscaled, by the size chosen. Large stays within the
+# thumbnails' own 320 pixels (qt_models/thumbnails.py), so it is sharp on a 1x screen
+GRID_ICONS = {"small": 112, "medium": 168, "large": 280}
+# A cell is its thumbnail with room around it and the name under it
+GRID_CELL_EXTRA = QSize(28, 46)
 # The largest image the viewer asks for: a 4K screen's width
 VIEWER_MAX_SIDE = 3840
 
@@ -56,6 +60,9 @@ class _CellDelegate(QStyledItemDelegate):
 
     def __init__(self, size, parent=None):
         super().__init__(parent)
+        self._size = size
+
+    def set_size(self, size):
         self._size = size
 
     def sizeHint(self, _option, _index):
@@ -100,6 +107,9 @@ class MainWindow(QMainWindow):
         self.sidebar.remove_requested.connect(self.remove_folder)
         self.filters = FilterBar()
         self.filters.changed.connect(self._apply_filter)
+        self.grid_size = GridSizeSwitch()
+        self.grid_size.changed.connect(self.set_grid_size)
+        self.filters.add_trailing(self.grid_size)
         self.search_field = SearchField()
         self.search_field.searched.connect(self.search_text)
         self.search_field.similar_cleared.connect(self.model.clear_search)
@@ -161,6 +171,8 @@ class MainWindow(QMainWindow):
         self.add_action = QAction("Add Folder…", self)
         self.add_action.setShortcut(QKeySequence.StandardKey.Open)
         self.add_action.triggered.connect(self.choose_folder)
+        # A key only: the button is the sidebar's, under the folders it adds to
+        self.addAction(self.add_action)
         self.back_action = QAction("Back", self)
         self.back_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.back_action.triggered.connect(self.go_back)
@@ -195,6 +207,12 @@ class MainWindow(QMainWindow):
         self.similar_action.setToolTip("Show the photos most like this one (S)")
         self.similar_action.triggered.connect(self.find_similar)
         self.addAction(self.similar_action)
+        self.larger_action = QAction("Larger Thumbnails", self)
+        self.larger_action.setShortcuts([QKeySequence.StandardKey.ZoomIn, QKeySequence("Ctrl+=")])
+        self.larger_action.triggered.connect(lambda: self.step_grid_size(1))
+        self.smaller_action = QAction("Smaller Thumbnails", self)
+        self.smaller_action.setShortcuts([QKeySequence.StandardKey.ZoomOut])
+        self.smaller_action.triggered.connect(lambda: self.step_grid_size(-1))
         for action in (
             self.back_action,
             self.previous_action,
@@ -227,7 +245,7 @@ class MainWindow(QMainWindow):
         self.editing = toolbar.addWidget(
             self._group(self.undo_action, self.redo_action, self.reset_action, self.export_action)
         )
-        self.browsing = toolbar.addWidget(self._group(self.edit_action, self.add_action))
+        self.browsing = toolbar.addWidget(self._group(self.edit_action))
 
     def _group(self, *actions):
         """Buttons in one rounded card, as filehouse's toolbar has them."""
@@ -291,11 +309,14 @@ class MainWindow(QMainWindow):
         self.grid.setUniformItemSizes(True)
         self.grid.setLayoutMode(QListView.LayoutMode.Batched)
         self.grid.setBatchSize(500)
-        self.grid.setIconSize(QSize(style.px(GRID_ICON), style.px(GRID_ICON)))
-        cell = QSize(style.px(GRID_CELL.width()), style.px(GRID_CELL.height()))
-        self.grid.setGridSize(cell)
-        gap = style.px(GRID_GAP)
-        self.grid.setItemDelegate(_CellDelegate(cell.shrunkBy(_margins(gap)), self.grid))
+        self._delegate = _CellDelegate(QSize(), self.grid)
+        self.grid.setItemDelegate(self._delegate)
+        self._apply_grid_size(settings.grid_size())
+        # Only while the grid shows: the Develop view may want these keys for its own zoom
+        for action in (self.larger_action, self.smaller_action):
+            action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            self.grid.addAction(action)
+        self.grid.viewport().installEventFilter(self)
         self.grid.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.grid.setWordWrap(False)
         self.grid.setSelectionMode(QListView.SelectionMode.ExtendedSelection)
@@ -508,6 +529,47 @@ class MainWindow(QMainWindow):
         if self.search is not None:
             menu.addAction(self.similar_action)
         menu.exec(self.grid.viewport().mapToGlobal(point))
+
+    # The grid's thumbnail size
+
+    def set_grid_size(self, name):
+        """Show thumbnails small, medium or large, and remember it."""
+        if name not in GRID_ICONS:
+            return
+        settings.set_grid_size(name)
+        self._apply_grid_size(name)
+
+    def step_grid_size(self, delta):
+        """One size larger (1) or smaller (-1), if there is one."""
+        index = GRID_SIZE_NAMES.index(self.grid_size.value()) + delta
+        if 0 <= index < len(GRID_SIZE_NAMES):
+            self.set_grid_size(GRID_SIZE_NAMES[index])
+
+    def _apply_grid_size(self, name):
+        self.grid_size.set_value(name)
+        side = style.px(GRID_ICONS[name])
+        cell = QSize(
+            side + style.px(GRID_CELL_EXTRA.width()), side + style.px(GRID_CELL_EXTRA.height())
+        )
+        self.grid.setIconSize(QSize(side, side))
+        self._delegate.set_size(cell.shrunkBy(_margins(style.px(GRID_GAP))))
+        self.grid.setGridSize(cell)
+        # The photo the user was on stays in view
+        if self.grid.currentIndex().isValid():
+            self.grid.scrollTo(self.grid.currentIndex(), QListView.ScrollHint.PositionAtCenter)
+
+    def eventFilter(self, watched, event):
+        # Ctrl and the wheel over the grid: larger or smaller thumbnails
+        if (
+            event.type() == QEvent.Type.Wheel
+            and watched is self.grid.viewport()
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            steps = event.angleDelta().y()
+            if steps:
+                self.step_grid_size(1 if steps > 0 else -1)
+            return True
+        return super().eventFilter(watched, event)
 
     # Keeping the grid's place while a scan adds photos
 
