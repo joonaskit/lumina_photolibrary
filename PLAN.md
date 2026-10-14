@@ -166,7 +166,15 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 - **Search** (`core/search.py`): `Index`, the vectors in a growing float32 matrix, refreshed by row id so only new vectors are read; `rank(photos, query, floor)` within the grid's rows. Text results stop at p = 0.001 for now.
 - **Service** (`qt_models/search.py`): `SearchService` next to `LibraryService`: download on request only, with progress and cancel; indexing at the start (when the model is there), after every scan and when the drives change, on a thread of its own (`workers.INDEXING`) with the encoding in a process of its own (`workers.EMBED`); searches on one thread (`workers.SEARCH`) holding the index and the text model (2 threads), newest search wins. First text search 2.2 s (loading the text model), then about 53 ms; similar photos the same. A quit leaves indexing queued; Cancel in the status bar stops scans only.
 - **Fixed on the way:** `workers.submit` called back inside itself when the work was done before it returned (the relay's signal is now always queued), which made a test fail on a fast machine.
-- **Not yet (4b):** the search field and its results in the grid, "Similar photos", the download offer, indexing progress in the status bar, the text cut-off tuned on a real library.
+
+**Phase 4b as built: search in the window.**
+
+- **Grid** (`qt_models/library_model.py`): a search (a text, or like a photo) shows the filter's rows ranked by the SearchService, only those that match; the filters still apply. It runs again when the rows are read again (a scan, a filter) and, at most every 3 s, while indexing makes more photos findable. Stepping in the viewer and the Develop view follows the ranked order.
+- **Search field** (`ui/search.py`) at the right of the filter row: searches 350 ms after the last key or at once on Enter; Ctrl+F goes to it (from the viewer or the Develop view too); Escape in it or in the grid, or its clear button, shows every photo again. The filters keep their width and the field gives way.
+- **Find Similar Photos** (S, and the grid's context menu): from the grid's chosen photo or the viewer's, back to the grid ranked by likeness, itself first. A chip "Like <name>" in front of the field ends it when clicked. A photo not indexed yet says so in the status bar.
+- **Download offer**: the first search without the model asks, saying the size, the source and that nothing leaves the computer afterwards; Not Now fetches nothing and asks again on the next search. Progress and Cancel in the status bar; a failed download says why and that the next try continues.
+- **Status bar**: "3 photos match “…”", "No photos match “…”", "20 photos like …", with "more as indexing goes on" while it runs; indexing has its own progress and Cancel beside the scan's.
+- **Not yet:** the text cut-off is still p = 0.001; on the samples "kiviä rannalla" keeps 19 of 20 photos (rocks first). Tune it on a real library. A match score in the cell or tooltip, and searching within a selection, if wanted.
 
 **Phase 5: later.** HSL and colour grading, crop tools, lens corrections, GPU rendering, soft proof, packaging (AppImage/Flatpak), keywords and collections, ratings.
 

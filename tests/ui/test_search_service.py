@@ -1,11 +1,9 @@
-import os
 import time
 
 import pytest
 from conftest import TIMEOUT
-from fakes import FakeEncoder
+from fakes import FakeEncoder, install_model
 
-from lumina.core import embed, models
 from lumina.qt_models import library as lib
 from lumina.qt_models.search import SearchService
 
@@ -14,17 +12,6 @@ from lumina.qt_models.search import SearchService
 def model_root(tmp_path):
     """Where the model is not."""
     return tmp_path / "models"
-
-
-def install(root):
-    """The model as is_installed sees it: every file at its size, sparse, so nothing
-    the size of the real one is written."""
-    folder = models.directory(embed.MODEL, root)
-    for f in embed.MODEL.files:
-        path = os.path.join(folder, f.path)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as handle:
-            handle.truncate(f.size)
 
 
 @pytest.fixture
@@ -64,7 +51,7 @@ def test_without_the_model_nothing_is_indexed_or_fetched(qtbot, service, wait_id
 def test_photos_scanned_are_indexed_and_similar_ones_found(
     qtbot, make_service, wait_idle, make_search, model_root, drive
 ):
-    install(model_root)
+    install_model(model_root)
     service = make_service(start=False)
     search = make_search(service)
     folder = service.add_folder(str(drive / "Photos"))
@@ -87,7 +74,7 @@ def test_photos_scanned_are_indexed_and_similar_ones_found(
 
 
 def test_only_the_newest_search_answers(qtbot, service, wait_idle, make_search, model_root):
-    install(model_root)
+    install_model(model_root)
     search = make_search(service)
     wait_idle(service)
     got = []
@@ -103,7 +90,7 @@ def test_only_the_newest_search_answers(qtbot, service, wait_idle, make_search, 
 def test_a_quit_while_indexing_leaves_it_queued(
     qtbot, make_service, wait_idle, make_search, model_root, drive
 ):
-    install(model_root)
+    install_model(model_root)
     entered = []
 
     class Slow(FakeEncoder):
@@ -130,7 +117,7 @@ def test_a_quit_while_indexing_leaves_it_queued(
 def test_a_scan_cancel_leaves_indexing_alone(
     qtbot, make_service, wait_idle, make_search, model_root, drive
 ):
-    install(model_root)
+    install_model(model_root)
     service = make_service(start=False)
     make_search(service)
     job = service.db.add_job("embed", None)

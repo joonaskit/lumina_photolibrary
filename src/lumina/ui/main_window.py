@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListView,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
 
 from lumina.integration import style
 from lumina.qt_models.develop import DevelopSession
-from lumina.qt_models.library_model import Filter, LibraryModel
+from lumina.qt_models.library_model import SIMILAR, Filter, LibraryModel
 from lumina.qt_models.previews import PreviewLoader
 from lumina.ui import settings
 from lumina.ui.develop_view import DevelopView
@@ -32,6 +33,7 @@ from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.filters import FilterBar
 from lumina.ui.image_view import ImageView
 from lumina.ui.job_status import JobStatus
+from lumina.ui.search import SearchField, SearchStatus
 from lumina.ui.sidebar import Sidebar
 
 APP_NAME = "Lumina"
@@ -61,15 +63,19 @@ class _CellDelegate(QStyledItemDelegate):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, service, parent=None):
+    def __init__(self, service, search=None, parent=None):
+        """`search` is the SearchService; without one there is no search."""
         super().__init__(parent)
         self.service = service
+        self.search = search
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(style.app_icon())
         self.resize(style.px(1280), style.px(820))
 
-        self.model = LibraryModel(service, self)
+        self.model = LibraryModel(service, search, self)
         self.model.modelReset.connect(self._update_status)
+        self.model.search_changed.connect(self._on_search_changed)
+        self.model.loading_changed.connect(self._update_status)
         self.model.about_to_refresh.connect(self._save_place)
         self.model.refreshed.connect(self._restore_place)
         self.previews = PreviewLoader(self)
@@ -94,6 +100,11 @@ class MainWindow(QMainWindow):
         self.sidebar.remove_requested.connect(self.remove_folder)
         self.filters = FilterBar()
         self.filters.changed.connect(self._apply_filter)
+        self.search_field = SearchField()
+        self.search_field.searched.connect(self.search_text)
+        self.search_field.similar_cleared.connect(self.model.clear_search)
+        if search is not None:
+            self.filters.add_trailing(self.search_field)
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self._make_empty_page())
@@ -124,6 +135,17 @@ class MainWindow(QMainWindow):
         self.job_status.cancel_requested.connect(service.cancel)
         self.statusBar().addPermanentWidget(self.job_status)
         self.statusBar().setSizeGripEnabled(False)
+
+        self.search_status = SearchStatus()
+        self.statusBar().addPermanentWidget(self.search_status)
+        if search is not None:
+            self.search_status.cancel_download.connect(search.cancel_download)
+            self.search_status.cancel_indexing.connect(search.cancel_indexing)
+            search.download_progress.connect(self.search_status.show_download)
+            search.download_failed.connect(self._on_download_failed)
+            search.model_changed.connect(self._on_model_changed)
+            search.indexing_changed.connect(self.search_status.show_indexing)
+            search.indexing_changed.connect(self._update_status)
 
         service.folders_changed.connect(self._refresh_folders)
         service.job_changed.connect(self.job_status.show_status)
@@ -164,6 +186,15 @@ class MainWindow(QMainWindow):
         self.next_action = QAction("Next Photo", self)
         self.next_action.setShortcut(QKeySequence(Qt.Key.Key_Right))
         self.next_action.triggered.connect(lambda: self.step(1))
+        self.find_action = QAction("Search", self)
+        self.find_action.setShortcut(QKeySequence.StandardKey.Find)
+        self.find_action.triggered.connect(self.focus_search)
+        self.addAction(self.find_action)
+        self.similar_action = QAction("Find Similar Photos", self)
+        self.similar_action.setShortcut(QKeySequence(Qt.Key.Key_S))
+        self.similar_action.setToolTip("Show the photos most like this one (S)")
+        self.similar_action.triggered.connect(self.find_similar)
+        self.addAction(self.similar_action)
         for action in (
             self.back_action,
             self.previous_action,
@@ -269,6 +300,14 @@ class MainWindow(QMainWindow):
         self.grid.setWordWrap(False)
         self.grid.setSelectionMode(QListView.SelectionMode.ExtendedSelection)
         self.grid.activated.connect(lambda index: self.show_photo(index.row()))
+        # Escape in the grid ends a search
+        self.end_search_action = QAction("Show All Photos", self.grid)
+        self.end_search_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        self.end_search_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        self.end_search_action.triggered.connect(self.end_search)
+        self.grid.addAction(self.end_search_action)
+        self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.grid.customContextMenuRequested.connect(self._grid_menu)
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -292,6 +331,8 @@ class MainWindow(QMainWindow):
         self.back_action.setIcon(style.icon("view-grid", "view-list-icons", "go-previous"))
         self.previous_action.setIcon(style.icon("go-previous"))
         self.next_action.setIcon(style.icon("go-next"))
+        self.similar_action.setIcon(style.icon("edit-find", "system-search"))
+        self.search_field.draw_icons()
 
     # Folders
 
@@ -363,6 +404,110 @@ class MainWindow(QMainWindow):
         if shown != self.model.filter or self.model.rowCount() == 0:
             self.model.set_filter(shown)
         self._update_title()
+
+    # Search
+
+    def focus_search(self):
+        if self.search is None or self.pages.currentIndex() == _EMPTY:
+            return
+        if self.pages.currentIndex() != _GRID:
+            self.go_back() if self.pages.currentIndex() == _DEVELOP else self.show_grid()
+            if self.pages.currentIndex() != _GRID:
+                return
+        self.search_field.focus()
+
+    def search_text(self, text):
+        """Show the photos that match `text`; "" shows them all again."""
+        if self.search is None:
+            return
+        if text and not self._model_ready():
+            return
+        self.model.search_text(text)
+
+    def find_similar(self):
+        """Show the photos most like the one chosen in the grid or shown in the viewer."""
+        if self.search is None:
+            return
+        if self.pages.currentIndex() == _VIEWER:
+            row = self._viewed_row()
+        elif self.pages.currentIndex() == _GRID and self.grid.currentIndex().isValid():
+            row = self.grid.currentIndex().row()
+        else:
+            return
+        if row is None or not self._model_ready():
+            return
+        if self.pages.currentIndex() == _VIEWER:
+            self.show_grid()
+        self.search_field.clear()
+        if not self.model.find_similar(row):
+            self.statusBar().showMessage(
+                f"{self.model.name(row)} is not indexed for search yet", 6000
+            )
+
+    def end_search(self):
+        self.search_field.clear()
+        self.model.clear_search()
+
+    def _model_ready(self):
+        """Whether search can run: if the model is not there, offer to fetch it."""
+        if self.search.is_ready():
+            return True
+        if self.search.is_downloading():
+            self.statusBar().showMessage("Search works once the model is downloaded", 6000)
+            return False
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Download the Search Model?")
+        box.setText("Search needs a model that is downloaded once.")
+        box.setInformativeText(
+            f"It is {self.search.download_size() / 1e6:,.0f} MB, from Hugging Face "
+            "(SigLIP 2 by Google). After that, everything runs on this computer: "
+            "your photos and searches never leave it.\n\n"
+            "Lumina then indexes your photos in the background, newest first."
+        )
+        download = box.addButton("Download", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Not Now", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(download)
+        box.exec()
+        if box.clickedButton() is download:
+            self.search.download()
+        return False
+
+    def _on_model_changed(self):
+        if self.search.is_downloading():
+            self.search_status.show_download(0, self.search.download_size())
+            return
+        self.search_status.download_ended()
+        # Typed while it came: search now
+        if self.search.is_ready() and self.search_field.text():
+            self.model.search_text(self.search_field.text())
+
+    def _on_download_failed(self, error):
+        self.search_status.download_ended(error)
+        QMessageBox.warning(
+            self,
+            "Download Failed",
+            f"The search model could not be downloaded.\n\n{error}\n\n"
+            "What came is kept: the next try continues from there.",
+        )
+
+    def _on_search_changed(self):
+        search = self.model.search
+        self.search_field.show_similar(
+            search.label if search is not None and search.kind == SIMILAR else None
+        )
+        self._update_status()
+
+    def _grid_menu(self, point):
+        index = self.grid.indexAt(point)
+        if not index.isValid():
+            return
+        self.grid.setCurrentIndex(index)
+        menu = QMenu(self)
+        menu.addAction(self.edit_action)
+        if self.search is not None:
+            menu.addAction(self.similar_action)
+        menu.exec(self.grid.viewport().mapToGlobal(point))
 
     # Keeping the grid's place while a scan adds photos
 
@@ -586,6 +731,24 @@ class MainWindow(QMainWindow):
             text = "  ·  ".join(part for part in (f"{row + 1} of {count}", details, where) if part)
         else:
             text = f"{count} photo" + ("" if count == 1 else "s")
+            search = self.model.search
+            if search is not None and self.model.is_loading():
+                text = "Searching…"
+            elif search is not None and search.kind == SIMILAR:
+                text = (
+                    f"{text} like {search.label}"
+                    if count
+                    else f"{search.label} is not indexed for search yet"
+                )
+            elif search is not None:
+                verb = "matches" if count == 1 else "match"
+                text = (
+                    f"{text} {verb} “{search.label}”"
+                    if count
+                    else f"No photos match “{search.label}”"
+                )
+            if search is not None and self.search.is_indexing():
+                text += "  ·  more as indexing goes on"
         self.status.setText(text)
 
     def closeEvent(self, event):

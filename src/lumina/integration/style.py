@@ -378,6 +378,12 @@ def _stylesheet():
         QToolButton#segment:hover {{ background: {hover}; }}
         QToolButton#segment:checked {{ background: {selected}; }}
 
+        /* "Like IMG_1234.CR3" in front of the search field: click to end it */
+        QToolButton#chip {{
+            border-radius: {medium}px; padding: {px(4)}px {px(10)}px; background: {selected};
+        }}
+        QToolButton#chip:hover {{ background: {hover}; }}
+
         QSlider {{ min-height: {px(20)}px; }}
         QSlider::groove:horizontal {{
             height: {px(4)}px; border-radius: {px(2)}px; background: {raised};
