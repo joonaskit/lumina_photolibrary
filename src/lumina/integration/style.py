@@ -8,7 +8,7 @@ stylesheet is for shapes and takes every colour, radius and size from here.
 
 import os
 
-from PySide6.QtCore import QObject, QPointF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -59,6 +59,38 @@ class _Themed(QObject):
 
 
 themed = _Themed()
+
+
+# The popup windows the stylesheet rounds: a menu, and the list a combo box opens
+_ROUNDED_POPUPS = ("QMenu", "QComboBoxPrivateContainer")
+
+
+class _RoundedPopups(QObject):
+    """Makes every menu and combo box list a window without a background of its own,
+    so only its rounded shape is painted. Otherwise the popup's square window shows
+    behind the corners. As filehouse's menus are made, but for all of them, those of
+    Qt's own dialogs and text fields too: done as each is polished, before its window
+    is made, which is when it has to be."""
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Polish and _is_popup(watched):
+            round_popup(watched)
+        return False
+
+
+def _is_popup(widget):
+    # inherits() knows the C++ classes, the combo box's private container among them
+    return isinstance(widget, QObject) and any(widget.inherits(n) for n in _ROUNDED_POPUPS)
+
+
+def round_popup(widget):
+    """Let `widget`'s rounded stylesheet corners show: before its window is made."""
+    widget.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+    widget.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint)
+    widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+
+_rounder = None
 
 
 def px(size):
@@ -140,6 +172,10 @@ def apply(app, theme, live=False):
     font = _font()
     app.setFont(font)
     app.setStyleSheet(_stylesheet())
+    global _rounder
+    if _rounder is None:
+        _rounder = _RoundedPopups(app)
+        app.installEventFilter(_rounder)
     # The platform theme gives some kinds of widget a font of its own (Plasma's system
     # font, in points), which would win over the app's font: they are told to use the
     # shell's too. After the style sheet, which makes Qt read the platform's again
@@ -371,9 +407,21 @@ def _stylesheet():
         QComboBox::down-arrow {{ {_arrow_image()} width: {px(_ARROW)}px; height: {px(_ARROW)}px; }}
         QComboBox:hover {{ border-color: {overlay(0.2)}; }}
         QComboBox:focus {{ border-color: {colors["accent"]}; }}
+        /* The list's window: transparent, the list inside it is the rounded card */
+        QComboBoxPrivateContainer {{ background: transparent; border: none; }}
+        /* A list under the box, not the platform style's menu over it, which the
+           stylesheet can't round: the same card as a menu */
+        QComboBox {{ combobox-popup: 0; }}
         QComboBox QAbstractItemView {{
-            background: {card}; border: 1px solid {divider}; border-radius: {medium}px;
-            selection-background-color: {selected}; selection-color: {colors["textPrimary"]};
+            background: {card}; border: 1px solid {divider}; border-radius: {large}px;
+            padding: {px(6)}px; outline: none;
+            selection-background-color: {hover}; selection-color: {colors["textPrimary"]};
+        }}
+        QComboBox QAbstractItemView::item {{
+            padding: {px(6)}px {px(10)}px; border-radius: {medium}px; min-height: {px(20)}px;
+        }}
+        QComboBox QAbstractItemView::item:selected, QComboBox QAbstractItemView::item:hover {{
+            background: {hover}; color: {colors["textPrimary"]};
         }}
 
         #title {{ font-size: {theme_reader.font_scaled(_theme, 15)}px; font-weight: 600; }}

@@ -77,3 +77,28 @@ def test_without_a_writable_cache_the_combo_box_keeps_the_styles_arrow(qapp, tmp
         locked.chmod(0o700)
 
     assert "chevron" not in qapp.styleSheet()
+
+
+def test_menus_and_combo_box_lists_have_round_corners_that_show(qapp, qtbot):
+    # Any of them, also those Qt's own dialogs make: the square window behind the
+    # rounded card is transparent, so nothing shows past the corners
+    from PySide6.QtWidgets import QComboBox, QMenu
+
+    style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
+    combo = QComboBox()
+    combo.addItems(["Directories", "Photos"])
+    qtbot.addWidget(combo)
+    combo.show()
+    menu = QMenu()
+    menu.addAction("Rescan")
+
+    combo.showPopup()
+    menu.popup(combo.mapToGlobal(combo.rect().bottomLeft()))
+    popups = (combo.view().window(), menu)
+    qtbot.waitUntil(lambda: all(p.isVisible() for p in popups))
+
+    for popup in popups:
+        corner = popup.grab().toImage().pixelColor(0, 0)
+        assert corner.alpha() == 0, type(popup).__name__
+    combo.hidePopup()
+    menu.close()
