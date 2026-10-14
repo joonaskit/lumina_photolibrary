@@ -2,7 +2,8 @@
 
 Decoding runs in worker processes, so the GIL does not stall the UI; scanning, which
 waits on the disk, runs on threads. Either way the result comes back to the main
-thread through a queued signal, and a callback runs there.
+thread through a queued signal, and a callback runs there, but only while the
+QObject that asked for it still exists: a window can be closed while its work runs.
 """
 
 import multiprocessing
@@ -12,6 +13,7 @@ from concurrent.futures.process import BrokenProcessPool
 from functools import partial
 
 from PySide6.QtCore import QObject, Signal, Slot
+from shiboken6 import isValid
 
 # One process is left for the UI and the system
 _PROCESS_COUNT = max(1, (os.cpu_count() or 2) - 1)
@@ -19,16 +21,19 @@ _THREAD_COUNT = 2
 
 
 class _Relay(QObject):
-    # A callable to run on the thread the relay lives on: the main thread
-    deliver = Signal(object)
+    # The QObject a call is for, and the call, to run on the thread the relay lives on:
+    # the main thread
+    deliver = Signal(object, object)
 
     def __init__(self):
         super().__init__()
         self.deliver.connect(self._run)
 
-    @Slot(object)
-    def _run(self, call):
-        call()
+    @Slot(object, object)
+    def _run(self, owner, call):
+        # Deleted since the work was asked for: there is nobody to tell
+        if isValid(owner):
+            call()
 
 
 _relay = None
@@ -60,10 +65,11 @@ def _thread_pool():
     return _threads
 
 
-def submit(fn, *args, on_done, on_error, process=True):
+def submit(fn, *args, on_done, on_error, owner, process=True):
     """Run `fn(*args)` in a worker process (or a thread, with `process=False`), then
-    `on_done(result)` or `on_error(exception)` on the main thread. Call from the main
-    thread. Returns the future; cancelling it before it starts calls neither."""
+    `on_done(result)` or `on_error(exception)` on the main thread, unless the QObject
+    `owner` has been deleted by then. Call from the main thread. Returns the future;
+    cancelling it before it starts calls neither."""
     global _processes
     relay = _the_relay()
     pool = _process_pool() if process else _thread_pool()
@@ -81,7 +87,8 @@ def submit(fn, *args, on_done, on_error, process=True):
         error = done.exception()
         if isinstance(error, BrokenProcessPool):
             _forget_pool(pool)
-        relay.deliver.emit(partial(on_error, error) if error else partial(on_done, done.result()))
+        call = partial(on_error, error) if error else partial(on_done, done.result())
+        relay.deliver.emit(owner, call)
 
     future.add_done_callback(finished)
     return future
@@ -93,9 +100,10 @@ def _forget_pool(pool):
         _processes = None
 
 
-def call_on_main(fn, *args):
-    """From a worker thread: run `fn(*args)` on the main thread, soon."""
-    _the_relay().deliver.emit(partial(fn, *args))
+def call_on_main(owner, fn, *args):
+    """From a worker thread: run `fn(*args)` on the main thread, soon, unless the QObject
+    `owner` has been deleted by then."""
+    _the_relay().deliver.emit(owner, partial(fn, *args))
 
 
 def shutdown():

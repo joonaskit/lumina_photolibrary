@@ -31,6 +31,7 @@ class PreviewLoader(QObject):
             max_side,
             on_done=lambda pixels: self._done(token, path, pixels),
             on_error=lambda error: self._error(token, path, error),
+            owner=self,
         )
 
     def cancel(self):
