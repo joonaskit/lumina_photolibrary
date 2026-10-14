@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Lumina: a local desktop photo library with semantic search and a small non-destructive editor, built for large libraries including Canon `.CR3` RAW files. [PLAN.md](PLAN.md) is the source of truth for design, phases and open decisions; read the relevant section before implementing anything, and update it when a decision changes. `README.md` is out of date (it describes an earlier server design) until Phase 0 rewrites it.
+Lumina: a local desktop photo library with semantic search and a small non-destructive editor, built for large libraries including Canon `.CR3` RAW files. [PLAN.md](PLAN.md) is the source of truth for design, phases and open decisions; read the relevant section before implementing anything, and update it when a decision changes.
 
 The sibling project `../filehouse` uses the same stack and conventions; look there for patterns (thread pool, thumbnails, theme, layer test) before inventing new ones.
 
@@ -14,14 +14,12 @@ The sibling project `../filehouse` uses the same stack and conventions; look the
 
 ## Setup and commands
 
-Not final until Phase 0 settles the PySide6 source (see PLAN.md, open decisions). Default:
-
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'
+pip install -e '.[dev]'     # PySide6-Essentials, rawpy, numpy, Pillow from PyPI
 
-lumina                      # run the app
+lumina [FOLDER]             # run the app; without a folder it opens the last one
 ruff check . && ruff format --check .
 pytest                      # all tests
 pytest tests/core           # no display needed
@@ -61,7 +59,9 @@ These are requirements, not guidelines. Any change touching files, the DB or exp
 - **Rendering** uses a ~2 MP proxy while a control moves (debounced, on a worker, cancelled when a newer request arrives) and full resolution on release. Never block the UI thread on a render, decode or DB scan.
 - Heavy CPU work (CLIP, decode, thumbnailing) runs in worker processes, not threads, so the GIL does not stall the UI.
 - Memory: a 45 MP linear float32 image is about 540 MB. Do not hold more than one at once; tile or use 16-bit for full-resolution passes.
-- Colours and fonts come from `QPalette` and `QFont`; no literal colours in stylesheets and nothing that assumes a dark background. Sizes are unscaled pixels times the theme scale.
+- The look is filehouse's: `integration/theme.py` and `style.py` are ports of its modules and read the same `theme.json`. Keep them in step with filehouse rather than letting them drift.
+- Colours and fonts come from `QPalette` and `QFont`; no literal colours in stylesheets and nothing that assumes a dark background. Stylesheet colours, radii and sizes come from `integration/style.py`. Sizes are unscaled pixels times the theme scale (`style.px`).
+- Worker processes use the `forkserver` context, which re-imports the main module: every entry point and script needs an `if __name__ == "__main__"` guard, or starting a worker starts the app again.
 - Photos are stored by path relative to a library root plus a volume id, so moved drives do not break the index.
 - Tests run against `tmp_path` and small generated or checked-in sample files; never touch the real home directory or a real photo library. Keep sample CR3 files small and few.
 - No network calls except the optional first-run model download.

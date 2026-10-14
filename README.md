@@ -4,7 +4,13 @@ A local desktop photo library with semantic search and a small non-destructive e
 
 Lumina indexes your photos offline, lets you search them in plain language ("sunset over a lake") using local CLIP/SigLIP embeddings, and lets you adjust tone curves and matte looks without ever touching the originals. Nothing is uploaded anywhere.
 
-**Status:** planning. There is no code yet. See [PLAN.md](PLAN.md) for the design and phases.
+**Status:** proof of concept. It opens a folder and shows a thumbnail grid and a viewer for JPEG, PNG, TIFF and RAW files (via the embedded preview). See [PLAN.md](PLAN.md) for the design and phases.
+
+```sh
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[dev]'
+lumina ~/Pictures
+```
 
 ## Planned features
 

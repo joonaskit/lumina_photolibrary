@@ -2,7 +2,7 @@
 
 A self-hosted desktop photo library with semantic search and a small non-destructive editor, for large libraries (1 TB+) including Canon `.CR3` RAW files. Everything runs locally; nothing is uploaded.
 
-This is the source of truth for design, phases and open decisions. Update it when a decision changes. `README.md` still describes the earlier FastAPI/Qdrant server design and is out of date until Phase 0 rewrites it.
+This is the source of truth for design, phases and open decisions. Update it when a decision changes.
 
 ## Decisions
 
@@ -18,10 +18,12 @@ This is the source of truth for design, phases and open decisions. Update it whe
 | Embeddings | CLIP/SigLIP through ONNX Runtime (CPU by default). Weights downloaded on first run, not bundled. |
 | Editing | Non-destructive: edit parameters in SQLite, rendered from the original. |
 | Layout and tooling | Same as filehouse: `src/` layout, setuptools, ruff, pytest, pytest-qt offscreen, layer-rules test. |
+| PySide6 source | PyPI `PySide6-Essentials` in a plain venv (Widgets without WebEngine). Tested on Python 3.14 with PySide6 6.12, rawpy 0.27.1 (LibRaw 0.22.1). |
+| Theme | Same as filehouse: `integration/theme.py` reads Quickshell Island's `theme.json` over the same built-in defaults, `integration/style.py` maps it to the palette, font and a shapes-only stylesheet, `integration/theme_watcher.py` follows changes live. The two apps look alike with the shell running or not. |
+| Worker processes | `concurrent.futures.ProcessPoolExecutor` with the `forkserver` context (not `fork`: Qt's threads). The forkserver re-imports the main module, so every entry point has an `if __name__ == "__main__"` guard. |
 
 ## Open decisions
 
-- **PySide6 source.** Filehouse uses the Fedora package with `--system-site-packages` because it needs the system PyGObject. Lumina does not need `gi`, and `rawpy`, `onnxruntime` and `numpy` come from PyPI, so a plain venv with PyPI PySide6 is simpler. Default: plain venv with PyPI PySide6. Revisit only if Lumina wants filehouse-style desktop integration (portals, theme watcher).
 - **Vector store**: `sqlite-vec` (one file, one dependency) vs Qdrant local mode. Decide with a benchmark of ~200k vectors in Phase 4.
 - **CLIP vs SigLIP** and which ONNX export to use.
 - **Platforms.** Linux first (Fedora/KDE). Windows and macOS only if the app is distributed, which also brings signing and installers.
@@ -86,7 +88,9 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 
 ## Phases
 
-**Phase 0: scaffold.** `pyproject.toml`, `src/lumina/` layout, `CLAUDE.md`, ruff, pytest, CI, layer test, rewrite `README.md`. Resolve the PySide6 source decision.
+**Phase 0: scaffold.** `pyproject.toml`, `src/lumina/` layout, `CLAUDE.md`, ruff, pytest, CI, layer test, rewrite `README.md`. Resolve the PySide6 source decision. Done except CI.
+
+**Proof of concept (done).** A thin slice through every layer, ahead of Phases 1 and 2: open a folder, scan it on a thread (`core/scanner.py`), a lazy thumbnail grid (`qt_models/photo_model.py`, decoded in worker processes by `core/images.py`, bounded in-memory cache), a viewer with arrow-key stepping (`qt_models/previews.py`, newest request wins), the filehouse theme. RAW goes through `core/raw.py` (embedded preview, LibRaw flip, half-size fallback). No database, no disk cache, no metadata. Known gaps: not yet tried on real CR3 files; thumbnail requests for rows scrolled past are not cancelled; no `.desktop` file or app icon.
 
 **Phase 1: CR3 ingest, no UI.** `raw.py`, `metadata.py`, `thumbs.py`, tests with small sample CR3, JPEG, a RAW with no JPEG preview, and a corrupt file. Proves CR3 handling first.
 
