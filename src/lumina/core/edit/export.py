@@ -89,13 +89,7 @@ def export(
         linear = source.load_linear(source_path)
     check_stop()
     if options.max_side:
-        # The longest side of what comes out, after the turns and the crop
-        height, width = linear.shape[:2]
-        longest = max(pipeline.output_size(width, height, params))
-        if longest > options.max_side:
-            factor = options.max_side / longest
-            size = (max(1, round(width * factor)), max(1, round(height * factor)))
-            linear = source.resize(linear, *size, quality=True)
+        linear = source.fitted(linear, params, options.max_side)
     check_stop()
     pixels = pipeline.render(linear, params, bits=options.bits)
     check_stop()

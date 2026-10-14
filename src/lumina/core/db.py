@@ -176,6 +176,8 @@ class PhotoRow:
     available: bool
     # COALESCE(captured, file_time)
     taken: str
+    # The photo's own edit as parameters JSON, or None
+    edit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -379,12 +381,13 @@ class Library:
         where, args = _where(shown or Filter())
         rows = self.db.execute(
             "SELECT p.id, v.key, p.path, p.content_id, p.available, "
-            "COALESCE(p.captured, p.file_time) AS taken "
-            f"FROM photos p JOIN volumes v ON v.id = p.volume_id {where} "
-            "ORDER BY taken, p.path",
+            "COALESCE(p.captured, p.file_time) AS taken, e.params "
+            f"FROM photos p JOIN volumes v ON v.id = p.volume_id "
+            "LEFT JOIN edits e ON e.photo_id = p.id AND e.copy = 0 "
+            f"{where} ORDER BY taken, p.path",
             args,
         )
-        return [PhotoRow(r[0], r[1], r[2], r[3], bool(r[4]), r[5]) for r in rows]
+        return [PhotoRow(r[0], r[1], r[2], r[3], bool(r[4]), r[5], r[6]) for r in rows]
 
     def photo(self, photo_id):
         row = self.db.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()

@@ -60,6 +60,11 @@ class Crop:
     right: float = 1.0
     bottom: float = 1.0
 
+    def __post_init__(self):
+        # Dragged and turned crops collect float noise: equal crops, equal JSON
+        for name in ("left", "top", "right", "bottom"):
+            object.__setattr__(self, name, round(float(getattr(self, name)), 6))
+
 
 @dataclass(frozen=True)
 class Params:

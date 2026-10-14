@@ -7,6 +7,7 @@ result of one already running is dropped.
 from PySide6.QtCore import QObject, Signal
 
 from lumina.core import images
+from lumina.core.edit.preview import edited_pixels
 from lumina.qt_models import workers
 from lumina.qt_models.images import to_image
 
@@ -22,13 +23,21 @@ class PreviewLoader(QObject):
         self._token = 0
         self._future = None
 
-    def request(self, path, max_side):
+    def request(self, path, max_side, edit_json=None):
+        """The photo at `path`, with its edit if `edit_json` is one."""
         self.cancel()
         token = self._token
+        call = (
+            (edited_pixels, path, max_side, edit_json)
+            if edit_json
+            else (
+                images.load_pixels,
+                path,
+                max_side,
+            )
+        )
         self._future = workers.submit(
-            images.load_pixels,
-            path,
-            max_side,
+            *call,
             on_done=lambda pixels: self._done(token, path, pixels),
             on_error=lambda error: self._error(token, path, error),
             owner=self,

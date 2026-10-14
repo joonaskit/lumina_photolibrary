@@ -23,9 +23,12 @@ from PySide6.QtWidgets import (
 )
 
 from lumina.integration import style
+from lumina.qt_models.develop import DevelopSession
 from lumina.qt_models.library_model import Filter, LibraryModel
 from lumina.qt_models.previews import PreviewLoader
 from lumina.ui import settings
+from lumina.ui.develop_view import DevelopView
+from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.filters import FilterBar
 from lumina.ui.image_view import ImageView
 from lumina.ui.job_status import JobStatus
@@ -41,7 +44,7 @@ VIEWER_MAX_SIDE = 3840
 # Space between neighbouring cells, so their hover and selection backgrounds stay apart
 GRID_GAP = 8
 
-_EMPTY, _GRID, _VIEWER = range(3)
+_EMPTY, _GRID, _VIEWER, _DEVELOP = range(4)
 
 
 class _CellDelegate(QStyledItemDelegate):
@@ -74,6 +77,12 @@ class MainWindow(QMainWindow):
         self.previews.failed.connect(self._on_preview_failed)
         self._viewed_id = None
         self._place = (None, None)
+        # Where the Develop view was opened from, to go back to
+        self._develop_from = _GRID
+        self.session = DevelopSession(service, self)
+        self.session.history_changed.connect(self._update_history)
+        self.session.exported.connect(self._on_exported)
+        self.session.export_exists.connect(self._on_export_exists)
 
         self._make_actions()
         self._make_toolbar()
@@ -90,6 +99,17 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._make_empty_page())
         self.pages.addWidget(self._make_grid_page())
         self.pages.addWidget(self._framed(self._make_viewer()))
+        self.develop = DevelopView(self.session)
+        self.develop.addActions(
+            [
+                self.back_action,
+                self.previous_action,
+                self.next_action,
+                self.undo_action,
+                self.redo_action,
+            ]
+        )
+        self.pages.addWidget(self.develop)
         outer = QWidget()
         layout = QHBoxLayout(outer)
         layout.setContentsMargins(style.px(8), 0, style.px(8), 0)
@@ -119,16 +139,38 @@ class MainWindow(QMainWindow):
         self.add_action = QAction("Add Folder…", self)
         self.add_action.setShortcut(QKeySequence.StandardKey.Open)
         self.add_action.triggered.connect(self.choose_folder)
-        self.back_action = QAction("Back to Grid", self)
+        self.back_action = QAction("Back", self)
         self.back_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
-        self.back_action.triggered.connect(self.show_grid)
+        self.back_action.triggered.connect(self.go_back)
+        self.edit_action = QAction("Edit", self)
+        self.edit_action.setShortcut(QKeySequence(Qt.Key.Key_E))
+        self.edit_action.setToolTip("Edit the photo (E)")
+        self.edit_action.triggered.connect(self.edit_current)
+        self.undo_action = QAction("Undo", self)
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(lambda: self.session.undo())
+        self.redo_action = QAction("Redo", self)
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_action.triggered.connect(lambda: self.session.redo())
+        self.reset_action = QAction("Reset", self)
+        self.reset_action.setToolTip("Back to the original")
+        self.reset_action.triggered.connect(lambda: self.session.reset())
+        self.export_action = QAction("Export…", self)
+        self.export_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
+        self.export_action.triggered.connect(self.export_photo)
         self.previous_action = QAction("Previous Photo", self)
         self.previous_action.setShortcut(QKeySequence(Qt.Key.Key_Left))
         self.previous_action.triggered.connect(lambda: self.step(-1))
         self.next_action = QAction("Next Photo", self)
         self.next_action.setShortcut(QKeySequence(Qt.Key.Key_Right))
         self.next_action.triggered.connect(lambda: self.step(1))
-        for action in (self.back_action, self.previous_action, self.next_action):
+        for action in (
+            self.back_action,
+            self.previous_action,
+            self.next_action,
+            self.undo_action,
+            self.redo_action,
+        ):
             # Only while a photo is shown: in the grid the arrows move the selection
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
@@ -151,7 +193,10 @@ class MainWindow(QMainWindow):
             spacer.sizePolicy().Policy.Expanding, spacer.sizePolicy().Policy.Preferred
         )
         toolbar.addWidget(spacer)
-        toolbar.addWidget(self._group(self.add_action))
+        self.editing = toolbar.addWidget(
+            self._group(self.undo_action, self.redo_action, self.reset_action, self.export_action)
+        )
+        self.browsing = toolbar.addWidget(self._group(self.edit_action, self.add_action))
 
     def _group(self, *actions):
         """Buttons in one rounded card, as filehouse's toolbar has them."""
@@ -239,6 +284,11 @@ class MainWindow(QMainWindow):
 
     def _draw_icons(self):
         self.add_action.setIcon(style.icon("list-add", "folder-new", "folder-open"))
+        self.edit_action.setIcon(style.icon("document-edit", "edit-image", "image-x-generic"))
+        self.undo_action.setIcon(style.icon("edit-undo"))
+        self.redo_action.setIcon(style.icon("edit-redo"))
+        self.reset_action.setIcon(style.icon("edit-reset", "view-refresh"))
+        self.export_action.setIcon(style.icon("document-export", "document-save-as"))
         self.back_action.setIcon(style.icon("view-grid", "view-list-icons", "go-previous"))
         self.previous_action.setIcon(style.icon("go-previous"))
         self.next_action.setIcon(style.icon("go-next"))
@@ -370,15 +420,114 @@ class MainWindow(QMainWindow):
         self.viewer.setFocus()
         self.title.setText(self.model.name(row))
         if path is not None:
-            self.previews.request(path, self._viewer_side())
+            # From the library, not the grid's rows: an edit just made may not be in them yet
+            edit = self.service.edit_json(self._viewed_id)
+            self.previews.request(path, self._viewer_side(), edit)
         else:
             self.previews.cancel()
         self._update_status()
 
     def step(self, delta):
         row = self._viewed_row()
-        if row is not None:
+        if row is None:
+            return
+        if self.pages.currentIndex() == _DEVELOP:
+            self.show_develop(row + delta)
+        else:
             self.show_photo(row + delta)
+
+    def go_back(self):
+        """Escape: out of the crop, then out of the Develop view, then to the grid."""
+        if self.pages.currentIndex() == _DEVELOP:
+            if self.develop.crop_button.isChecked():
+                self.develop.set_cropping(False)
+                return
+            self.session.close()
+            row = self._viewed_row()
+            if self._develop_from == _VIEWER and row is not None:
+                self.show_photo(row)
+                return
+        self.show_grid()
+
+    # Editing
+
+    def edit_current(self):
+        """Edit the photo shown, or the one chosen in the grid."""
+        if self.pages.currentIndex() == _VIEWER:
+            row = self._viewed_row()
+        elif self.pages.currentIndex() == _GRID and self.grid.currentIndex().isValid():
+            row = self.grid.currentIndex().row()
+        else:
+            return
+        if row is not None:
+            self._develop_from = self.pages.currentIndex()
+            self.show_develop(row)
+
+    def show_develop(self, row):
+        if not 0 <= row < self.model.rowCount():
+            return
+        path = self.model.path(row)
+        if path is None:
+            QMessageBox.information(
+                self,
+                "Not Connected",
+                f"{self.model.name(row)} is on a drive that is not connected. "
+                "Connect it to edit the photo.",
+            )
+            return
+        self.previews.cancel()
+        self._viewed_id = self.model.photo_id(row)
+        self.develop.show_loading(self.model.name(row))
+        self.session.screen_side = self._viewer_side()
+        self._show_page(_DEVELOP)
+        self.session.open(self._viewed_id, path)
+        self.title.setText(self.model.name(row))
+        self.develop.setFocus()
+        self._update_status()
+
+    def _update_history(self):
+        self.undo_action.setEnabled(self.session.can_undo())
+        self.redo_action.setEnabled(self.session.can_redo())
+
+    def export_photo(self):
+        if not self.session.is_open():
+            return
+        dialog = ExportDialog(self.session.path, self)
+        if dialog.exec() != ExportDialog.DialogCode.Accepted:
+            return
+        destination, options = dialog.destination(), dialog.options()
+        self._export_options = options
+        replace = False
+        if os.path.lexists(destination):
+            if not self._ask_replace(destination):
+                return
+            replace = True
+        self.statusBar().showMessage(f"Exporting {os.path.basename(destination)}…")
+        self.session.export(destination, options, replace)
+
+    def _ask_replace(self, destination):
+        answer = QMessageBox.question(
+            self,
+            "Replace File?",
+            f"“{os.path.basename(destination)}” already exists in "
+            f"{os.path.dirname(destination)}.\n\nReplace it with this export?",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _on_export_exists(self, destination):
+        # Taken while the export was being written: ask, as before
+        self.statusBar().clearMessage()
+        if self._ask_replace(destination):
+            self.session.export(destination, self._export_options, True)
+
+    def _on_exported(self, destination, error):
+        self.statusBar().clearMessage()
+        if error is None:
+            self.statusBar().showMessage(f"Exported to {destination}", 8000)
+        else:
+            QMessageBox.warning(self, "Export Failed", f"{destination}\n\n{error}")
 
     def _viewed_row(self):
         return self.model.row_of(self._viewed_id) if self._viewed_id is not None else None
@@ -402,16 +551,23 @@ class MainWindow(QMainWindow):
 
     def _show_page(self, page):
         self.pages.setCurrentIndex(page)
-        viewing = page == _VIEWER
+        viewing = page in (_VIEWER, _DEVELOP)
+        developing = page == _DEVELOP
         self.navigation.setVisible(viewing)
+        self.editing.setVisible(developing)
+        self.browsing.setVisible(not developing)
         for action in (self.back_action, self.previous_action, self.next_action):
             action.setEnabled(viewing)
+        for action in (self.reset_action, self.export_action):
+            action.setEnabled(developing)
+        self.edit_action.setEnabled(page in (_GRID, _VIEWER))
+        self._update_history()
         if not viewing:
             self._update_title()
         self._update_status()
 
     def _update_title(self):
-        if self.pages.currentIndex() == _VIEWER:
+        if self.pages.currentIndex() in (_VIEWER, _DEVELOP):
             return
         folder = self.sidebar.current_folder()
         info = next((f for f in self.service.folders() if f.id == folder), None)
@@ -424,7 +580,7 @@ class MainWindow(QMainWindow):
         row = self._viewed_row()
         if not self.service.folders():
             text = ""
-        elif self.pages.currentIndex() == _VIEWER and row is not None:
+        elif self.pages.currentIndex() in (_VIEWER, _DEVELOP) and row is not None:
             details = describe_photo(self.service.photo_details(self._viewed_id))
             where = self.model.path(row) or f"{self.model.name(row)} (not connected)"
             text = "  ·  ".join(part for part in (f"{row + 1} of {count}", details, where) if part)
@@ -434,6 +590,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.previews.cancel()
+        self.session.close()
         super().closeEvent(event)
 
 
