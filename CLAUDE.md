@@ -26,6 +26,8 @@ pytest tests/core           # no display needed
 pytest tests/ui             # runs offscreen
 ```
 
+Every push runs `ruff` and `pytest` on GitHub (`.github/workflows/tests.yml`), on Ubuntu with Python 3.12 and 3.14. The checks must pass before a pull request can be merged into `main`.
+
 Do not mix a PyPI PySide6 with the Fedora `python3-pyside6` in one environment.
 
 ## Layer rules

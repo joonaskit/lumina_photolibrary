@@ -78,6 +78,7 @@ class PhotoModel(QAbstractListModel):
             generation,
             on_done=lambda _none: self._scan_ended(generation),
             on_error=lambda _error: self._scan_ended(generation),
+            owner=self,
             process=False,
         )
 
@@ -90,10 +91,10 @@ class PhotoModel(QAbstractListModel):
         for path in scanner.find_photos(folder, should_stop=stop.is_set):
             batch.append(path)
             if len(batch) >= _BATCH:
-                workers.call_on_main(self._add, generation, batch)
+                workers.call_on_main(self, self._add, generation, batch)
                 batch = []
         if batch and not stop.is_set():
-            workers.call_on_main(self._add, generation, batch)
+            workers.call_on_main(self, self._add, generation, batch)
 
     def _add(self, generation, paths):
         if generation != self._generation:
@@ -160,6 +161,7 @@ class PhotoModel(QAbstractListModel):
                 THUMB_SIDE,
                 on_done=lambda pixels: self._thumb_made(generation, path, pixels),
                 on_error=lambda error: self._thumb_failed(generation, path, error),
+                owner=self,
             )
         return self._placeholder_icon()
 

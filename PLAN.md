@@ -88,11 +88,11 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 
 ## Phases
 
-**Phase 0: scaffold.** `pyproject.toml`, `src/lumina/` layout, `CLAUDE.md`, ruff, pytest, CI, layer test, rewrite `README.md`. Resolve the PySide6 source decision. Done except CI.
+**Phase 0: scaffold.** `pyproject.toml`, `src/lumina/` layout, `CLAUDE.md`, ruff, pytest, CI, layer test, rewrite `README.md`. Resolve the PySide6 source decision. Done.
 
 **Proof of concept (done).** A thin slice through every layer, ahead of Phases 1 and 2: open a folder, scan it on a thread (`core/scanner.py`), a lazy thumbnail grid (`qt_models/photo_model.py`, decoded in worker processes by `core/images.py`, bounded in-memory cache), a viewer with arrow-key stepping (`qt_models/previews.py`, newest request wins), the filehouse theme. RAW goes through `core/raw.py` (embedded preview, LibRaw flip, half-size fallback). No database, no disk cache, no metadata. Known gaps: not yet tried on real CR3 files; thumbnail requests for rows scrolled past are not cancelled; no `.desktop` file or app icon.
 
-**Phase 1: CR3 ingest, no UI.** `raw.py`, `metadata.py`, `thumbs.py`, tests with small sample CR3, JPEG, a RAW with no JPEG preview, and a corrupt file. Proves CR3 handling first.
+**Phase 1: CR3 ingest, no UI.** `raw.py`, `metadata.py`, `thumbs.py`, tests with small sample CR3, JPEG, a RAW with no JPEG preview, and a corrupt file. Proves CR3 handling first. Move the CI test jobs to a `fedora:44` container (Fedora's `python3.12` for the oldest version) when `metadata.py` brings in exiftool: it comes from the distribution, and Ubuntu's is much older than Fedora's. Until then Ubuntu is enough, since everything else comes from PyPI wheels that are the same on both.
 
 **Phase 2: library.** `db.py`, `scanner.py`, persistent job queue with progress, grid view (`QListView` IconMode, lazy thumbnails), basic filters (date, camera, lens), single-photo viewer. Watch folders, handle unplugged drives.
 
