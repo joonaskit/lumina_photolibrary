@@ -1,6 +1,13 @@
 import pytest
+from fakes import FakeExifTool
+from photos import make_jpeg
+from rawfiles import make_dng
 
+from lumina.core import volumes
 from lumina.integration import style, theme
+
+TIMEOUT = 20000
+DRIVE = "uuid:TEST-DRIVE"
 
 
 @pytest.fixture(autouse=True)
@@ -19,9 +26,83 @@ def fresh_settings():
     settings.clear()
 
 
+@pytest.fixture(autouse=True)
+def fresh_fake():
+    FakeExifTool.reset()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def stop_workers():
     from lumina.qt_models import workers
 
     yield
     workers.shutdown()
+
+
+@pytest.fixture
+def drive(tmp_path):
+    """A "USB drive" with a Photos folder of three: a folder that `mounts` says is the
+    volume DRIVE while it is plugged in."""
+    path = tmp_path / "drive"
+    (path / "Photos").mkdir(parents=True)
+    make_jpeg(path / "Photos" / "a.jpg", size=(300, 200))
+    make_jpeg(path / "Photos" / "b.jpg", size=(200, 300), colour=(10, 200, 10))
+    make_dng(path / "Photos" / "c.dng", preview="jpeg", preview_size=(240, 160))
+    return path
+
+
+class Mounts:
+    """What the service reads as the system's mounts: this machine's, plus the drive
+    while it is plugged in."""
+
+    def __init__(self, drive):
+        self.drive = drive
+        self.plugged = True
+
+    def __call__(self):
+        found = volumes.read_mounts()
+        if self.plugged:
+            found.append(
+                volumes.Mount(DRIVE, str(self.drive), "/", "exfat", "/dev/sdz1", "Photos drive")
+            )
+        return found
+
+
+@pytest.fixture
+def mounts(drive):
+    return Mounts(drive)
+
+
+@pytest.fixture
+def make_service(tmp_path, mounts, qtbot):
+    from lumina.qt_models.library import LibraryService
+
+    made = []
+
+    def make(start=True):
+        service = LibraryService(
+            tmp_path / "library.sqlite3", read_mounts=mounts, exiftool=FakeExifTool, mounts_ms=50
+        )
+        made.append(service)
+        if start:
+            service.start()
+        return service
+
+    yield make
+    for service in made:
+        service.close()
+        if service.future is not None:
+            service.future.result(timeout=TIMEOUT / 1000)
+
+
+@pytest.fixture
+def service(make_service):
+    return make_service()
+
+
+@pytest.fixture
+def wait_idle(qtbot):
+    def wait(service):
+        qtbot.waitUntil(lambda: not service.is_busy(), timeout=TIMEOUT)
+
+    return wait

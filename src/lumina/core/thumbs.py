@@ -90,3 +90,9 @@ def load_thumbnail(path, side, cache_root):
         pixels = images.load_pixels(path, side)
         cache.put(cid, side, pixels)
     return pixels
+
+
+def cached_thumbnail(cid, side, cache_root):
+    """The cached thumbnail of content id `cid`, or None: for a photo whose drive is not
+    connected, which can't be read but may have been seen before."""
+    return ThumbnailCache(cache_root).get(cid, side)

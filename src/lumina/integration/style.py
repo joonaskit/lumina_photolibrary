@@ -286,6 +286,35 @@ def _stylesheet():
             border: 1px solid {card_border}; border-radius: {large}px; padding: {px(2)}px;
         }}
 
+        /* The library's folders, as filehouse's sidebar */
+        #sidebar {{
+            padding: {px(8)}px; background: {card}; border: 1px solid {card_border};
+            border-radius: {large}px;
+        }}
+        #sidebar QListWidget {{ border: none; outline: none; background: transparent; }}
+        #sidebar QListWidget::item {{
+            padding: {px(6)}px {px(8)}px; border-radius: {medium}px;
+        }}
+        #sidebar QListWidget::item:hover {{ background: {hover}; }}
+        #sidebar QListWidget::item:selected {{
+            background: {selected}; color: {colors["textPrimary"]};
+        }}
+        #heading {{
+            color: {colors["textSecondary"]}; font-size: {small_font}px; font-weight: 600;
+            padding: {px(4)}px {px(8)}px;
+        }}
+
+        QComboBox {{
+            border: 1px solid {divider}; border-radius: {medium}px;
+            padding: {px(4)}px {px(10)}px; background: {raised};
+        }}
+        QComboBox:hover {{ border-color: {overlay(0.2)}; }}
+        QComboBox:focus {{ border-color: {colors["accent"]}; }}
+        QComboBox QAbstractItemView {{
+            background: {card}; border: 1px solid {divider}; border-radius: {medium}px;
+            selection-background-color: {selected}; selection-color: {colors["textPrimary"]};
+        }}
+
         #title {{ font-size: {theme_reader.font_scaled(_theme, 15)}px; font-weight: 600; }}
         #secondary {{ color: {colors["textSecondary"]}; font-size: {small_font}px; }}
         #placeholder {{ color: {colors["textSecondary"]}; }}

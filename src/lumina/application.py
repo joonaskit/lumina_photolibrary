@@ -1,19 +1,18 @@
-"""The application: Qt, the theme, the window."""
+"""The application: Qt, the theme, the library, the window."""
 
 import gc
-import os
 import signal
 import sys
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from lumina import APP_ID
 from lumina.integration import style, theme
 from lumina.integration.theme_watcher import ThemeWatcher
 from lumina.qt_models import workers
-from lumina.ui import settings
+from lumina.qt_models.library import LibraryService, NewerDatabase
 from lumina.ui.main_window import MainWindow
 
 # How often the garbage is collected, in milliseconds
@@ -40,11 +39,19 @@ def run(folder=None):
     # while the app runs
     style.apply(app, theme.load_theme())
     ThemeWatcher(app, parent=app)
+
+    try:
+        service = LibraryService(parent=app)
+    except NewerDatabase as error:
+        QMessageBox.critical(None, "Lumina", f"{error}\n\nIt was left as it is.")
+        return 1
+    # A scan in progress stops and is queued for the next start
+    app.aboutToQuit.connect(service.close)
     app.aboutToQuit.connect(workers.shutdown)
 
-    window = MainWindow()
-    folder = folder or settings.last_folder()
-    if folder and os.path.isdir(folder):
-        window.open_folder(folder)
+    window = MainWindow(service)
     window.show()
+    service.start()
+    if folder:
+        window.add_folder(folder)
     return app.exec()

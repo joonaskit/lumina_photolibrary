@@ -47,7 +47,9 @@ Planned `core/` modules:
 - `fingerprint.py`: content id (size plus the first and last 64 KiB), the same for a moved or renamed file.
 - `thumbs.py`: WebP thumbnails, cache keyed by content id, invalidated on edit.
 - `db.py`: schema and migrations (photos, edits, keywords, jobs).
-- `scanner.py`: incremental library walk, skip unchanged (mtime+size, hash on change), handle missing volumes by marking, not deleting.
+- `scanner.py`: the walk: photo files under a folder, unreadable folders reported.
+- `volumes.py`: volume id and path from the filesystem root, from `/proc/self/mountinfo`.
+- `library.py`: the scan job: incremental (mtime+size, content id on change), missing files and volumes marked, not deleted.
 - `embed.py`: CLIP encoder, batching, text and image.
 - `search.py`: text query, filters, ranking.
 - `edit/params.py`: versioned edit parameters (JSON) and migrations.
@@ -101,6 +103,17 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 - **CI** runs the tests in a `fedora:44` container with Fedora's exiftool, as an ordinary user, and fails rather than skips a test that needs exiftool (`LUMINA_REQUIRE_EXIFTOOL=1`).
 
 **Phase 2: library.** `db.py`, `scanner.py`, persistent job queue with progress, grid view (`QListView` IconMode, lazy thumbnails), basic filters (date, camera, lens), single-photo viewer. Watch folders, handle unplugged drives.
+
+**Phase 2 as built.**
+
+- **Photo identity.** A volume id and the path from that filesystem's root (`core/volumes.py`, from `/proc/self/mountinfo` and `/dev/disk/by-uuid`). The id is `uuid:<filesystem UUID>`, or `mount:<mount point>` for filesystems without one (tmpfs, most network mounts). The path includes mountinfo's root field, so btrfs subvolumes sharing one UUID (`/` and `/home` on Fedora) do not collide. A drive mounted somewhere else keeps its photos. Linux only.
+- **Database** (`core/db.py`): `$XDG_DATA_HOME/lumina/library.sqlite3`, WAL, one connection per thread. Schema version in `PRAGMA user_version`, one migration per version, append only; a file from a newer Lumina is refused before anything touches it. Tables: volumes, folders (the library's roots), photos (file state, availability, content id, metadata), jobs, job_failures. Edits and keywords come with the phases that need them, as migrations.
+- **Folders.** Adding a folder inside one already in the library adds nothing; adding one around others merges them. Removing a folder from the library forgets its photos after asking; the files are not touched. Names that are not valid UTF-8 are reported as failures and skipped.
+- **Scan job** (`core/library.py`): find (new, changed by size or mtime, missing), then details (content id and exiftool metadata in batches of 50). Missing photos are marked unavailable with everything known kept, never deleted; nothing is marked missing after a cancel or below a folder that could not be read; a folder gone from a connected drive fails the job and marks its photos unavailable. Every failure is a row naming the file. Without exiftool the photos are listed and their details read by a later scan.
+- **Jobs** (`qt_models/library.py`): one at a time, on a thread. At the start every connected folder is queued for a rescan and unfinished jobs (a crash) are run again; a quit in the middle leaves the job queued. A job whose drive is not connected waits for it. The mounts are read every 3 s; a drive plugged in gets its folders rescanned. Cancel stops the running job and drops the queued ones.
+- **Watching.** No live file watching yet: changes are picked up at the start, when a drive is plugged in, and by Rescan. inotify needs a watch per directory and does not see changes made while the app is closed or on unplugged drives, so the scan-on-start is needed anyway; live watching can come later.
+- **UI.** Sidebar with All Photos and the folders (a not-connected one is dimmed, with its drive's label in the tooltip); year, camera and lens filters; the grid, read on a thread and refreshed every 2 s while a scan writes, keeping its place; the viewer, with capture time, camera, lens and exposure in the status bar; the job's progress and Cancel in the status bar, failures listed in its tooltip. Photos on an unplugged drive keep their thumbnails, from the disk cache by content id.
+- **Not yet:** a size limit for the thumbnail cache, throttling the scan for very large first imports, and keeping the grid's place exactly when rows are inserted above it.
 
 **Phase 3: Develop view.** Edit params and storage, linear decode and cache, proxy renderer, curve widget (draggable points, histogram backdrop), matte control, exposure/WB, undo/redo, presets, export, thumbnail invalidation on edit.
 

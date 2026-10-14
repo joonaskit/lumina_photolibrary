@@ -1,49 +1,24 @@
 import hashlib
 import os
 import shutil
-from datetime import datetime
 
 import pytest
+from fakes import FakeExifTool
 from photos import make_jpeg, make_jpeg_with_exif
 from rawfiles import make_dng
 
 from lumina.core import db as dbm
 from lumina.core import library as scanning
 from lumina.core.db import Library
-from lumina.core.errors import PhotoError
-from lumina.core.metadata import Metadata, MetadataUnavailable
+from lumina.core.metadata import MetadataUnavailable
 from lumina.core.volumes import Mount, locate
 
 DRIVE = "uuid:TEST-DRIVE"
 
 
-class FakeExifTool:
-    """Says every photo is from a 90D, except the paths in `broken`."""
-
-    calls = []
-
-    def __init__(self, broken=(), dies_after=None):
-        self.broken = set(map(str, broken))
-        self.dies_after = dies_after
-
-    def read_many(self, paths):
-        FakeExifTool.calls.append(list(paths))
-        if self.dies_after is not None and len(FakeExifTool.calls) > self.dies_after:
-            raise MetadataUnavailable("exiftool stopped")
-        return {
-            p: PhotoError(p, "File format error")
-            if p in self.broken
-            else Metadata(captured=datetime(2022, 5, 9, 21, 3), model="Canon EOS 90D")
-            for p in paths
-        }
-
-    def close(self):
-        pass
-
-
 @pytest.fixture(autouse=True)
-def fresh_calls():
-    FakeExifTool.calls = []
+def fresh_fake():
+    FakeExifTool.reset()
 
 
 @pytest.fixture
