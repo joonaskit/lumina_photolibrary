@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Lumina
+GenericName=Photo Library
+Comment=Browse, search and edit your photos, on your own computer
+Exec=lumina
+Icon=lumina
+Terminal=false
+Categories=Qt;Graphics;Photography;Viewer;
+Keywords=photos;pictures;raw;cr3;library;search;edit;
+StartupNotify=true
+StartupWMClass=lumina
