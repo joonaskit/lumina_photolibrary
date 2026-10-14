@@ -171,6 +171,8 @@ class MainWindow(QMainWindow):
         self.add_action = QAction("Add Folder…", self)
         self.add_action.setShortcut(QKeySequence.StandardKey.Open)
         self.add_action.triggered.connect(self.choose_folder)
+        # A key only: the button is the sidebar's, under the folders it adds to
+        self.addAction(self.add_action)
         self.back_action = QAction("Back", self)
         self.back_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.back_action.triggered.connect(self.go_back)
@@ -243,7 +245,7 @@ class MainWindow(QMainWindow):
         self.editing = toolbar.addWidget(
             self._group(self.undo_action, self.redo_action, self.reset_action, self.export_action)
         )
-        self.browsing = toolbar.addWidget(self._group(self.edit_action, self.add_action))
+        self.browsing = toolbar.addWidget(self._group(self.edit_action))
 
     def _group(self, *actions):
         """Buttons in one rounded card, as filehouse's toolbar has them."""
