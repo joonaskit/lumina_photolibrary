@@ -13,6 +13,7 @@ from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPainterPath,
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -32,6 +33,7 @@ from lumina.qt_models.develop import Crop, Curves, Matte
 from lumina.ui.controls import ValueSlider
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.image_view import ImageView
+from lumina.ui.preset_dialog import PresetDialog
 
 PANEL_WIDTH = 320
 # The handles' size and how near the pointer must be to take one, unscaled
@@ -639,17 +641,9 @@ class DevelopView(QWidget):
         self.presets.setCurrentIndex(0)
 
     def save_preset(self):
-        name, ok = QInputDialog.getText(
-            self,
-            "Save Preset",
-            "Name of the preset. It keeps the white balance, contrast, highlights, shadows,\n"
-            "whites, blacks, colour, tone curve and matte of this edit:",
-        )
-        name = name.strip()
-        if ok and name:
-            self.session.save_preset(
-                name, ["white_balance", "basic", "colour", "hsl", "grading", "curves", "matte"]
-            )
+        dialog = PresetDialog(self.session.presets(), self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.session.save_preset(dialog.name(), dialog.sections())
 
     def delete_preset(self):
         names = self.session.presets()

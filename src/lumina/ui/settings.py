@@ -46,6 +46,20 @@ def set_export_choices(choices):
     _settings().setValue("export/choices", choices)
 
 
+def preset_sections():
+    """The parts of an edit the preset dialog had chosen last time (names from the
+    edit's sections), or None at first. Kept as one string: a list of one comes back
+    from QSettings as a plain string."""
+    value = _settings().value("develop/preset_sections")
+    if not isinstance(value, str):
+        return None
+    return [name for name in value.split(",") if name]
+
+
+def set_preset_sections(sections):
+    _settings().setValue("develop/preset_sections", ",".join(sections))
+
+
 def grid_size():
     """The grid's thumbnail size: "small", "medium" or "large"."""
     value = _settings().value("library/grid_size")
