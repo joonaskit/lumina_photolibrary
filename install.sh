@@ -27,8 +27,8 @@ else
     .venv/bin/python -m pip install -e .
 fi
 
-.venv/bin/python -c "import PySide6, rawpy, onnxruntime" ||
-    { echo "PySide6, rawpy or onnxruntime is not importable from the venv" >&2; exit 1; }
+.venv/bin/python -c "import PySide6, rawpy, onnxruntime, pillow_heif" ||
+    { echo "PySide6, rawpy, onnxruntime or pillow_heif is not importable from the venv" >&2; exit 1; }
 
 mkdir -p "$bin_dir"
 ln -sf "$PWD/.venv/bin/lumina" "$bin_dir/lumina"
