@@ -77,6 +77,29 @@ class SettingsDialog(QDialog):
         )
 
         if library is not None:
+            self.gentle = QCheckBox("Scan large libraries gently")
+            self.gentle.setChecked(settings.gentle_scans())
+            self.gentle.toggled.connect(self._on_gentle_toggled)
+            layout.addWidget(self._heading("Scanning"))
+            layout.addWidget(self.gentle)
+            layout.addWidget(
+                self._note(
+                    "From 2000 photos, a scan rests between batches and reads at the lowest "
+                    "priority, so the computer stays responsive through a first import of a "
+                    "large library. It takes about twice as long. The next scan, not one "
+                    "running now, is gentle."
+                )
+            )
+
+            self.watch = QCheckBox("Watch the folders for changes while Lumina runs")
+            self.watch.setChecked(settings.watch_folders())
+            self.watch.toggled.connect(self._on_watch_toggled)
+            self.watch_note = self._note("")
+            layout.addWidget(self.watch)
+            layout.addWidget(self.watch_note)
+            library.watcher.status_changed.connect(self._show_watching)
+            self._show_watching()
+
             self.cache_limit = QSpinBox()
             self.cache_limit.setRange(0, _MAX_LIMIT_GB)
             self.cache_limit.setSuffix(" GB")
@@ -140,6 +163,26 @@ class SettingsDialog(QDialog):
         label.setEnabled(False)
         label.setWordWrap(True)
         return label
+
+    def _on_watch_toggled(self, on):
+        settings.set_watch_folders(on)
+        self.library.watcher.set_enabled(on)
+
+    def _show_watching(self):
+        watcher = self.library.watcher
+        text = (
+            "A photo copied into a folder, moved or deleted shows up a few seconds later, "
+            "without a Rescan."
+        )
+        if watcher.unwatched:
+            names = {f.id: f.name for f in self.library.folders()}
+            named = ", ".join(sorted(names.get(folder, "?") for folder in watcher.unwatched))
+            text += f" Too many folders inside to watch: {named}. Rescan finds their changes."
+        self.watch_note.setText(text)
+
+    def _on_gentle_toggled(self, on):
+        settings.set_gentle_scans(on)
+        self.library.gentle_scans = on
 
     def _limit_timer_pending(self):
         return self.library is not None and self._limit_timer.isActive()
@@ -207,6 +250,7 @@ class SettingsDialog(QDialog):
             self.apply_cache_limit()
         if self.library is not None:
             self.library.thumbnails_pruned.disconnect(self._show_usage)
+            self.library.watcher.status_changed.disconnect(self._show_watching)
         if self.search is not None:
             self.search.model_changed.disconnect(self._show_model)
         super().done(result)

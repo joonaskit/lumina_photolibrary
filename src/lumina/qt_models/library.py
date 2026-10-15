@@ -22,6 +22,7 @@ from lumina.core import library as scanning
 from lumina.core import metadata, thumbs, volumes
 from lumina.core.edit import params as _params
 from lumina.qt_models import workers
+from lumina.qt_models.watcher import FolderWatcher
 
 # For the application, which tells the user
 NewerDatabase = dbm.NewerDatabase
@@ -43,6 +44,9 @@ _MOUNTS_MS = 3000
 _PHOTOS_EVERY = 2.0
 # How soon after the thumbnails were pruned a job's end prunes them again, in seconds
 _PRUNE_EVERY = 600.0
+# The time left is told once this many photos, and this many seconds, tell the rate
+_ETA_AFTER_PHOTOS = 100
+_ETA_AFTER_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,8 @@ class JobStatus:
     failures: tuple
     # Jobs waiting after this one
     queued: int
+    # Seconds left of the details, as far as the rate so far tells; None when not known
+    eta: float | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +134,13 @@ class LibraryService(QObject):
         # The most the thumbnail cache may take, in bytes, or None for no limit; the
         # application sets it from the settings
         self.thumbnail_limit = None
+        # Whether a large scan rests between batches and reads at a low priority; the
+        # application sets it from the settings
+        self.gentle_scans = True
+        # (job, phase, when it began, how many were done then): for the time left
+        self._phase_began = None
+        # Off until the application turns it on (from the settings)
+        self.watcher = FolderWatcher(self, parent=self)
         self._pruning = False
         self._prune_again = False
         self._pruned_at = None
@@ -147,6 +160,7 @@ class LibraryService(QObject):
     def close(self):
         """For the app's exit: a running job stops and stays queued for the next start."""
         self._timer.stop()
+        self.watcher.close()
         self._quitting.set()
         if self._stop is not None:
             self._stop.set()
@@ -404,6 +418,7 @@ class LibraryService(QObject):
             stop,
             quitting,
             self._exiftool,
+            self.gentle_scans,
             lambda *args: workers.call_on_main(self, self._on_progress, job.id, name, *args),
             on_done=lambda state: self._on_ended(job.id, job.folder_id, name, state),
             on_error=lambda error: self._on_failed(job.id, job.folder_id, name, error),
@@ -411,12 +426,13 @@ class LibraryService(QObject):
             process=False,
         )
 
-    def _on_progress(self, job_id, name, phase, _done, _total, changed):
+    def _on_progress(self, job_id, name, phase, done, total, changed):
         if self._quitting.is_set() or self._running is None or self._running[0] != job_id:
             return
         # The phase the scan reported, not the one the database has by the time this is
         # delivered: a quick phase would otherwise never be told
-        self.job_changed.emit(replace(self._status(job_id, name), phase=phase))
+        status = replace(self._status(job_id, name), phase=phase)
+        self.job_changed.emit(replace(status, eta=self._time_left(job_id, phase, done, total)))
         now = time.monotonic()
         if changed and now - self._photos_told >= _PHOTOS_EVERY:
             self._photos_told = now
@@ -451,6 +467,21 @@ class LibraryService(QObject):
             self.db.update_job(job_id, state=dbm.FAILED_JOB, message=message)
         self._on_ended(job_id, folder_id, name, dbm.FAILED_JOB)
 
+    def _time_left(self, job_id, phase, done, total):
+        """Seconds until the details are all read at the rate so far, or None: not told
+        before enough has been read to say, and not for the walk, whose end is unknown."""
+        now = time.monotonic()
+        if self._phase_began is None or self._phase_began[:2] != (job_id, phase):
+            self._phase_began = (job_id, phase, now, done)
+            return None
+        _job, _phase, began, first = self._phase_began
+        read = done - first
+        if phase != scanning.DETAILS or not total or read < _ETA_AFTER_PHOTOS:
+            return None
+        if now - began < _ETA_AFTER_SECONDS:
+            return None
+        return (total - done) * (now - began) / read
+
     def _tell(self, job_id, name):
         self.job_changed.emit(self._status(job_id, name))
 
@@ -483,11 +514,18 @@ def _prune_thumbnails(path, root, limit, volume_keys):
     return thumbs.prune(root, limit, keep)
 
 
-def _run_scan(path, job_id, folder_id, mounts, stop, quitting, exiftool, report):
+def _run_scan(path, job_id, folder_id, mounts, stop, quitting, exiftool, gentle, report):
     """On a worker thread, with a connection of its own."""
     with dbm.Library(path) as library:
         state = scanning.scan(
-            library, job_id, folder_id, mounts, stop.is_set, report, exiftool=exiftool
+            library,
+            job_id,
+            folder_id,
+            mounts,
+            stop.is_set,
+            report,
+            exiftool=exiftool,
+            gentle=gentle,
         )
         if state == dbm.CANCELLED and quitting.is_set():
             # Stopped by a quit, not by the user: run again at the next start

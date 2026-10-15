@@ -168,3 +168,20 @@ def test_reading_leaves_the_photo_as_it_was(exiftool, tmp_path):
     assert (hashlib.sha256(path.read_bytes()).hexdigest(), os.stat(path).st_mtime_ns) == before
     # exiftool keeps "<name>_original" when it writes: there must be none
     assert sorted(p.name for p in tmp_path.iterdir()) == ["original.jpg"]
+
+
+def test_a_gentle_exiftool_runs_at_a_lower_priority_also_after_a_restart(exiftool, tmp_path):
+    import os
+
+    path = make_jpeg(tmp_path / "plain.jpg")
+    exiftool.read(path)
+    before = os.getpriority(os.PRIO_PROCESS, exiftool._process.pid)
+
+    exiftool.set_gentle(True)
+    assert os.getpriority(os.PRIO_PROCESS, exiftool._process.pid) > before
+    assert exiftool.read(path) is not None
+
+    # A process started later is gentle from the start
+    exiftool._kill()
+    exiftool.read(path)
+    assert os.getpriority(os.PRIO_PROCESS, exiftool._process.pid) > before

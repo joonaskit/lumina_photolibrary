@@ -1,5 +1,6 @@
 import time
 
+import pytest
 from conftest import TIMEOUT
 from fakes import FakeExifTool
 from photos import make_jpeg
@@ -226,3 +227,46 @@ def test_the_usage_is_counted_off_the_main_thread(service, drive, qtbot, wait_id
 
     # The scan's own thumbnails may be there too
     assert told[0] >= 3000
+
+
+def test_a_scan_is_gentle_when_the_service_says_so_and_the_library_is_large(
+    service, drive, qtbot, monkeypatch
+):
+    from lumina.core import library as core_library
+
+    monkeypatch.setattr(core_library, "GENTLE_FROM", 5)
+    monkeypatch.setattr(core_library, "_REST_RATIO", 0.0)
+    for n in range(12):
+        make_jpeg(drive / "Photos" / f"more{n:03}.jpg")
+    assert service.gentle_scans
+
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        service.add_folder(drive / "Photos")
+    assert FakeExifTool.gentle
+
+    FakeExifTool.reset()
+    service.gentle_scans = False
+    for n in range(12):
+        make_jpeg(drive / "Photos" / f"again{n:03}.jpg")
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        service.rescan()
+    assert not FakeExifTool.gentle
+
+
+def test_the_time_left_is_told_from_the_rate_of_the_details(service, qtbot, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(library.time, "monotonic", lambda: now[0])
+    job = 7
+
+    # The walk has no end to tell; the details tell nothing until there is a rate
+    assert service._time_left(job, library.FINDING, 300, None) is None
+    assert service._time_left(job, library.DETAILS, 0, 1000) is None
+    now[0] += 2
+    assert service._time_left(job, library.DETAILS, 200, 1000) is None
+    now[0] += 8
+    # 400 read in 10 seconds: 600 left take 15
+    assert service._time_left(job, library.DETAILS, 400, 1000) == pytest.approx(15)
+    # Few read: not told, a new job or phase starts again
+    assert service._time_left(8, library.DETAILS, 0, 1000) is None
+    now[0] += 20
+    assert service._time_left(8, library.DETAILS, 50, 1000) is None

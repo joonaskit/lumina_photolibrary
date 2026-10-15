@@ -167,3 +167,44 @@ def test_size_text():
 
 def dialog_size(size):
     return dialogs.size_text(size)
+
+
+def test_gentle_scanning_is_on_at_first_and_kept(qtbot, service):
+    assert settings.gentle_scans() is True and service.gentle_scans is True
+    dialog = SettingsDialog(library=service)
+    qtbot.addWidget(dialog)
+    assert dialog.gentle.isChecked()
+
+    dialog.gentle.setChecked(False)
+    assert settings.gentle_scans() is False and service.gentle_scans is False
+    again = SettingsDialog(library=service)
+    qtbot.addWidget(again)
+    assert not again.gentle.isChecked()
+
+    dialog.gentle.setChecked(True)
+    assert settings.gentle_scans() is True and service.gentle_scans is True
+
+
+def test_watching_folders_is_on_at_first_kept_and_applied(qtbot, service):
+    assert settings.watch_folders() is True
+    dialog = SettingsDialog(library=service)
+    qtbot.addWidget(dialog)
+    assert dialog.watch.isChecked() and not service.watcher.enabled
+
+    dialog.watch.setChecked(False)
+    assert settings.watch_folders() is False and not service.watcher.enabled
+    dialog.watch.setChecked(True)
+    assert settings.watch_folders() is True and service.watcher.enabled
+
+
+def test_a_folder_too_large_to_watch_is_named_in_the_settings(qtbot, service, drive):
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        folder = service.add_folder(drive / "Photos")
+    service.watcher.budget = 0
+    service.watcher.set_enabled(True)
+    qtbot.waitUntil(lambda: folder in service.watcher.unwatched, timeout=TIMEOUT)
+
+    dialog = SettingsDialog(library=service)
+    qtbot.addWidget(dialog)
+
+    assert "Too many folders inside to watch: Photos" in dialog.watch_note.text()

@@ -12,6 +12,9 @@ The rules it keeps:
 - Every failure names its file, in the job's failures.
 - The job is `done` only when both steps finished; a cancel stops the work, then
   reports `cancelled`.
+- A large scan can be gentle: from GENTLE_FROM photos it rests after each batch for as
+  long as the batch took, and exiftool runs at the lowest priority, so the desktop
+  stays responsive through a first import of a library of hundreds of thousands.
 - Everything is written as it goes, so a scan stopped by a quit or a crash is run
   again from the start and skips what it did: unchanged photos and read details.
 """
@@ -29,12 +32,26 @@ _WRITE_EVERY = 500
 _DETAILS_BATCH = 50
 # How often progress is written to the database, in seconds
 _SAVE_EVERY = 1.0
+# A gentle scan rests from this many photos on: a small one is over before it is noticed
+GENTLE_FROM = 2000
+# It rests this many times as long as the work before the rest took, but never longer
+# than _REST_MOST seconds
+_REST_RATIO = 1.0
+_REST_MOST = 5.0
+_REST_STEP = 0.1
 
 FINDING, DETAILS = "finding", "details"
 
 
 class NotConnected(Exception):
     """The folder's volume is not mounted: the job waits for it."""
+
+
+def rest(seconds, should_stop):
+    """Wait, a tenth of a second at a time, so that a cancel is not waited for."""
+    end = time.monotonic() + seconds
+    while not should_stop() and (left := end - time.monotonic()) > 0:
+        time.sleep(min(_REST_STEP, left))
 
 
 class _Job:
@@ -63,11 +80,14 @@ def scan(
     should_stop=lambda: False,
     report=lambda phase, done, total, changed: None,
     exiftool=metadata.ExifTool,
+    gentle=False,
+    rest=rest,
 ):
     """Run scan job `job_id` for folder `folder_id` to its end and return its state.
     `mounts` are the system's mounts (volumes.read_mounts()); `exiftool` makes an
-    ExifTool. Raises NotConnected, leaving the job queued, when the folder's volume
-    is not mounted."""
+    ExifTool. With `gentle`, a large scan rests between batches (`rest(seconds,
+    should_stop)`) and reads at a low priority. Raises NotConnected, leaving the job
+    queued, when the folder's volume is not mounted."""
     folder = library.folder(folder_id)
     if folder is None:
         library.update_job(job_id, state=dbm.FAILED_JOB, message="The folder is not in the library")
@@ -86,13 +106,13 @@ def scan(
         job.end(dbm.FAILED_JOB, f"Folder not found: {base}")
         return dbm.FAILED_JOB
 
-    found = _find(library, job, folder, volume, base, should_stop)
+    found = _find(library, job, folder, volume, base, should_stop, gentle, rest)
     if found is None:
         job.end(dbm.CANCELLED, "Cancelled while finding photos")
         return dbm.CANCELLED
     counts, failures = found
 
-    details = _details(library, job, folder, base, should_stop, exiftool)
+    details = _details(library, job, folder, base, should_stop, exiftool, gentle, rest)
     if details is None:
         job.end(dbm.CANCELLED, "Cancelled while reading details")
         return dbm.CANCELLED
@@ -102,7 +122,7 @@ def scan(
     return state
 
 
-def _find(library, job, folder, volume, base, should_stop):
+def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=rest):
     """Walk the folder. Returns ({"new", "changed", "missing"}: count, failures) or None
     when cancelled."""
     known = library.photo_states(folder.id)
@@ -123,6 +143,7 @@ def _find(library, job, folder, volume, base, should_stop):
             return True
         return False
 
+    worked = time.monotonic()
     for path in scanner.find_photos(base, should_stop, on_error=unreadable_folder):
         relative = _relative(folder.path, base, path)
         try:
@@ -145,6 +166,9 @@ def _find(library, job, folder, volume, base, should_stop):
             returned.append(state[0])
         if len(new) + len(changed) + len(returned) >= _WRITE_EVERY:
             job.progress(FINDING, len(seen), None, changed=flush())
+            if gentle and len(seen) >= GENTLE_FROM:
+                rest(min(_REST_MOST, (time.monotonic() - worked) * _REST_RATIO), should_stop)
+            worked = time.monotonic()
     if should_stop():
         flush()
         return None
@@ -161,7 +185,7 @@ def _find(library, job, folder, volume, base, should_stop):
     return counts, len(failures)
 
 
-def _details(library, job, folder, base, should_stop, exiftool):
+def _details(library, job, folder, base, should_stop, exiftool, gentle=False, rest=rest):
     """Read content ids and metadata. Returns (state, note, failures) or None when
     cancelled."""
     total = library.count_pending_metadata(folder.id)
@@ -174,11 +198,15 @@ def _details(library, job, folder, base, should_stop, exiftool):
     except metadata.MetadataUnavailable as error:
         # Photos are listed without their details; the next scan reads them
         return dbm.DONE, f"Details not read: {error}", 0
+    resting = gentle and total >= GENTLE_FROM
+    if resting:
+        tool.set_gentle(True)
     failures = 0
     try:
         while True:
             if should_stop():
                 return None
+            began = time.monotonic()
             batch = library.pending_metadata(folder.id, _DETAILS_BATCH)
             if not batch:
                 break
@@ -208,6 +236,8 @@ def _details(library, job, folder, base, should_stop, exiftool):
             failures += len(failed)
             done += len(batch)
             job.progress(DETAILS, done, total, changed=True)
+            if resting:
+                rest(min(_REST_MOST, (time.monotonic() - began) * _REST_RATIO), should_stop)
     finally:
         tool.close()
     job.progress(DETAILS, done, total, force=True)

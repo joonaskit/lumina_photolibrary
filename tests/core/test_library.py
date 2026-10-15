@@ -290,3 +290,101 @@ def test_scanning_leaves_every_file_as_it_was(library, drive, exiftool):
     row = library.photo(by_path(library, folder)["Photos/exif.jpg"][0])
     assert (row["captured"], row["captured_offset"]) == ("2024-06-01 18:30:05.250000", "+03:00")
     assert row["lens"] == "RF24-105mm F4 L IS USM"
+
+
+class Rests:
+    """Stands in for `rest`: notes it was asked to, without waiting."""
+
+    def __init__(self):
+        self.seconds = []
+
+    def __call__(self, seconds, should_stop):
+        self.seconds.append(seconds)
+
+
+def test_a_large_gentle_scan_rests_between_batches_and_reads_at_low_priority(
+    library, drive, monkeypatch
+):
+    monkeypatch.setattr(scanning, "GENTLE_FROM", 100)
+    folder = add(library, drive)
+    for n in range(120):
+        make_jpeg(drive / "Photos" / f"more{n:03}.jpg")
+    rests = Rests()
+
+    state, _job = run(library, folder, mounted(drive), gentle=True, rest=rests)
+
+    assert state == dbm.DONE
+    assert FakeExifTool.gentle
+    # 123 photos in batches of 50: a rest after each, and none longer than the most
+    assert len(rests.seconds) == 3
+    assert all(0 <= seconds <= scanning._REST_MOST for seconds in rests.seconds)
+    # Everything was read all the same
+    assert library.count_pending_metadata(folder) == 0
+
+
+def test_a_small_scan_is_not_gentle_and_nor_is_one_not_asked_to_be(library, drive, monkeypatch):
+    folder = add(library, drive)
+    rests = Rests()
+    state, _job = run(library, folder, mounted(drive), gentle=True, rest=rests)
+    # 3 photos, below GENTLE_FROM
+    assert state == dbm.DONE and rests.seconds == [] and not FakeExifTool.gentle
+
+    monkeypatch.setattr(scanning, "GENTLE_FROM", 1)
+    for n in range(60):
+        make_jpeg(drive / "Photos" / f"more{n:03}.jpg")
+    state, _job = run(library, folder, mounted(drive), rest=rests)
+    assert state == dbm.DONE and rests.seconds == [] and not FakeExifTool.gentle
+
+
+def test_finding_a_large_first_import_rests_too(library, drive, monkeypatch):
+    monkeypatch.setattr(scanning, "GENTLE_FROM", 400)
+    monkeypatch.setattr(scanning, "_WRITE_EVERY", 100)
+    folder = add(library, drive)
+    for n in range(450):
+        make_jpeg(drive / "Photos" / f"more{n:03}.jpg", size=(16, 16))
+    rests = Rests()
+
+    state, _job = run(library, folder, mounted(drive), gentle=True, rest=rests)
+
+    assert state == dbm.DONE
+    # The walk rested from the 400th photo on (4 writes of 100, then 453 are seen);
+    # the details after each of their batches
+    assert len(rests.seconds) > len(range(0, 453, 50)) - 1
+
+
+def test_a_cancel_is_not_waited_for_in_a_rest():
+    import time
+
+    began = time.monotonic()
+    scanning.rest(30, lambda: True)
+    assert time.monotonic() - began < 1
+
+    began = time.monotonic()
+    scanning.rest(0.25, lambda: False)
+    assert 0.2 <= time.monotonic() - began < 1
+
+
+def test_gentle_exiftool_is_niced(tmp_path):
+    import subprocess
+
+    from lumina.core import metadata
+
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        assert os.getpriority(os.PRIO_PROCESS, child.pid) == 0
+        metadata.lower_priority(child.pid)
+        assert os.getpriority(os.PRIO_PROCESS, child.pid) == metadata._NICE
+        if shutil.which("ionice"):
+            said = subprocess.run(
+                ["ionice", "-p", str(child.pid)], capture_output=True, text=True
+            ).stdout
+            assert "idle" in said
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_a_missing_process_is_not_an_error_when_lowering_priority():
+    from lumina.core import metadata
+
+    metadata.lower_priority(2**22 + 12345)

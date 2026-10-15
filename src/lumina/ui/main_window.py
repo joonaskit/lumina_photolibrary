@@ -64,6 +64,8 @@ VIEWER_MAX_SIDE = 3840
 
 # Space between neighbouring cells, so their hover and selection backgrounds stay apart
 GRID_GAP = 8
+# How long after the grid stopped scrolling the thumbnails not wanted are dropped
+_TRIM_MS = 150
 # How much of a dimmed thumbs-down photo shows
 DIMMED_OPACITY = 0.35
 
@@ -132,7 +134,7 @@ class MainWindow(QMainWindow):
         self.previews.ready.connect(self._on_preview_ready)
         self.previews.failed.connect(self._on_preview_failed)
         self._viewed_id = None
-        self._place = (None, None)
+        self._place = (None, None, 0)
         # Where the Develop view was opened from, to go back to
         self._develop_from = _GRID
         self.session = DevelopSession(service, self)
@@ -537,6 +539,13 @@ class MainWindow(QMainWindow):
         self.grid.addAction(self.end_search_action)
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self._grid_menu)
+        # Scrolling fast asks for a thumbnail of every row painted on the way: once it
+        # settles, those far from the view are not waited for
+        self._trim_timer = QTimer(self)
+        self._trim_timer.setSingleShot(True)
+        self._trim_timer.setInterval(_TRIM_MS)
+        self._trim_timer.timeout.connect(self.trim_thumbnails)
+        self.grid.verticalScrollBar().valueChanged.connect(lambda _value: self._trim_timer.start())
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1039,6 +1048,29 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(GRID_SIZE_NAMES):
             self.set_grid_size(GRID_SIZE_NAMES[index])
 
+    def visible_rows(self):
+        """(first, last) of the rows in the grid's view and a screenful above and below,
+        or None while there are none."""
+        cell = self.grid.gridSize()
+        if self.model.rowCount() == 0 or cell.width() <= 0 or cell.height() <= 0:
+            return None
+        view = self.grid.viewport().size()
+        columns = max(1, view.width() // cell.width())
+        screenful = columns * (view.height() // cell.height() + 1)
+        first = 0
+        for x in range(cell.width() // 2, max(view.width(), 1), cell.width()):
+            index = self.grid.indexAt(QPoint(x, 2))
+            if index.isValid():
+                first = index.row()
+                break
+        return max(0, first - screenful), first + 2 * screenful
+
+    def trim_thumbnails(self):
+        """Stop waiting for the thumbnails of rows far from the view."""
+        rows = self.visible_rows()
+        if rows is not None:
+            self.model.keep_thumbnails(*rows)
+
     def _apply_grid_size(self, name):
         self.grid_size.set_value(name)
         side = style.px(GRID_ICONS[name])
@@ -1070,13 +1102,17 @@ class MainWindow(QMainWindow):
     def _save_place(self):
         top = self.grid.indexAt(self.grid.viewport().rect().topLeft() + _inset())
         current = self.grid.currentIndex()
+        # How far the top photo's cell is above (negative) or below the view's top: a view
+        # scrolled to the middle of a row stays so
+        offset = self.grid.visualRect(top).top() - self.grid.viewport().rect().top()
         self._place = (
             self.model.photo_id(top.row()) if top.isValid() else None,
             self.model.photo_id(current.row()) if current.isValid() else None,
+            offset if top.isValid() else 0,
         )
 
     def _restore_place(self):
-        top, current = self._place
+        top, current, offset = self._place
         for photo_id, make_current in ((current, True), (top, False)):
             row = self.model.row_of(photo_id) if photo_id is not None else None
             if row is None:
@@ -1085,7 +1121,12 @@ class MainWindow(QMainWindow):
             if make_current:
                 self.grid.setCurrentIndex(index)
             else:
+                # The view lays its cells out later; where the photo is now is asked of it
+                # when it is laid out
+                self.grid.doItemsLayout()
                 self.grid.scrollTo(index, QListView.ScrollHint.PositionAtTop)
+                bar = self.grid.verticalScrollBar()
+                bar.setValue(bar.value() - offset)
         self._update_status()
 
     # The grid and the viewer

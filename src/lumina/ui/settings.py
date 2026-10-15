@@ -115,6 +115,26 @@ def thumbnail_limit():
     return gigabytes * 1024**3 if gigabytes else None
 
 
+def gentle_scans():
+    """Whether a large scan rests between batches and reads at a low priority. On at
+    first."""
+    return _settings().value("scan/gentle", True) in (True, "true")
+
+
+def set_gentle_scans(on):
+    _settings().setValue("scan/gentle", bool(on))
+
+
+def watch_folders():
+    """Whether the library's folders are watched for changes while Lumina runs. On at
+    first."""
+    return _settings().value("scan/watch", True) in (True, "true")
+
+
+def set_watch_folders(on):
+    _settings().setValue("scan/watch", bool(on))
+
+
 def density():
     """How much room the interface takes: "comfortable" or "compact"."""
     value = _settings().value("view/density")

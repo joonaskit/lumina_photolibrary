@@ -52,3 +52,25 @@ def test_samples_are_left_as_they_were():
         images.load_pixels(path, 320)
 
     assert {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in RAW_FILES} == before
+
+
+# The EXIF orientation of a photo, and LibRaw's `flip` for the same turn: exiftool and
+# LibRaw both read it from the file, and what is shown is turned by one or the other
+# (the preview by its own EXIF or LibRaw's flip, the decode by LibRaw's)
+FLIP_OF_ORIENTATION = {1: 0, 3: 3, 8: 5, 6: 6}
+
+
+def _flip(path):
+    import rawpy
+
+    with rawpy.imread(str(path)) as file:
+        return file.sizes.flip
+
+
+@needs_raw
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_exiftool_and_libraw_agree_on_the_orientation(path, exiftool):
+    # A camera body where they disagree would show its portrait photos on their side
+    orientation = exiftool.read(path).orientation
+
+    assert FLIP_OF_ORIENTATION[orientation or 1] == _flip(path), path.name
