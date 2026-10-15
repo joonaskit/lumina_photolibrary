@@ -3,7 +3,7 @@ import json
 import pytest
 
 from lumina.core.edit import params
-from lumina.core.edit.params import Basic, Crop, Curves, Matte, NewerParams, Params
+from lumina.core.edit.params import Basic, Colour, Crop, Curves, Matte, NewerParams, Params
 
 
 def edited():
@@ -12,6 +12,7 @@ def edited():
         temperature=20.0,
         tint=-5.0,
         basic=Basic(contrast=20, highlights=-60, shadows=35, whites=-10, blacks=5),
+        colour=Colour(vibrance=30, saturation=-15),
         curves=Curves(rgb=((0, 0), (0.5, 0.6), (1, 1)), blue=((0, 0.05), (1, 1))),
         matte=Matte(black=0.08, white=0.03, shadow_desaturation=0.4),
         rotate=1,
@@ -168,3 +169,26 @@ def test_a_preset_can_keep_the_basic_controls():
     applied = params.apply_preset(Params(), params.preset(look, ["basic"]))
 
     assert applied == Params(basic=look.basic)
+
+
+def test_a_version_3_edit_gets_vibrance_and_saturation_at_zero():
+    stored = {"version": 3, "exposure": 0.5, "basic": {"contrast": 10}}
+
+    edit = params.from_dict(stored)
+
+    assert edit == Params(exposure=0.5, basic=Basic(contrast=10))
+    assert edit.colour == Colour() and edit.colour.is_identity()
+
+
+def test_the_colour_controls_are_checked():
+    edit = params.from_dict({"colour": {"vibrance": 900, "saturation": "lots"}})
+
+    assert edit.colour == Colour(vibrance=params.COLOUR[1])
+
+
+def test_a_preset_can_keep_the_colour_controls():
+    look = edited()
+
+    applied = params.apply_preset(Params(), params.preset(look, ["colour"]))
+
+    assert applied == Params(colour=look.colour)

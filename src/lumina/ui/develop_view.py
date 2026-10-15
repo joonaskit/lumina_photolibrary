@@ -268,6 +268,15 @@ class DevelopView(QWidget):
         )
         self.tint = self._slider(layout, "Tint", *develop.WARMTH, step=1, decimals=0, field="tint")
 
+        self._heading(layout, "COLOUR")
+        # Vibrance, Saturation
+        self.colour = {
+            name: self._slider(
+                layout, name.capitalize(), *develop.COLOUR, step=1, decimals=0, field=name
+            )
+            for name in develop.COLOUR_FIELDS
+        }
+
         self._heading(layout, "TONE CURVE")
         channels = QHBoxLayout()
         channels.setSpacing(style.px(4))
@@ -384,6 +393,8 @@ class DevelopView(QWidget):
             return params.with_changes(matte=Matte(**values))
         if field in develop.BASIC_FIELDS:
             return params.with_changes(basic=replace(params.basic, **{field: value}))
+        if field in develop.COLOUR_FIELDS:
+            return params.with_changes(colour=replace(params.colour, **{field: value}))
         return params.with_changes(**{field: value})
 
     # Showing the edit
@@ -394,6 +405,8 @@ class DevelopView(QWidget):
             slider.set_value(getattr(params.basic, name))
         self.temperature.set_value(params.temperature)
         self.tint.set_value(params.tint)
+        for name, slider in self.colour.items():
+            slider.set_value(getattr(params.colour, name))
         self.matte_black.set_value(params.matte.black)
         self.matte_white.set_value(params.matte.white)
         self.matte_desaturation.set_value(params.matte.shadow_desaturation)
@@ -498,11 +511,11 @@ class DevelopView(QWidget):
             self,
             "Save Preset",
             "Name of the preset. It keeps the white balance, contrast, highlights, shadows,\n"
-            "whites, blacks, tone curve and matte of this edit:",
+            "whites, blacks, vibrance, saturation, tone curve and matte of this edit:",
         )
         name = name.strip()
         if ok and name:
-            self.session.save_preset(name, ["white_balance", "basic", "curves", "matte"])
+            self.session.save_preset(name, ["white_balance", "basic", "colour", "curves", "matte"])
 
     def delete_preset(self):
         names = self.session.presets()

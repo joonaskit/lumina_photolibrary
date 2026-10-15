@@ -5,7 +5,7 @@ from conftest import TIMEOUT
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QMessageBox
 
-from lumina.qt_models.develop import Basic, Crop, Params
+from lumina.qt_models.develop import Basic, Colour, Crop, Params
 from lumina.ui import develop_view
 from lumina.ui.controls import ValueSlider
 from lumina.ui.curve_editor import CurveEditor
@@ -433,3 +433,31 @@ def test_a_saved_preset_keeps_the_basic_controls(qtbot, window, monkeypatch):
     window.session.apply_preset("Lifted")
 
     assert window.session.params == Params(basic=Basic(shadows=30, blacks=-20))
+
+
+def test_the_colour_sliders_commit_their_control_and_show_the_edit(qtbot, window):
+    open_editor(qtbot, window)
+    window.session.commit(Params(exposure=0.5, colour=Colour(saturation=10)))
+    slider = window.develop.colour["vibrance"]
+
+    slider.slider.setSliderDown(True)
+    slider.slider.setValue(35)
+    slider.slider.setSliderDown(False)
+
+    assert window.session.params == Params(exposure=0.5, colour=Colour(vibrance=35, saturation=10))
+    assert slider.value_label.text() == "+35"
+    window.undo_action.trigger()
+    assert window.develop.colour["vibrance"].value() == 0
+    assert window.develop.colour["saturation"].value() == 10
+
+
+def test_a_saved_preset_keeps_the_colour_controls(qtbot, window, monkeypatch):
+    open_editor(qtbot, window)
+    window.session.commit(Params(exposure=1.0, colour=Colour(vibrance=40, saturation=-10)))
+    monkeypatch.setattr(develop_view.QInputDialog, "getText", lambda *a, **k: ("Vivid", True))
+    window.develop.save_preset()
+    window.session.commit(Params())
+
+    window.session.apply_preset("Vivid")
+
+    assert window.session.params == Params(colour=Colour(vibrance=40, saturation=-10))
