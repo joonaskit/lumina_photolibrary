@@ -484,7 +484,7 @@ class MainWindow(QMainWindow):
         heading.setObjectName("title")
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint = QLabel(
-            "Add a folder of photos: JPEG, PNG, TIFF, CR3 and other RAW files.\n"
+            "Add a folder of photos: JPEG, HEIC, PNG, TIFF, CR3 and other RAW files.\n"
             "Lumina only reads them; nothing in the folder is changed."
         )
         hint.setObjectName("placeholder")

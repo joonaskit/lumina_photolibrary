@@ -12,9 +12,9 @@ image and the float proxy (about 24 MB) are kept; full renders work in tiles.
 
 import numpy as np
 import rawpy
-from PIL import Image, ImageOps
+from PIL import Image
 
-from lumina.core import raw
+from lumina.core import images, raw
 from lumina.core.edit.pipeline import srgb_decode
 from lumina.core.errors import PhotoError
 
@@ -49,7 +49,7 @@ def _raw_linear(path, half=False):
 def _image_linear(path):
     try:
         with Image.open(path) as image:
-            rgb = np.asarray(ImageOps.exif_transpose(image).convert("RGB"))
+            rgb = np.asarray(images.upright_srgb(image))
     except (OSError, ValueError, Image.DecompressionBombError) as error:
         raise PhotoError(path, f"cannot read image ({error})") from error
     # 256 entries: decoding through a table is exact and fast

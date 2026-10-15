@@ -7,7 +7,7 @@ The sibling project `../filehouse` uses the same stack and conventions; look the
 ## Stack
 
 - Python 3.12+, **PySide6 with Qt Widgets** (not Qt Quick/QML)
-- **rawpy (LibRaw)** for RAW, **exiftool** (`-stay_open`) for metadata
+- **rawpy (LibRaw)** for RAW, **pillow-heif** (libheif) for HEIC and HEIF, **exiftool** (`-stay_open`) for metadata
 - **numpy** for the edit pipeline, **OpenCV** (`opencv-python-headless`) for the blurs and filters of local contrast, sharpening and noise reduction, **onnxruntime** for CLIP/SigLIP
 - **SQLite** for metadata, edits and search vectors (float16 blobs, searched with numpy; no vector store)
 - pytest for `core/`, pytest-qt for the few UI tests, ruff for lint and format
