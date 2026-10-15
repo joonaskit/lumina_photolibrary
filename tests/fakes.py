@@ -15,6 +15,8 @@ class FakeExifTool:
     calls = []
     models = {}
     delay = 0.0
+    # Whether a scan asked for the lowest priority, as the last one did
+    gentle = False
 
     def __init__(self, broken=(), dies_after=None):
         self.broken = set(map(str, broken))
@@ -35,12 +37,15 @@ class FakeExifTool:
         model = FakeExifTool.models.get(name, "Canon EOS 90D")
         return Metadata(captured=datetime(2022, 5, 9, 21, 3), model=model, lens="EF-S55-250mm")
 
+    def set_gentle(self, on=True):
+        FakeExifTool.gentle = on
+
     def close(self):
         pass
 
     @classmethod
     def reset(cls):
-        cls.calls, cls.models, cls.delay = [], {}, 0.0
+        cls.calls, cls.models, cls.delay, cls.gentle = [], {}, 0.0, False
 
 
 def colour_vector(colour):

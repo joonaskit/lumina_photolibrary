@@ -89,3 +89,15 @@ def test_a_raw_files_full_size_is_its_previews(tmp_path):
     assert (small.width, small.full) == (100, (480, 320))
     assert (whole.width, whole.height, whole.full) == (480, 320, (480, 320))
     assert images.load_pixels(turned, 100).full == (320, 480)
+
+
+@pytest.mark.parametrize("orientation, flip", [(1, 0), (3, 3), (8, 5), (6, 6)])
+def test_exiftool_and_libraw_read_the_same_turn_from_a_file(exiftool, tmp_path, orientation, flip):
+    # What the real samples check (tests/core/test_samples.py), on files made here
+    import rawpy
+
+    path = make_dng(tmp_path / "turned.dng", orientation=orientation)
+
+    with rawpy.imread(str(path)) as file:
+        assert file.sizes.flip == flip
+    assert exiftool.read(path).orientation == orientation

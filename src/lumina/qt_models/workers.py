@@ -55,6 +55,10 @@ EMBED = "embed"
 # so neither waits behind a scan or the grid's reads
 INDEXING = "indexing"
 SEARCH = "search"
+# One thread for looking after the thumbnail cache, apart from the scans
+CACHE = "cache"
+# One thread for walking a library folder to watch it
+WATCH = "watch"
 _NAMED_PROCESSES = {DEVELOP, EMBED}
 
 

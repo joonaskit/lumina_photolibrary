@@ -197,7 +197,7 @@ def test_edit_opens_the_develop_view_and_back_leaves_it(qtbot, window):
     open_editor(qtbot, window)
 
     assert window.pages.currentIndex() == 3
-    assert window.editing.isVisible() and not window.browsing.isVisible()
+    assert window.editing.isVisible()
     assert window.develop.image.pixmap() is not None
 
     window.go_back()

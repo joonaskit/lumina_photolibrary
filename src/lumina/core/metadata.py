@@ -80,11 +80,38 @@ class Metadata:
     warning: str | None = None
 
 
+# How far down the CPU priority goes (nice) for a process that should not be noticed
+_NICE = 10
+
+
+def lower_priority(pid):
+    """Make the process `pid` yield to the rest of the desktop: a lower CPU priority, and
+    the disk's idle class (it is served when nothing else wants the disk). Best effort:
+    where the system has no such thing, it is as it was."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, pid, _NICE)
+    except (OSError, AttributeError):
+        pass
+    ionice = shutil.which("ionice")
+    if ionice:
+        try:
+            subprocess.run(
+                [ionice, "-c", "3", "-p", str(pid)],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
 class ExifTool:
     def __init__(self, executable=None):
         self.executable = executable or shutil.which("exiftool")
         if not self.executable:
             raise MetadataUnavailable("exiftool is not installed")
+        self._gentle = False
         self._process = None
         self._buffer = b""
         self._counter = 0
@@ -132,6 +159,14 @@ class ExifTool:
         with self._lock:
             self._stop()
 
+    def set_gentle(self, on=True):
+        """Run exiftool at the lowest CPU and disk priority, so that reading a large
+        library does not slow the desktop down: now, and in a process started later."""
+        with self._lock:
+            self._gentle = on
+            if on and self._process is not None:
+                lower_priority(self._process.pid)
+
     # The process
 
     def _start(self):
@@ -158,6 +193,8 @@ class ExifTool:
             self._process = None
             raise MetadataUnavailable(f"cannot start exiftool ({error})") from error
         self._buffer = b""
+        if self._gentle:
+            lower_priority(self._process.pid)
 
     def _stop(self):
         process, self._process = self._process, None

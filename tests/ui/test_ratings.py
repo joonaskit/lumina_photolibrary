@@ -203,7 +203,7 @@ def test_the_develop_view_rates_the_photo_being_edited_and_never_steps_on(qtbot,
     assert window.title.text() == first
     assert window.model.rating(0) == 4 and window.model.flag(0) == PICKED
     assert "★★★★" in window.status.text() and "Thumbs up" in window.status.text()
-    assert window.flagging.isVisible()
+    assert window.marking.isVisible()
     assert second not in window.title.text()
 
 
@@ -293,7 +293,7 @@ def star_point(window, number):
 def test_the_toolbar_stars_rate_and_the_same_star_again_clears(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
     choose(window, 0)
-    assert window.rating_stars.isVisible() and window.rating_bar.isEnabled()
+    assert window.marking.isVisible() and window.rating_bar.isEnabled()
 
     qtbot.mouseClick(window.rating_bar, Qt.MouseButton.LeftButton, pos=star_point(window, 4))
     assert window.model.rating(0) == 4 and window.rating_bar.rating() == 4
@@ -334,7 +334,7 @@ def test_the_toolbar_stars_are_there_in_the_viewer_and_the_develop_view(qtbot, s
 
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
         window.show_develop(0)
-    assert window.rating_stars.isVisible() and window.rating_bar.rating() == 3
+    assert window.marking.isVisible() and window.rating_bar.rating() == 3
     qtbot.mouseClick(window.rating_bar, Qt.MouseButton.LeftButton, pos=star_point(window, 5))
     assert window.model.rating(0) == 5
     assert window.title.text() == window.model.name(0)

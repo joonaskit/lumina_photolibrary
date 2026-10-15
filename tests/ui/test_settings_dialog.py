@@ -94,3 +94,117 @@ def test_the_model_is_deleted_after_asking(qtbot, service, tmp_path, monkeypatch
     search.index()
     assert search.index_future is None
     search.close()
+
+
+def test_without_a_library_there_is_no_thumbnails_section(qtbot):
+    dialog = SettingsDialog()
+    qtbot.addWidget(dialog)
+
+    assert not hasattr(dialog, "cache_limit")
+
+
+def test_the_thumbnail_limit_is_kept_and_applied_to_the_cache(qtbot, service):
+    assert settings.thumbnail_limit_gb() == 4 and settings.thumbnail_limit() == 4 * 1024**3
+    dialog = SettingsDialog(library=service)
+    qtbot.addWidget(dialog)
+    assert dialog.cache_limit.value() == 4
+
+    dialog.cache_limit.setValue(2)
+    assert settings.thumbnail_limit_gb() == 2
+    # Not at once: spinning it down must not delete on the way
+    assert service.thumbnail_limit is None
+    with qtbot.waitSignal(service.thumbnails_pruned, timeout=TIMEOUT):
+        dialog.apply_cache_limit()
+    assert service.thumbnail_limit == 2 * 1024**3
+
+    # Zero is no limit
+    dialog.cache_limit.setValue(0)
+    assert settings.thumbnail_limit() is None
+    dialog.apply_cache_limit()
+    assert service.thumbnail_limit is None
+    assert dialog.cache_limit.text() == "No limit"
+
+
+def test_closing_applies_a_limit_changed_a_moment_ago(qtbot, service):
+    dialog = SettingsDialog(library=service)
+    qtbot.addWidget(dialog)
+
+    dialog.cache_limit.setValue(3)
+    dialog.reject()
+
+    assert service.thumbnail_limit == 3 * 1024**3
+
+
+def test_what_the_thumbnails_take_is_shown(qtbot, service):
+    from lumina.core import thumbs
+
+    folder = thumbs.ThumbnailCache(thumbs.default_cache_dir()).root / "aa"
+    folder.mkdir(parents=True)
+    (folder / "aa-320.webp").write_bytes(b"x" * 3_000_000)
+    dialog = SettingsDialog(library=service)
+    qtbot.addWidget(dialog)
+
+    qtbot.waitUntil(lambda: dialog.cache_usage.text().startswith("They take"), timeout=TIMEOUT)
+
+    assert dialog.cache_usage.text() == "They take 3 MB now."
+
+
+def test_a_stored_limit_is_shown_and_a_bad_one_is_the_default(qtbot, service):
+    settings._settings().setValue("cache/thumbnail_limit_gb", "nonsense")
+    assert settings.thumbnail_limit_gb() == settings.THUMBNAIL_LIMIT_DEFAULT
+    settings.set_thumbnail_limit_gb(7)
+    dialog = SettingsDialog(library=service)
+    qtbot.addWidget(dialog)
+
+    assert dialog.cache_limit.value() == 7
+
+
+def test_size_text():
+    assert dialog_size(3 * 1024**3) == "3.0 GB"
+    assert dialog_size(1536 * 1024**2) == "1.5 GB"
+    assert dialog_size(300 * 1024**2) == "300 MB"
+
+
+def dialog_size(size):
+    return dialogs.size_text(size)
+
+
+def test_gentle_scanning_is_on_at_first_and_kept(qtbot, service):
+    assert settings.gentle_scans() is True and service.gentle_scans is True
+    dialog = SettingsDialog(library=service)
+    qtbot.addWidget(dialog)
+    assert dialog.gentle.isChecked()
+
+    dialog.gentle.setChecked(False)
+    assert settings.gentle_scans() is False and service.gentle_scans is False
+    again = SettingsDialog(library=service)
+    qtbot.addWidget(again)
+    assert not again.gentle.isChecked()
+
+    dialog.gentle.setChecked(True)
+    assert settings.gentle_scans() is True and service.gentle_scans is True
+
+
+def test_watching_folders_is_on_at_first_kept_and_applied(qtbot, service):
+    assert settings.watch_folders() is True
+    dialog = SettingsDialog(library=service)
+    qtbot.addWidget(dialog)
+    assert dialog.watch.isChecked() and not service.watcher.enabled
+
+    dialog.watch.setChecked(False)
+    assert settings.watch_folders() is False and not service.watcher.enabled
+    dialog.watch.setChecked(True)
+    assert settings.watch_folders() is True and service.watcher.enabled
+
+
+def test_a_folder_too_large_to_watch_is_named_in_the_settings(qtbot, service, drive):
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        folder = service.add_folder(drive / "Photos")
+    service.watcher.budget = 0
+    service.watcher.set_enabled(True)
+    qtbot.waitUntil(lambda: folder in service.watcher.unwatched, timeout=TIMEOUT)
+
+    dialog = SettingsDialog(library=service)
+    qtbot.addWidget(dialog)
+
+    assert "Too many folders inside to watch: Photos" in dialog.watch_note.text()

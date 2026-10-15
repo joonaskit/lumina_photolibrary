@@ -64,6 +64,8 @@ VIEWER_MAX_SIDE = 3840
 
 # Space between neighbouring cells, so their hover and selection backgrounds stay apart
 GRID_GAP = 8
+# How long after the grid stopped scrolling the thumbnails not wanted are dropped
+_TRIM_MS = 150
 # How much of a dimmed thumbs-down photo shows
 DIMMED_OPACITY = 0.35
 
@@ -132,7 +134,7 @@ class MainWindow(QMainWindow):
         self.previews.ready.connect(self._on_preview_ready)
         self.previews.failed.connect(self._on_preview_failed)
         self._viewed_id = None
-        self._place = (None, None)
+        self._place = (None, None, 0)
         # Where the Develop view was opened from, to go back to
         self._develop_from = _GRID
         self.session = DevelopSession(service, self)
@@ -141,6 +143,9 @@ class MainWindow(QMainWindow):
         self.session.export_exists.connect(self._on_export_exists)
 
         self._make_actions()
+        self.search_field = SearchField()
+        self.search_field.searched.connect(self.search_text)
+        self.search_field.similar_cleared.connect(self.model.clear_search)
         self._make_toolbar()
         self.sidebar = Sidebar()
         self.sidebar.selected.connect(self._on_folder_selected)
@@ -159,15 +164,8 @@ class MainWindow(QMainWindow):
         self.model.set_rejected(settings.rejected_photos())
         self.model.flags_changed.connect(self._update_flag_actions)
         self.model.rowsRemoved.connect(self._update_status)
-        self.filters.add_trailing(self.flag_options)
         self.grid_size = GridSizeSwitch()
         self.grid_size.changed.connect(self.set_grid_size)
-        self.filters.add_trailing(self.grid_size)
-        self.search_field = SearchField()
-        self.search_field.searched.connect(self.search_text)
-        self.search_field.similar_cleared.connect(self.model.clear_search)
-        if search is not None:
-            self.filters.add_trailing(self.search_field)
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self._make_empty_page())
@@ -199,12 +197,24 @@ class MainWindow(QMainWindow):
         self.service.settings_copied.connect(self._update_settings_actions)
         self.pages.addWidget(self.develop)
         outer = QWidget()
-        layout = QHBoxLayout(outer)
-        layout.setContentsMargins(style.px(8), 0, style.px(8), 0)
-        layout.setSpacing(style.px(8))
+        column = QVBoxLayout(outer)
+        # Between the toolbar and the filters
+        divider = QFrame()
+        divider.setObjectName("divider")
+        divider.setFixedHeight(1)
+        column.addWidget(divider)
+        layout = QHBoxLayout()
         layout.addWidget(self.sidebar)
         layout.addWidget(self.pages, 1)
+        column.addLayout(layout, 1)
         self.setCentralWidget(outer)
+
+        def space():
+            column.setContentsMargins(style.gap(8), 0, style.gap(8), 0)
+            column.setSpacing(style.gap(8))
+            layout.setSpacing(style.gap(8))
+
+        style.follow_density(outer, space)
 
         self.status = QLabel()
         self.statusBar().addWidget(self.status, 1)
@@ -215,6 +225,19 @@ class MainWindow(QMainWindow):
 
         self.search_status = SearchStatus()
         self.statusBar().addPermanentWidget(self.search_status)
+        # How the grid shows the photos, not which: at the right of its status bar
+        self.grid_view_options = QWidget()
+        options = QHBoxLayout(self.grid_view_options)
+        options.addWidget(self.flag_options)
+        options.addWidget(self.grid_size)
+        style.follow_density(
+            self.grid_view_options,
+            lambda: (
+                options.setContentsMargins(style.gap(8), 0, 0, 0),
+                options.setSpacing(style.gap(8)),
+            ),
+        )
+        self.statusBar().addPermanentWidget(self.grid_view_options)
         if search is not None:
             self.search_status.cancel_download.connect(search.cancel_download)
             self.search_status.cancel_indexing.connect(search.cancel_indexing)
@@ -252,6 +275,8 @@ class MainWindow(QMainWindow):
         self.edit_action.setShortcut(QKeySequence(Qt.Key.Key_E))
         self.edit_action.setToolTip("Edit the photo (E)")
         self.edit_action.triggered.connect(self.edit_current)
+        # A key and the photos' context menus; no button
+        self.addAction(self.edit_action)
         self.undo_action = QAction("Undo", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.triggered.connect(lambda: self.session.undo())
@@ -364,60 +389,83 @@ class MainWindow(QMainWindow):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
     def _make_toolbar(self):
+        """One row in three parts: where you are on the left, with the edit's buttons in
+        the Develop view; the photo's thumbs and stars in the middle; search and the
+        settings on the right. The sides share the rest equally, so the middle stays in
+        the middle."""
         toolbar = QToolBar("Main")
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
         toolbar.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
         self.addToolBar(toolbar)
 
-        # A widget in a toolbar is shown and hidden through the action that holds it
-        self.navigation = toolbar.addWidget(
-            self._group(self.back_action, self.previous_action, self.next_action)
-        )
+        left = QWidget()
+        left_row = QHBoxLayout(left)
+        left_row.setContentsMargins(0, 0, 0, 0)
+        self.navigation = self._group(self.back_action, self.previous_action, self.next_action)
+        left_row.addWidget(self.navigation)
         self.title = QLabel(APP_NAME)
         self.title.setObjectName("title")
-        toolbar.addWidget(self.title)
-        spacer = QWidget()
-        spacer.setSizePolicy(
-            spacer.sizePolicy().Policy.Expanding, spacer.sizePolicy().Policy.Preferred
+        left_row.addWidget(self.title)
+        self.editing = self._group(
+            self.undo_action, self.redo_action, self.reset_action, self.export_action
         )
-        toolbar.addWidget(spacer)
-        self.editing = toolbar.addWidget(
-            self._group(self.undo_action, self.redo_action, self.reset_action, self.export_action)
-        )
-        self.flagging = toolbar.addWidget(self._group(self.pick_action, self.reject_action))
+        left_row.addWidget(self.editing)
+        left_row.addStretch(1)
+
         self.rating_bar = stars.StarRating()
         self.rating_bar.chosen.connect(self.rate_photos)
-        self.rating_stars = toolbar.addWidget(self._framed_widget(self.rating_bar))
-        self.browsing = toolbar.addWidget(self._group(self.edit_action))
-        toolbar.addWidget(self._group(self.preferences_action))
+        self.marking = self._group(self.pick_action, self.rating_bar, self.reject_action)
 
-    def _framed_widget(self, widget):
-        """A widget in a rounded card like the buttons' groups."""
+        right = QWidget()
+        right_row = QHBoxLayout(right)
+        right_row.setContentsMargins(0, 0, 0, 0)
+        right_row.addStretch(1)
+        right_row.addWidget(self.search_field)
+        right_row.addWidget(self._group(self.preferences_action))
+
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(left, 1)
+        layout.addWidget(self.marking)
+        layout.addWidget(right, 1)
+        toolbar.addWidget(row)
+        style.follow_density(
+            row, lambda: [rows.setSpacing(style.gap(8)) for rows in (left_row, right_row, layout)]
+        )
+
+    def _group(self, *items):
+        """Buttons for actions, and any widgets, in one rounded card, as filehouse's
+        toolbar has them."""
         frame = QFrame()
         frame.setObjectName("group")
         layout = QHBoxLayout(frame)
-        padding = style.px(style.GROUP_PADDING)
-        layout.setContentsMargins(padding, padding, padding, padding)
-        layout.addWidget(widget)
-        return frame
-
-    def _group(self, *actions):
-        """Buttons in one rounded card, as filehouse's toolbar has them."""
-        frame = QFrame()
-        frame.setObjectName("group")
-        layout = QHBoxLayout(frame)
-        padding = style.px(style.GROUP_PADDING)
-        layout.setContentsMargins(padding, padding, padding, padding)
-        layout.setSpacing(style.px(2))
-        for action in actions:
+        widgets = []
+        for action in items:
+            if isinstance(action, QWidget):
+                widgets.append(action)
+                layout.addWidget(action)
+                continue
             button = QToolButton()
             button.setDefaultAction(action)
-            # Square with an icon; wider when the icon theme has none and the text shows
-            button.setFixedHeight(style.px(style.CONTROL_HEIGHT))
-            button.setMinimumWidth(style.px(style.CONTROL_HEIGHT))
             button.setIconSize(QSize(style.px(18), style.px(18)))
+            widgets.append(button)
             layout.addWidget(button)
+
+        def fit():
+            frame.setFixedHeight(style.row_height())
+            padding = style.group_padding()
+            layout.setContentsMargins(padding, padding, padding, padding)
+            layout.setSpacing(style.gap(2))
+            inner = style.row_inner_height()
+            for widget in widgets:
+                widget.setFixedHeight(inner)
+                # Square with an icon; wider when the icon theme has none and the text shows
+                if isinstance(widget, QToolButton):
+                    widget.setMinimumWidth(inner)
+
+        style.follow_density(frame, fit)
         return frame
 
     def _framed(self, widget):
@@ -467,6 +515,10 @@ class MainWindow(QMainWindow):
         self._delegate = _CellDelegate(QSize(), self.grid)
         self.grid.setItemDelegate(self._delegate)
         self._apply_grid_size(settings.grid_size())
+        # Closer cells in a compact window; the thumbnails stay as large
+        style.follow_density(
+            self.grid, lambda: self._apply_grid_size(self.grid_size.value()), now=False
+        )
         # Only while the grid shows: the Develop view may want these keys for its own zoom
         for action in (self.larger_action, self.smaller_action):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -487,6 +539,13 @@ class MainWindow(QMainWindow):
         self.grid.addAction(self.end_search_action)
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self._grid_menu)
+        # Scrolling fast asks for a thumbnail of every row painted on the way: once it
+        # settles, those far from the view are not waited for
+        self._trim_timer = QTimer(self)
+        self._trim_timer.setSingleShot(True)
+        self._trim_timer.setInterval(_TRIM_MS)
+        self._trim_timer.timeout.connect(self.trim_thumbnails)
+        self.grid.verticalScrollBar().valueChanged.connect(lambda _value: self._trim_timer.start())
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -497,6 +556,10 @@ class MainWindow(QMainWindow):
 
     def _make_viewer(self):
         self.viewer = ImageView(zoomable=True)
+        self.viewer.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.viewer.customContextMenuRequested.connect(
+            lambda point: self._photo_menu(in_grid=False).exec(self.viewer.mapToGlobal(point))
+        )
         self.viewer.addActions(
             [
                 self.back_action,
@@ -525,14 +588,18 @@ class MainWindow(QMainWindow):
         self.previous_action.setIcon(style.icon("go-previous"))
         self.next_action.setIcon(style.icon("go-next"))
         self.similar_action.setIcon(style.icon("edit-find", "system-search"))
-        self.preferences_action.setIcon(style.icon("preferences-system", "configure"))
+        self.preferences_action.setIcon(
+            style.icon("preferences-system", "emblem-system", "configure")
+        )
         ratio = self.devicePixelRatioF()
         self.pick_action.setIcon(flags.icon(PICKED, ratio))
         self.reject_action.setIcon(flags.icon(REJECTED, ratio))
         self.search_field.draw_icons()
 
     def open_settings(self):
-        SettingsDialog(self.search, self).exec()
+        dialog = SettingsDialog(self.search, self.service, self)
+        dialog.exec()
+        dialog.deleteLater()
 
     # Folders
 
@@ -622,6 +689,14 @@ class MainWindow(QMainWindow):
             return
         if text and not self._model_ready():
             return
+        if text and self.pages.currentIndex() in (_VIEWER, _DEVELOP):
+            # Typed in the field above a photo: the results are in the grid. The Develop
+            # view saves the edit on the way out
+            if self.pages.currentIndex() == _DEVELOP:
+                self.session.close()
+            self.show_grid()
+            # Still typing: nothing selected, or the next key would replace it
+            self.search_field.edit.setFocus()
         self.model.search_text(text)
 
     def find_similar(self):
@@ -709,6 +784,11 @@ class MainWindow(QMainWindow):
             self.grid.selectionModel().setCurrentIndex(
                 index, self.grid.selectionModel().SelectionFlag.NoUpdate
             )
+        self._photo_menu(in_grid=True).exec(self.grid.viewport().mapToGlobal(point))
+
+    def _photo_menu(self, in_grid):
+        """For the photos chosen in the grid or the one in the viewer. Syncing is from
+        one photo chosen in the grid to the others."""
         menu = QMenu(self)
         menu.addAction(self.edit_action)
         if self.search is not None:
@@ -725,8 +805,9 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(self.copy_settings_action)
         menu.addAction(self.paste_settings_action)
-        menu.addAction(self.sync_settings_action)
-        menu.exec(self.grid.viewport().mapToGlobal(point))
+        if in_grid:
+            menu.addAction(self.sync_settings_action)
+        return menu
 
     # Flags
 
@@ -967,14 +1048,37 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(GRID_SIZE_NAMES):
             self.set_grid_size(GRID_SIZE_NAMES[index])
 
+    def visible_rows(self):
+        """(first, last) of the rows in the grid's view and a screenful above and below,
+        or None while there are none."""
+        cell = self.grid.gridSize()
+        if self.model.rowCount() == 0 or cell.width() <= 0 or cell.height() <= 0:
+            return None
+        view = self.grid.viewport().size()
+        columns = max(1, view.width() // cell.width())
+        screenful = columns * (view.height() // cell.height() + 1)
+        first = 0
+        for x in range(cell.width() // 2, max(view.width(), 1), cell.width()):
+            index = self.grid.indexAt(QPoint(x, 2))
+            if index.isValid():
+                first = index.row()
+                break
+        return max(0, first - screenful), first + 2 * screenful
+
+    def trim_thumbnails(self):
+        """Stop waiting for the thumbnails of rows far from the view."""
+        rows = self.visible_rows()
+        if rows is not None:
+            self.model.keep_thumbnails(*rows)
+
     def _apply_grid_size(self, name):
         self.grid_size.set_value(name)
         side = style.px(GRID_ICONS[name])
         cell = QSize(
-            side + style.px(GRID_CELL_EXTRA.width()), side + style.px(GRID_CELL_EXTRA.height())
+            side + style.gap(GRID_CELL_EXTRA.width()), side + style.gap(GRID_CELL_EXTRA.height())
         )
         self.grid.setIconSize(QSize(side, side))
-        self._delegate.set_size(cell.shrunkBy(_margins(style.px(GRID_GAP))))
+        self._delegate.set_size(cell.shrunkBy(_margins(style.gap(GRID_GAP))))
         self.grid.setGridSize(cell)
         # The photo the user was on stays in view
         if self.grid.currentIndex().isValid():
@@ -998,13 +1102,17 @@ class MainWindow(QMainWindow):
     def _save_place(self):
         top = self.grid.indexAt(self.grid.viewport().rect().topLeft() + _inset())
         current = self.grid.currentIndex()
+        # How far the top photo's cell is above (negative) or below the view's top: a view
+        # scrolled to the middle of a row stays so
+        offset = self.grid.visualRect(top).top() - self.grid.viewport().rect().top()
         self._place = (
             self.model.photo_id(top.row()) if top.isValid() else None,
             self.model.photo_id(current.row()) if current.isValid() else None,
+            offset if top.isValid() else 0,
         )
 
     def _restore_place(self):
-        top, current = self._place
+        top, current, offset = self._place
         for photo_id, make_current in ((current, True), (top, False)):
             row = self.model.row_of(photo_id) if photo_id is not None else None
             if row is None:
@@ -1013,7 +1121,12 @@ class MainWindow(QMainWindow):
             if make_current:
                 self.grid.setCurrentIndex(index)
             else:
+                # The view lays its cells out later; where the photo is now is asked of it
+                # when it is laid out
+                self.grid.doItemsLayout()
                 self.grid.scrollTo(index, QListView.ScrollHint.PositionAtTop)
+                bar = self.grid.verticalScrollBar()
+                bar.setValue(bar.value() - offset)
         self._update_status()
 
     # The grid and the viewer
@@ -1237,9 +1350,9 @@ class MainWindow(QMainWindow):
         developing = page == _DEVELOP
         self.navigation.setVisible(viewing)
         self.editing.setVisible(developing)
-        self.browsing.setVisible(not developing)
-        self.flagging.setVisible(page in (_GRID, _VIEWER, _DEVELOP))
-        self.rating_stars.setVisible(page in (_GRID, _VIEWER, _DEVELOP))
+        self.marking.setVisible(page in (_GRID, _VIEWER, _DEVELOP))
+        self.search_field.setVisible(self.search is not None and page in (_GRID, _VIEWER, _DEVELOP))
+        self.grid_view_options.setVisible(page == _GRID)
         for action in (self.back_action, self.previous_action, self.next_action):
             action.setEnabled(viewing)
         for action in (self.reset_action, self.export_action):
@@ -1341,4 +1454,4 @@ def _margins(gap):
 
 def _inset():
     # Inside the first cell, past the grid's own margin
-    return QPoint(style.px(GRID_GAP * 2), style.px(GRID_GAP * 2))
+    return QPoint(style.gap(GRID_GAP * 2), style.gap(GRID_GAP * 2))

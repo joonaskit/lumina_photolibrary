@@ -274,18 +274,27 @@ class LibraryModel(QAbstractListModel):
             self._set_rows(rows)
             if changed:
                 self.dataChanged.emit(self.index(changed[0]), self.index(changed[-1]))
-        elif _is_subsequence(new, old):
-            # Rows left out (flags settled): removed as such, so the selection stays
-            keep = set(new)
-            for first, last in reversed(_runs([n for n, i in enumerate(old) if i not in keep])):
+        elif (steps := _steps(old, new)) is not None:
+            # Rows left out (flags settled) or added (a scan wrote them) with the others
+            # in their order: removed and inserted as such, so the selection stays
+            gone, added = steps
+            if added:
+                self.about_to_refresh.emit()
+            for first, last in reversed(gone):
                 self.beginRemoveRows(QModelIndex(), first, last)
                 # The index too before the views hear of it: they may ask for a row
                 self._set_rows(self._rows[:first] + self._rows[last + 1 :])
                 self.endRemoveRows()
+            for first, last in added:
+                self.beginInsertRows(QModelIndex(), first, last)
+                self._set_rows(self._rows[:first] + rows[first : last + 1] + self._rows[first:])
+                self.endInsertRows()
             changed = rows != self._rows
             self._set_rows(rows)
             if changed and rows:
                 self.dataChanged.emit(self.index(0), self.index(len(rows) - 1))
+            if added:
+                self.refreshed.emit()
         else:
             self.about_to_refresh.emit()
             self.beginResetModel()
@@ -475,6 +484,11 @@ class LibraryModel(QAbstractListModel):
             return path
         return None
 
+    def keep_thumbnails(self, first, last):
+        """Stop waiting for the thumbnails of the rows outside `first` to `last`."""
+        first, last = max(0, first), min(len(self._rows) - 1, last)
+        self.thumbnails.keep_only({self._key(photo) for photo in self._rows[first : last + 1]})
+
     def edit(self, row):
         """The parameters JSON of the photo's edit, or None."""
         return self._rows[row].edit
@@ -501,9 +515,23 @@ class LibraryModel(QAbstractListModel):
             self.dataChanged.emit(self.index(0), self.index(len(self._rows) - 1))
 
 
-def _is_subsequence(part, whole):
-    items = iter(whole)
-    return all(any(item == wanted for item in items) for wanted in part)
+# More runs of new rows than this are shown by starting over: every run is a pass over
+# the rows, on the main thread
+_MOST_INSERTS = 30
+
+
+def _steps(old, new):
+    """How to get from the ids `old` to `new` by removing and inserting rows, when the
+    ones they share are in the same order: ([(first, last)] of the rows of `old` to
+    remove, [(first, last)] of the rows of `new` to insert), else None. Also None when
+    there are too many insertions for one pass."""
+    old_set, new_set = set(old), set(new)
+    if [i for i in old if i in new_set] != [i for i in new if i in old_set]:
+        return None
+    added = _runs([n for n, i in enumerate(new) if i not in old_set])
+    if len(added) > _MOST_INSERTS:
+        return None
+    return _runs([n for n, i in enumerate(old) if i not in new_set]), added
 
 
 def _runs(numbers):

@@ -1,6 +1,11 @@
 """Thumbnails for a model's rows: asked for when a row is painted, made in a worker
 process (or read from the cache on disk), and kept in a bounded cache in memory.
 
+Only a few are with the workers at a time. The rest wait here, and the newest request
+goes next: scrolling fast through a large folder asks for a thumbnail of every row
+painted on the way, and the rows now in view must not wait behind those. `keep_only`
+drops what waits for rows no longer near the view.
+
 A photo that can be read is read by path. One that can't (its drive is not
 connected) is looked up in the cache on disk by its content id, which works when
 it was seen before.
@@ -20,6 +25,9 @@ from lumina.qt_models.images import to_image
 THUMB_SIDE = 320
 # About 400 KB each: some 300 MB at most
 _CACHE_SIZE = 800
+# How many are with the workers at once: enough to keep them busy, few enough that what
+# was asked for last is not far behind
+_IN_FLIGHT = 8
 
 
 def photo_icon(pixmap):
@@ -40,7 +48,9 @@ class Thumbnails(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._icons = OrderedDict()
+        # With the workers: key -> future. Waiting for them: key -> the call, newest last
         self._pending = {}
+        self._waiting = OrderedDict()
         self._errors = {}
         self._generation = 0
         self._placeholder = None
@@ -54,6 +64,7 @@ class Thumbnails(QObject):
         for future in self._pending.values():
             future.cancel()
         self._pending.clear()
+        self._waiting.clear()
         self._icons.clear()
         self._errors.clear()
 
@@ -74,29 +85,55 @@ class Thumbnails(QObject):
             return icon
         if key in self._errors:
             return self._broken_icon() if path is not None else self._offline_icon()
-        if key not in self._pending:
+        if key in self._waiting:
+            # Asked for again: it is in view now, so it goes before the older ones
+            self._waiting.move_to_end(key)
+        elif key not in self._pending:
             if path is None and content_id is None:
                 self._errors[key] = "Not connected"
                 return self._offline_icon()
-            generation = self._generation
             # Read here, not in the worker: a worker keeps the environment it began with
             root = thumbs.default_cache_dir()
             if path is not None:
                 call = (thumbs.load_thumbnail, path, THUMB_SIDE, root, edit_json)
             else:
                 call = (thumbs.cached_thumbnail, content_id, THUMB_SIDE, root, edit_json)
+            self._waiting[key] = (call, path)
+        self._dispatch()
+        return self._placeholder_icon()
+
+    def keep_only(self, keys):
+        """Stop waiting for the thumbnails of rows not in `keys`: the rows near the view.
+        What is with the workers already is made; the others are asked for again when
+        their rows are painted."""
+        for key in [key for key in self._waiting if key not in keys]:
+            del self._waiting[key]
+
+    def waiting(self):
+        """How many thumbnails are asked for and not made yet."""
+        return len(self._waiting) + len(self._pending)
+
+    def _dispatch(self):
+        """Give the workers the newest requests, up to their share."""
+        generation = self._generation
+        while self._waiting and len(self._pending) < _IN_FLIGHT:
+            key, (call, path) = self._waiting.popitem(last=True)
             self._pending[key] = workers.submit(
                 *call,
-                on_done=lambda pixels: self._made(generation, key, path, pixels),
-                on_error=lambda error: self._failed(generation, key, path, error),
+                on_done=lambda pixels, key=key, path=path: self._made(
+                    generation, key, path, pixels
+                ),
+                on_error=lambda error, key=key, path=path: self._failed(
+                    generation, key, path, error
+                ),
                 owner=self,
             )
-        return self._placeholder_icon()
 
     def _made(self, generation, key, path, pixels):
         if generation != self._generation:
             return
         self._pending.pop(key, None)
+        self._dispatch()
         if pixels is None:
             # Not connected, and never seen
             self._errors[key] = "Not connected"
@@ -110,6 +147,7 @@ class Thumbnails(QObject):
         if generation != self._generation:
             return
         self._pending.pop(key, None)
+        self._dispatch()
         # A PhotoError names the file already; anything else is told with the path
         message = getattr(error, "message", None) or str(error) or type(error).__name__
         self._errors[key] = message

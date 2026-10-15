@@ -1,33 +1,68 @@
 """The app's settings, in one window. A change is made as it is picked: there is no
 OK to press, only Close. What is chosen is kept in `ui/settings.py`."""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
 )
 
 from lumina.integration import style
 from lumina.ui import settings
 
+_DENSITIES = (("comfortable", "Comfortable"), ("compact", "Compact"))
+# After the limit was last changed, so that spinning it down does not delete on the way
+_LIMIT_SETTLE_MS = 1500
+_MAX_LIMIT_GB = 1000
+
+
+def size_text(size):
+    """Bytes for people: megabytes below a gigabyte."""
+    if size >= 1024**3:
+        return f"{size / 1024**3:.1f} GB"
+    return f"{size / 1024**2:.0f} MB"
+
 
 class SettingsDialog(QDialog):
-    """`search` is the SearchService; without one there is no Search section."""
+    """`search` is the SearchService and `library` the LibraryService; without one there
+    is no Search, or no Thumbnails, section."""
 
-    def __init__(self, search=None, parent=None):
+    def __init__(self, search=None, library=None, parent=None):
         super().__init__(parent)
         self.search = search
+        self.library = library
+        self._closed = False
         self.setWindowTitle("Settings")
         self.setMinimumWidth(style.px(460))
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(style.px(10))
+        style.follow_density(self, lambda: layout.setSpacing(style.gap(10)))
+
+        self.density = QComboBox()
+        for key, text in _DENSITIES:
+            self.density.addItem(text, key)
+        self.density.setCurrentIndex(max(0, self.density.findData(settings.density())))
+        self.density.currentIndexChanged.connect(self._on_density_changed)
+        appearance = QFormLayout()
+        appearance.addRow("Density", self.density)
+        layout.addWidget(self._heading("Appearance"))
+        layout.addLayout(appearance)
+        layout.addWidget(
+            self._note(
+                "Compact takes less room for the menus, buttons and the Develop panel. "
+                "The text, the icons and the thumbnails stay as large."
+            )
+        )
 
         self.advance = QCheckBox("Go to the next photo after flagging or rating")
         self.advance.setChecked(settings.advance_after_flag())
@@ -40,6 +75,56 @@ class SettingsDialog(QDialog):
                 "one, and never in the Develop view."
             )
         )
+
+        if library is not None:
+            self.gentle = QCheckBox("Scan large libraries gently")
+            self.gentle.setChecked(settings.gentle_scans())
+            self.gentle.toggled.connect(self._on_gentle_toggled)
+            layout.addWidget(self._heading("Scanning"))
+            layout.addWidget(self.gentle)
+            layout.addWidget(
+                self._note(
+                    "From 2000 photos, a scan rests between batches and reads at the lowest "
+                    "priority, so the computer stays responsive through a first import of a "
+                    "large library. It takes about twice as long. The next scan, not one "
+                    "running now, is gentle."
+                )
+            )
+
+            self.watch = QCheckBox("Watch the folders for changes while Lumina runs")
+            self.watch.setChecked(settings.watch_folders())
+            self.watch.toggled.connect(self._on_watch_toggled)
+            self.watch_note = self._note("")
+            layout.addWidget(self.watch)
+            layout.addWidget(self.watch_note)
+            library.watcher.status_changed.connect(self._show_watching)
+            self._show_watching()
+
+            self.cache_limit = QSpinBox()
+            self.cache_limit.setRange(0, _MAX_LIMIT_GB)
+            self.cache_limit.setSuffix(" GB")
+            self.cache_limit.setSpecialValueText("No limit")
+            self.cache_limit.setValue(settings.thumbnail_limit_gb())
+            self.cache_limit.valueChanged.connect(self._on_limit_changed)
+            self._limit_timer = QTimer(self)
+            self._limit_timer.setSingleShot(True)
+            self._limit_timer.setInterval(_LIMIT_SETTLE_MS)
+            self._limit_timer.timeout.connect(self.apply_cache_limit)
+            self.cache_usage = self._note("")
+            form = QFormLayout()
+            form.addRow("Size limit", self.cache_limit)
+            layout.addWidget(self._heading("Thumbnails"))
+            layout.addLayout(form)
+            layout.addWidget(self.cache_usage)
+            layout.addWidget(
+                self._note(
+                    "Over the limit, the thumbnails used longest ago are deleted, those of "
+                    "photos on drives that are not connected last: they come again from "
+                    "the photos, when the drive is. Your photos are never touched."
+                )
+            )
+            library.thumbnails_pruned.connect(self._show_usage)
+            self._show_usage()
 
         if search is not None:
             self.model_state = QLabel()
@@ -79,6 +164,54 @@ class SettingsDialog(QDialog):
         label.setWordWrap(True)
         return label
 
+    def _on_watch_toggled(self, on):
+        settings.set_watch_folders(on)
+        self.library.watcher.set_enabled(on)
+
+    def _show_watching(self):
+        watcher = self.library.watcher
+        text = (
+            "A photo copied into a folder, moved or deleted shows up a few seconds later, "
+            "without a Rescan."
+        )
+        if watcher.unwatched:
+            names = {f.id: f.name for f in self.library.folders()}
+            named = ", ".join(sorted(names.get(folder, "?") for folder in watcher.unwatched))
+            text += f" Too many folders inside to watch: {named}. Rescan finds their changes."
+        self.watch_note.setText(text)
+
+    def _on_gentle_toggled(self, on):
+        settings.set_gentle_scans(on)
+        self.library.gentle_scans = on
+
+    def _limit_timer_pending(self):
+        return self.library is not None and self._limit_timer.isActive()
+
+    def _on_limit_changed(self, gigabytes):
+        settings.set_thumbnail_limit_gb(gigabytes)
+        self._limit_timer.start()
+
+    def apply_cache_limit(self):
+        """Prune to the limit now: after the spin box has been left alone for a moment."""
+        self._limit_timer.stop()
+        self.library.set_thumbnail_limit(settings.thumbnail_limit())
+
+    def _show_usage(self, *_pruned):
+        self.cache_usage.setText("Counting…")
+        self.library.thumbnail_usage(self._on_usage)
+
+    def _on_usage(self, size):
+        if self._closed:
+            return
+        self.cache_usage.setText(
+            "They take " + size_text(size) + " now." if size is not None else ""
+        )
+
+    def _on_density_changed(self):
+        name = self.density.currentData()
+        settings.set_density(name)
+        style.set_density(name, QApplication.instance())
+
     def _show_model(self):
         search = self.search
         size = f"{search.download_size() / 1e6:,.0f} MB"
@@ -112,6 +245,12 @@ class SettingsDialog(QDialog):
             self.search.remove_model()
 
     def done(self, result):
+        self._closed = True
+        if self._limit_timer_pending():
+            self.apply_cache_limit()
+        if self.library is not None:
+            self.library.thumbnails_pruned.disconnect(self._show_usage)
+            self.library.watcher.status_changed.disconnect(self._show_watching)
         if self.search is not None:
             self.search.model_changed.disconnect(self._show_model)
         super().done(result)

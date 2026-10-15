@@ -60,6 +60,19 @@ class JobStatus(QWidget):
         self.show()
 
 
+def time_left(seconds):
+    """A time to wait in words, rounded: "a minute", "25 minutes", "2 h 10 min"."""
+    minutes = round(seconds / 60)
+    if minutes < 2:
+        return "a minute"
+    if minutes < 60:
+        return f"{minutes} minutes"
+    hours, minutes = divmod(round(minutes / 5) * 5, 60)
+    if hours >= 10:
+        return f"{hours + (minutes >= 30)} h"
+    return f"{hours} h" if minutes == 0 else f"{hours} h {minutes} min"
+
+
 def describe(status):
     """A JobStatus in words, for the status bar."""
     name = status.folder_name
@@ -69,7 +82,8 @@ def describe(status):
     if status.state == library.RUNNING:
         if status.phase == library.FINDING:
             return f"Scanning {name}: {status.done} photos found{more}"
-        return f"Reading details in {name}: {status.done} of {status.total}{more}"
+        left = f"  ·  about {time_left(status.eta)} left" if status.eta is not None else ""
+        return f"Reading details in {name}: {status.done} of {status.total}{left}{more}"
     ended = {
         library.DONE: "Scanned",
         library.CANCELLED: "Stopped scanning",

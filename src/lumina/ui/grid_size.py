@@ -28,7 +28,6 @@ class GridSizeSwitch(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(style.px(2))
         self.group = QButtonGroup(self)
         self.buttons = {}
         for name, tip, _tiles in SIZES:
@@ -36,16 +35,20 @@ class GridSizeSwitch(QWidget):
             button.setObjectName("segment")
             button.setCheckable(True)
             button.setToolTip(tip)
-            button.setFixedSize(
-                style.px(style.CONTROL_HEIGHT - 4), style.px(style.CONTROL_HEIGHT - 4)
-            )
             button.setIconSize(QSize(style.px(_ICON), style.px(_ICON)))
             self.group.addButton(button)
             self.buttons[name] = button
             layout.addWidget(button)
         self.group.buttonClicked.connect(lambda button: self.changed.emit(self.value()))
+        style.follow_density(self, lambda: self._fit(layout))
         self.draw_icons()
         style.themed.changed.connect(self.draw_icons)
+
+    def _fit(self, layout):
+        layout.setSpacing(style.gap(2))
+        side = style.row_height() - style.px(4)
+        for button in self.buttons.values():
+            button.setFixedSize(side, side)
 
     def value(self):
         return next((name for name, b in self.buttons.items() if b.isChecked()), "medium")

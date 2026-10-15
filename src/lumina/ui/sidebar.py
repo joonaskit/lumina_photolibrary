@@ -33,7 +33,6 @@ class Sidebar(QFrame):
         self.setFixedWidth(style.px(WIDTH))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(style.px(4))
         heading = QLabel("LIBRARY")
         heading.setObjectName("heading")
         layout.addWidget(heading)
@@ -49,9 +48,9 @@ class Sidebar(QFrame):
         self.add_button.setDefaultAction(self.add_action)
         self.add_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.add_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.add_button.setFixedHeight(style.px(style.CONTROL_HEIGHT))
         self.add_button.setIconSize(QSize(style.px(18), style.px(18)))
         layout.addWidget(self.add_button)
+        style.follow_density(self, lambda: self._fit(layout))
         self._folders = []
         self._draw_icons()
         style.themed.changed.connect(self._draw_icons)
@@ -108,6 +107,10 @@ class Sidebar(QFrame):
             menu.addSeparator()
             menu.addAction("Remove from Library…", lambda: self.remove_requested.emit(folder_id))
         menu.exec(self.list.viewport().mapToGlobal(point))
+
+    def _fit(self, layout):
+        layout.setSpacing(style.gap(4))
+        self.add_button.setFixedHeight(style.row_height())
 
     def _draw_icons(self):
         connected = {f.id: f.connected for f in self._folders}

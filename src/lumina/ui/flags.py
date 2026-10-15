@@ -113,7 +113,7 @@ class FlagOptions(QToolButton):
         self.setObjectName("segment")
         self.setToolTip("Thumbs-down photos")
         self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.setFixedSize(style.px(style.CONTROL_HEIGHT - 4), style.px(style.CONTROL_HEIGHT - 4))
+        style.follow_density(self, self._fit)
         self.setIconSize(QSize(style.px(16), style.px(16)))
         menu = QMenu(self)
         group = QActionGroup(self)
@@ -129,6 +129,10 @@ class FlagOptions(QToolButton):
         style.round_popup(menu)
         self.draw_icons()
         style.themed.changed.connect(self.draw_icons)
+
+    def _fit(self):
+        side = style.row_height() - style.px(4)
+        self.setFixedSize(side, side)
 
     def set_rejected(self, rejected):
         """Show what is chosen, without signalling."""
