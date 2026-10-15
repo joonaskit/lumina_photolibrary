@@ -75,7 +75,15 @@ def evaluate(points, values):
     points = normalize(points)
     x = np.array([p[0] for p in points], dtype=np.float64)
     y = np.array([p[1] for p in points], dtype=np.float64)
-    t = np.clip(np.asarray(values, dtype=np.float64), 0.0, 1.0)
+    return np.clip(monotone(x, y, np.clip(values, 0.0, 1.0)), 0.0, 1.0)
+
+
+def monotone(x, y, values):
+    """The PCHIP through the points `x` (rising), `y` at `values` (within x's range),
+    on any scale: for curves the pipeline builds itself."""
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    t = np.clip(np.asarray(values, dtype=np.float64), x[0], x[-1])
     slopes = _slopes(x, y)
     k = np.clip(np.searchsorted(x, t, side="right") - 1, 0, len(x) - 2)
     h = x[k + 1] - x[k]
@@ -87,7 +95,7 @@ def evaluate(points, values):
         + (-2 * s3 + 3 * s2) * y[k + 1]
         + (s3 - s2) * h * slopes[k + 1]
     )
-    return np.clip(result, 0.0, 1.0)
+    return result
 
 
 def lut(points, size=LUT_SIZE):

@@ -5,7 +5,7 @@ from conftest import TIMEOUT
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QMessageBox
 
-from lumina.qt_models.develop import Crop, Params
+from lumina.qt_models.develop import Basic, Crop, Params
 from lumina.ui import develop_view
 from lumina.ui.controls import ValueSlider
 from lumina.ui.curve_editor import CurveEditor
@@ -405,3 +405,31 @@ def test_reset_crop_also_straightens(qtbot, window):
     window.develop.reset_crop.click()
 
     assert window.session.params == Params()
+
+
+def test_the_basic_sliders_commit_their_control_and_show_the_edit(qtbot, window):
+    open_editor(qtbot, window)
+    window.session.commit(Params(exposure=0.5, basic=Basic(contrast=10)))
+    slider = window.develop.basic["highlights"]
+
+    slider.slider.setSliderDown(True)
+    slider.slider.setValue(-40)
+    slider.slider.setSliderDown(False)
+
+    assert window.session.params == Params(exposure=0.5, basic=Basic(contrast=10, highlights=-40))
+    assert slider.value_label.text() == "-40"
+    window.undo_action.trigger()
+    assert window.develop.basic["highlights"].value() == 0
+    assert window.develop.basic["contrast"].value() == 10
+
+
+def test_a_saved_preset_keeps_the_basic_controls(qtbot, window, monkeypatch):
+    open_editor(qtbot, window)
+    window.session.commit(Params(exposure=1.0, basic=Basic(shadows=30, blacks=-20)))
+    monkeypatch.setattr(develop_view.QInputDialog, "getText", lambda *a, **k: ("Lifted", True))
+    window.develop.save_preset()
+    window.session.commit(Params())
+
+    window.session.apply_preset("Lifted")
+
+    assert window.session.params == Params(basic=Basic(shadows=30, blacks=-20))

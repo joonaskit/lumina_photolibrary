@@ -68,7 +68,7 @@ Planned `core/` modules:
 
 ## Editing
 
-Scope (first version): exposure, white balance, **tone curve (RGB and per channel)**, **matte look**, crop/rotate, export. HSL, split toning, vignette and grain follow. Out of scope for now: local masks, healing, denoise, AI masks, lens corrections.
+Scope (first version): exposure, white balance, **Basic tone (contrast, highlights, shadows, whites, blacks)**, **tone curve (RGB and per channel)**, **matte look**, crop/rotate, export. HSL, split toning, vignette and grain follow. Out of scope for now: local masks, healing, denoise, AI masks, lens corrections.
 
 Model:
 
@@ -195,6 +195,13 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 - **Comparing a burst**: the zoom and the place (as fractions of the photo) are kept when stepping, so the same detail of each frame shows. The grid opens a photo fitted.
 - **The full size**: the worker reports the photo's size in full with every image (`Pixels.full`), so 100 % is known before the full image is there. Zoomed past what the image shown has, the full one is fetched (newest wins): for a RAW file its embedded preview in full (a CR3's `PRVW`, 0.3 s on a 32 MP sample), for an edited photo the edit rendered from the full decode (1.3 s). Stepping while zoomed asks for the full size at once; the thumbnail shows meanwhile, and the status bar says "100 %, loading full size…". One full image is held at a time (about 130 MB at 32 MP); fitted, it is drawn from a copy made smaller once.
 - **Not yet:** zoom in the Develop view; fetching the next photo's full size ahead while zoomed. Noticed on the way: the viewer's 3840 px image of a CR3 takes longer (0.7 s) than its full preview (0.3 s), as the full JPEG is decoded and then made smaller; reading it at half scale (draft to 1/2, 3480 px) would be faster.
+
+**Basic tone controls (#19), schema 3.** Lightroom's Basic panel: contrast, highlights, shadows, whites and blacks, -100 to 100 each, under Exposure in the Develop view.
+
+- **One curve** (`core/edit/basic.py`): a monotone PCHIP through fixed points on the sRGB-encoded scale (deep black, shadows, quarter, middle grey, three-quarter, bright, white, and points past white); each control moves some of them up or down. At zero the points lie on y = x, so the curve changes nothing, and a control moved by one changes the render by at most a few 16-bit codes: no jump when the Basic controls come into use. The points are kept rising whatever the controls do together, so the curve never falls; black stays black (lifting it is the matte's). The curve is folded into the tone LUT, before the RGB curve, so it costs nothing per pixel: a 2 MP proxy renders in about 55 ms with it, as with a curve; the LUT is built in 4 ms.
+- **Headroom**: with any Basic control in use the tone LUT spans linear light up to 4 times white (two stops), scaled into [0, 1] with the channel gains, so light exposure pushed past white is still there for the curve. Highlights below zero bring it back (at -100, all two stops), whites below zero about one stop, together never past the end. The points past white follow a straight line as they are brought back, so the recovered highlights keep their detail evenly rather than flattening at the end. With every Basic control at zero, light past white is clipped at white as before. Positive whites and highlights clip more.
+- **Params**: a `basic` section; migration 2 to 3 adds it at zero. Presets saved from the Develop view keep it, with the white balance, curve and matte.
+- **Not yet, and known**: the curve acts per channel as the RGB curve does, so compressing bright colours also desaturates them a little (a warm sky towards grey with highlights at -100); Lightroom keeps hue and saturation there. A luminance-based variant would fix that, at the cost of the tone step being one LUT per channel. The amounts each control moves are a first tuning, to be adjusted on real photos.
 
 ## Risks
 

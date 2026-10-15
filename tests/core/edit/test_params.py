@@ -3,7 +3,7 @@ import json
 import pytest
 
 from lumina.core.edit import params
-from lumina.core.edit.params import Crop, Curves, Matte, NewerParams, Params
+from lumina.core.edit.params import Basic, Crop, Curves, Matte, NewerParams, Params
 
 
 def edited():
@@ -11,6 +11,7 @@ def edited():
         exposure=0.7,
         temperature=20.0,
         tint=-5.0,
+        basic=Basic(contrast=20, highlights=-60, shadows=35, whites=-10, blacks=5),
         curves=Curves(rgb=((0, 0), (0.5, 0.6), (1, 1)), blue=((0, 0.05), (1, 1))),
         matte=Matte(black=0.08, white=0.03, shadow_desaturation=0.4),
         rotate=1,
@@ -125,7 +126,7 @@ def test_a_version_1_edit_is_migrated_and_looks_as_it_did():
 
     assert edit == Params(exposure=0.5, rotate=1, crop=Crop(left=0.1))
     assert edit.flip_horizontal is False and edit.straighten == 0.0
-    assert json.loads(edit.to_json())["version"] == 2
+    assert json.loads(edit.to_json())["version"] == params.VERSION
 
 
 def test_flip_and_straighten_survive_json_and_are_checked():
@@ -142,3 +143,28 @@ def test_turning_four_times_is_the_same_edit():
     assert edit.turned(1).turned(1).turned(1).turned(1) == edit
     assert edit.turned(1).turned(-1) == edit
     assert edit.flipped(True).flipped(True) == edit
+
+
+def test_a_version_2_edit_gets_the_basic_controls_at_zero():
+    stored = {"version": 2, "exposure": 0.5, "straighten": 2.0}
+
+    edit = params.from_dict(stored)
+
+    assert edit == Params(exposure=0.5, straighten=2.0)
+    assert edit.basic == Basic() and edit.basic.is_identity()
+
+
+def test_the_basic_controls_are_checked():
+    edit = params.from_dict(
+        {"basic": {"contrast": 300, "highlights": "more", "shadows": -40, "blacks": None}}
+    )
+
+    assert edit.basic == Basic(contrast=params.BASIC[1], shadows=-40.0)
+
+
+def test_a_preset_can_keep_the_basic_controls():
+    look = edited()
+
+    applied = params.apply_preset(Params(), params.preset(look, ["basic"]))
+
+    assert applied == Params(basic=look.basic)

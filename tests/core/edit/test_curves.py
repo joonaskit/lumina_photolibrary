@@ -62,3 +62,11 @@ def test_two_points_are_a_straight_line(points):
     x = np.linspace(0, 1, 11)
 
     assert np.allclose(curves.evaluate(points, x), points[0][1] + x * (points[1][1] - points[0][1]))
+
+
+def test_monotone_works_on_any_scale():
+    x, y = [0.0, 1.0, 2.0, 4.0], [0.0, 0.8, 1.0, 1.2]
+    values = curves.monotone(x, y, np.linspace(0, 4, 401))
+
+    assert np.allclose(curves.monotone(x, y, x), y, atol=1e-12)
+    assert np.all(np.diff(values) >= -1e-12) and values.max() <= 1.2 + 1e-12
