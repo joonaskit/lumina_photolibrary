@@ -146,6 +146,37 @@ def test_no_server_is_a_download_error(tmp_path, server):
         models.download(model, tmp_path, base_url=server.url)
 
 
+def test_remove_deletes_the_model_and_nothing_beside_it(tmp_path, server):
+    model = model_of(FILES)
+    models.download(model, tmp_path, base_url=server.url)
+    part = tmp_path / "tiny" / "abc123" / "onnx" / "other.onnx.part"
+    part.write_bytes(b"half")
+    other = tmp_path / "another" / "rev" / "model.onnx"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"kept")
+
+    models.remove(model, tmp_path)
+
+    assert not models.is_installed(model, tmp_path)
+    assert not (tmp_path / "tiny").exists()
+    assert other.read_bytes() == b"kept"
+    # Removing what is not there is no error
+    models.remove(model, tmp_path)
+
+
+def test_remove_keeps_the_name_folder_with_other_revisions(tmp_path, server):
+    model = model_of(FILES)
+    models.download(model, tmp_path, base_url=server.url)
+    older = tmp_path / "tiny" / "old" / "tokenizer.json"
+    older.parent.mkdir(parents=True)
+    older.write_bytes(b"{}")
+
+    models.remove(model, tmp_path)
+
+    assert not (tmp_path / "tiny" / "abc123").exists()
+    assert older.exists()
+
+
 def test_the_models_folder_follows_xdg_data_home(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
 

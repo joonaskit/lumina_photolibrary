@@ -62,10 +62,11 @@ class SearchService(QObject):
         self._index_stop = None
         self._indexing = None
         self._again = False
+        self._removing = False
         self._generation = 0
         self._searcher = _Searcher(library.path, self.folder, encode_text)
         # Kept for the tests, which wait for them
-        self.download_future = self.index_future = None
+        self.download_future = self.index_future = self.remove_future = None
         library.job_ended.connect(lambda _status: self.index())
         library.mounts_changed.connect(self.index)
 
@@ -94,7 +95,7 @@ class SearchService(QObject):
 
     def download(self):
         """Fetch the model, continuing a download that stopped. Then index."""
-        if self.is_downloading() or self.is_ready():
+        if self.is_downloading() or self.is_ready() or self._removing:
             return
         stop = threading.Event()
         self._download_stop = stop
@@ -119,6 +120,42 @@ class SearchService(QObject):
         if self._download_stop is not None:
             self._download_stop.set()
 
+    def remove_model(self):
+        """Delete the model's files, stopping a download or indexing first: on the
+        indexing thread, after what runs there now. The vectors stay, for when the
+        same model comes back; search asks for it again until then."""
+        if self._removing:
+            return
+        self._removing = True
+        self.cancel_download()
+        self.cancel_indexing()
+        self.remove_future = workers.submit(
+            models.remove,
+            embed.MODEL,
+            self.model_root,
+            on_done=lambda _none: self._removed(),
+            on_error=lambda _error: self._removed(),
+            owner=self,
+            process=workers.INDEXING,
+        )
+        self.model_changed.emit()
+
+    def is_removing(self):
+        return self._removing
+
+    def _removed(self):
+        self._removing = False
+        # The text model the searches keep loaded goes too
+        workers.submit(
+            self._searcher.forget_model,
+            on_done=lambda _none: None,
+            on_error=lambda _error: None,
+            owner=self,
+            process=workers.SEARCH,
+        )
+        if not self._quitting.is_set():
+            self.model_changed.emit()
+
     def _downloaded(self, error):
         self._download_stop = None
         if self._quitting.is_set():
@@ -137,7 +174,12 @@ class SearchService(QObject):
     def index(self):
         """Give every photo without a vector one. Run again when it ends if it is
         running now: what a scan added since it started is not in its count."""
-        if self._quitting.is_set() or not self.is_ready() or self.is_downloading():
+        if (
+            self._quitting.is_set()
+            or self._removing
+            or not self.is_ready()
+            or self.is_downloading()
+        ):
             return
         if self._indexing is not None:
             self._again = True
@@ -251,6 +293,9 @@ class _Searcher:
                 self._encoder = embed.Encoder(self.folder, threads=2)
             query = self._encoder.texts([text])[0]
         return self.index.rank(photos, query, floor=searching.text_floor())
+
+    def forget_model(self):
+        self._encoder = None
 
     def similar(self, content_id, photos):
         self._refresh()

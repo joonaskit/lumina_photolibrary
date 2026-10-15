@@ -182,7 +182,7 @@ def test_the_viewer_rates_the_photo_shown_and_says_so(qtbot, service, drive):
     assert "★★★" in window.status.text()
 
     # Clearing does not step on, and nothing steps on unless asked
-    window.flag_options.advance_action.trigger()
+    settings.set_advance_after_flag(True)
     press(qtbot, window.viewer, KEYS[3])
     assert window.title.text() == first and "★" not in window.status.text()
     press(qtbot, window.viewer, KEYS[2])

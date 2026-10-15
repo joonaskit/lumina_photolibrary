@@ -182,8 +182,7 @@ def test_in_the_viewer_flagging_steps_on_only_when_asked(qtbot, service, drive):
     assert window.title.text() == first
     assert "Thumbs down" in window.status.text()
 
-    window.flag_options.advance_action.trigger()
-    assert settings.advance_after_flag()
+    settings.set_advance_after_flag(True)
     press(qtbot, window.viewer, Qt.Key.Key_P)
     # The first photo's thumbs down became a thumbs up, and the viewer moved on
     assert window.title.text() == second

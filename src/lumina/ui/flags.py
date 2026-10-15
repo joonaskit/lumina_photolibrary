@@ -104,16 +104,14 @@ def paint_badge(painter, photo_rect, flag):
 
 
 class FlagOptions(QToolButton):
-    """A button with a menu: show, dim or hide thumbs-down photos, and whether the
-    viewer steps on after flagging or rating (until there is a settings window, #13)."""
+    """A button with a menu: show, dim or hide thumbs-down photos."""
 
     rejected_changed = Signal(str)
-    advance_changed = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("segment")
-        self.setToolTip("Thumbs-down photos and flagging")
+        self.setToolTip("Thumbs-down photos")
         self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.setFixedSize(style.px(style.CONTROL_HEIGHT - 4), style.px(style.CONTROL_HEIGHT - 4))
         self.setIconSize(QSize(style.px(16), style.px(16)))
@@ -127,25 +125,14 @@ class FlagOptions(QToolButton):
             group.addAction(action)
             menu.addAction(action)
             self.rejected_actions[mode] = action
-        menu.addSeparator()
-        self.advance_action = QAction("Next Photo After Flagging or Rating", self)
-        self.advance_action.setCheckable(True)
-        self.advance_action.setToolTip(
-            "In the viewer, step on after a thumbs up or down or a rating"
-        )
-        self.advance_action.toggled.connect(self.advance_changed)
-        menu.addAction(self.advance_action)
         self.setMenu(menu)
         style.round_popup(menu)
         self.draw_icons()
         style.themed.changed.connect(self.draw_icons)
 
-    def set_values(self, rejected, advance):
+    def set_rejected(self, rejected):
         """Show what is chosen, without signalling."""
         self.rejected_actions.get(rejected, self.rejected_actions[DIM]).setChecked(True)
-        self.advance_action.blockSignals(True)
-        self.advance_action.setChecked(advance)
-        self.advance_action.blockSignals(False)
 
     def rejected(self):
         return next(mode for mode, action in self.rejected_actions.items() if action.isChecked())

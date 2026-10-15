@@ -50,6 +50,7 @@ from lumina.ui.image_view import ImageView
 from lumina.ui.job_status import JobStatus
 from lumina.ui.preset_dialog import CopyDialog
 from lumina.ui.search import SearchField, SearchStatus
+from lumina.ui.settings_dialog import SettingsDialog
 from lumina.ui.sidebar import Sidebar
 
 APP_NAME = "Lumina"
@@ -153,9 +154,8 @@ class MainWindow(QMainWindow):
         self.filters.rating_changed.connect(self.set_rating_filter)
         self.filters.edit_changed.connect(self.set_edit_filter)
         self.flag_options = flags.FlagOptions()
-        self.flag_options.set_values(settings.rejected_photos(), settings.advance_after_flag())
+        self.flag_options.set_rejected(settings.rejected_photos())
         self.flag_options.rejected_changed.connect(self.set_rejected)
-        self.flag_options.advance_changed.connect(settings.set_advance_after_flag)
         self.model.set_rejected(settings.rejected_photos())
         self.model.flags_changed.connect(self._update_flag_actions)
         self.model.rowsRemoved.connect(self._update_status)
@@ -240,6 +240,11 @@ class MainWindow(QMainWindow):
         self.add_action.triggered.connect(self.choose_folder)
         # A key only: the button is the sidebar's, under the folders it adds to
         self.addAction(self.add_action)
+        self.preferences_action = QAction("Settings", self)
+        self.preferences_action.setShortcut(QKeySequence("Ctrl+,"))
+        self.preferences_action.setToolTip("Settings (Ctrl+,)")
+        self.preferences_action.triggered.connect(self.open_settings)
+        self.addAction(self.preferences_action)
         self.back_action = QAction("Back", self)
         self.back_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.back_action.triggered.connect(self.go_back)
@@ -385,6 +390,7 @@ class MainWindow(QMainWindow):
         self.rating_bar.chosen.connect(self.rate_photos)
         self.rating_stars = toolbar.addWidget(self._framed_widget(self.rating_bar))
         self.browsing = toolbar.addWidget(self._group(self.edit_action))
+        toolbar.addWidget(self._group(self.preferences_action))
 
     def _framed_widget(self, widget):
         """A widget in a rounded card like the buttons' groups."""
@@ -519,10 +525,14 @@ class MainWindow(QMainWindow):
         self.previous_action.setIcon(style.icon("go-previous"))
         self.next_action.setIcon(style.icon("go-next"))
         self.similar_action.setIcon(style.icon("edit-find", "system-search"))
+        self.preferences_action.setIcon(style.icon("preferences-system", "configure"))
         ratio = self.devicePixelRatioF()
         self.pick_action.setIcon(flags.icon(PICKED, ratio))
         self.reject_action.setIcon(flags.icon(REJECTED, ratio))
         self.search_field.draw_icons()
+
+    def open_settings(self):
+        SettingsDialog(self.search, self).exec()
 
     # Folders
 
