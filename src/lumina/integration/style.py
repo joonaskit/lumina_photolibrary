@@ -327,6 +327,9 @@ def _arrow_image():
 def _stylesheet():
     colors = _theme["colors"]
     small, medium, large = radius("small"), radius("medium"), radius("large")
+    # A slider's handle and track follow the roundness too: a circle and a pill at the
+    # shell's default, squarer as its corners are
+    handle_radius, track_radius = radius_within("medium", 14), radius_within("small", 4)
     hover, pressed, divider = overlay(0.08), overlay(0.14), overlay(_DIVIDER)
     selected = tint("accent", 0.22)
     window, card, raised = (layer(name).name() for name in ("window", "card", "raised"))
@@ -391,15 +394,15 @@ def _stylesheet():
 
         QSlider {{ min-height: {px(20)}px; }}
         QSlider::groove:horizontal {{
-            height: {px(4)}px; border-radius: {px(2)}px; background: {raised};
+            height: {px(4)}px; border-radius: {track_radius}px; background: {raised};
         }}
         QSlider::sub-page:horizontal {{
-            height: {px(4)}px; border-radius: {px(2)}px; background: {colors["accent"]};
+            height: {px(4)}px; border-radius: {track_radius}px; background: {colors["accent"]};
         }}
         QSlider[bipolar="true"]::sub-page:horizontal {{ background: {raised}; }}
         QSlider::handle:horizontal {{
             width: {px(14)}px; height: {px(14)}px; margin: -{px(5)}px 0;
-            border-radius: {px(7)}px; background: {colors["textPrimary"]};
+            border-radius: {handle_radius}px; background: {colors["textPrimary"]};
         }}
         QSlider::handle:horizontal:hover {{ background: {colors["accent"]}; }}
 

@@ -8,7 +8,7 @@ The sibling project `../filehouse` uses the same stack and conventions; look the
 
 - Python 3.12+, **PySide6 with Qt Widgets** (not Qt Quick/QML)
 - **rawpy (LibRaw)** for RAW, **exiftool** (`-stay_open`) for metadata
-- **numpy** for the edit pipeline, **onnxruntime** for CLIP/SigLIP
+- **numpy** for the edit pipeline, **OpenCV** (`opencv-python-headless`) for the blurs and filters of local contrast, sharpening and noise reduction, **onnxruntime** for CLIP/SigLIP
 - **SQLite** for metadata, edits and search vectors (float16 blobs, searched with numpy; no vector store)
 - pytest for `core/`, pytest-qt for the few UI tests, ruff for lint and format
 
@@ -18,7 +18,7 @@ The sibling project `../filehouse` uses the same stack and conventions; look the
 python3 -m venv .venv
 source .venv/bin/activate
 sudo dnf install perl-Image-ExifTool   # metadata; its tests skip without it
-pip install -e '.[dev]'     # PySide6-Essentials, rawpy, numpy, Pillow, onnxruntime, tokenizers
+pip install -e '.[dev]'     # PySide6-Essentials, rawpy, numpy, Pillow, opencv, onnxruntime, tokenizers
 
 lumina [FOLDER]             # run the app; without a folder it opens the last one
 ./install.sh                # lumina on PATH, launcher entry and icon (data/, icons/)
@@ -41,7 +41,7 @@ ui/  →  qt_models/  →  core/
           integration/ (theme, desktop hand-off)
 ```
 
-- `core/` imports **no Qt**. Plain Python, numpy, rawpy, sqlite3, onnxruntime. It reports through callbacks.
+- `core/` imports **no Qt**. Plain Python, numpy, OpenCV, rawpy, sqlite3, onnxruntime. It reports through callbacks.
 - `qt_models/` is the only place that runs core work on threads or processes and turns callbacks into queued Qt signals.
 - `ui/` never calls the DB, rawpy, exiftool or onnxruntime directly.
 - `tests/test_layers.py` enforces these import rules.

@@ -16,12 +16,18 @@ from dataclasses import dataclass, field, replace
 
 from lumina.core.edit import curves
 
-VERSION = 6
+VERSION = 8
 
 # Ranges, in the units the pipeline uses
 EXPOSURE = (-5.0, 5.0)  # stops
 WARMTH = (-100.0, 100.0)  # see pipeline.white_balance_gains
 BASIC = (-100.0, 100.0)  # contrast, highlights, shadows, whites, blacks: see basic.py
+PRESENCE = (-100.0, 100.0)  # texture, clarity, dehaze: see detail.py and dehaze.py
+SHARPEN_AMOUNT = (0.0, 150.0)  # see sharpen.py
+SHARPEN_RADIUS = (0.5, 3.0)  # pixels at full size
+DEFAULT_SHARPEN_RADIUS = 1.0
+DEFAULT_SHARPEN_DETAIL = 25.0
+DEFAULT_NOISE_DETAIL = 50.0
 COLOUR = (-100.0, 100.0)  # vibrance, saturation: see colour.py
 HSL = (-100.0, 100.0)  # a band's hue, saturation, luminance: see hsl.py
 HUE = (0.0, 360.0)  # degrees: a grading wheel's hue
@@ -40,6 +46,7 @@ DESATURATION = (0.0, 1.0)
 STRAIGHTEN = (-45.0, 45.0)  # degrees, clockwise
 CHANNELS = ("rgb", "red", "green", "blue")
 BASIC_FIELDS = ("contrast", "highlights", "shadows", "whites", "blacks")
+PRESENCE_FIELDS = ("texture", "clarity", "dehaze")
 COLOUR_FIELDS = ("vibrance", "saturation")
 # From red round the hue circle: the HSL panel's eight bands
 BANDS = ("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta")
@@ -63,6 +70,46 @@ class Basic:
 
     def is_identity(self):
         return self == Basic()
+
+
+@dataclass(frozen=True)
+class Presence:
+    # How much the photo's small and medium detail stands out, and how clear the air is,
+    # -100 to 100 each: texture (fine detail), clarity (local contrast at a larger size),
+    # dehaze (less, or more, haze)
+    texture: float = 0.0
+    clarity: float = 0.0
+    dehaze: float = 0.0
+
+    def is_identity(self):
+        return self == Presence()
+
+
+@dataclass(frozen=True)
+class Sharpening:
+    # Unsharp mask on the luminance. Amount; radius in pixels of the full-size photo;
+    # detail (0: halos held down, 100: the plain mask, which keeps fine detail); masking
+    # (0: everywhere, 100: only on the strongest edges, not on noise and flat areas)
+    amount: float = 0.0
+    radius: float = DEFAULT_SHARPEN_RADIUS
+    detail: float = DEFAULT_SHARPEN_DETAIL
+    masking: float = 0.0
+
+    def is_identity(self):
+        # With no amount there is no sharpening, whatever the rest
+        return self.amount == 0
+
+
+@dataclass(frozen=True)
+class NoiseReduction:
+    # How much of the brightness noise and of the colour noise to take out, 0 to 100,
+    # and how much fine detail the brightness noise reduction keeps, 0 to 100
+    luminance: float = 0.0
+    detail: float = DEFAULT_NOISE_DETAIL
+    colour: float = 0.0
+
+    def is_identity(self):
+        return self.luminance == 0 and self.colour == 0
 
 
 @dataclass(frozen=True)
@@ -196,6 +243,9 @@ class Params:
     temperature: float = 0.0
     tint: float = 0.0
     basic: Basic = field(default_factory=Basic)
+    presence: Presence = field(default_factory=Presence)
+    sharpening: Sharpening = field(default_factory=Sharpening)
+    noise: NoiseReduction = field(default_factory=NoiseReduction)
     colour: Colour = field(default_factory=Colour)
     hsl: Hsl = field(default_factory=Hsl)
     grading: Grading = field(default_factory=Grading)
@@ -220,6 +270,18 @@ class Params:
             "exposure": float(self.exposure),
             "white_balance": {"temperature": float(self.temperature), "tint": float(self.tint)},
             "basic": {name: float(getattr(self.basic, name)) for name in BASIC_FIELDS},
+            "presence": {name: float(getattr(self.presence, name)) for name in PRESENCE_FIELDS},
+            "sharpening": {
+                "amount": float(self.sharpening.amount),
+                "radius": float(self.sharpening.radius),
+                "detail": float(self.sharpening.detail),
+                "masking": float(self.sharpening.masking),
+            },
+            "noise": {
+                "luminance": float(self.noise.luminance),
+                "detail": float(self.noise.detail),
+                "colour": float(self.noise.colour),
+            },
             "colour": {name: float(getattr(self.colour, name)) for name in COLOUR_FIELDS},
             "hsl": {
                 band: {name: float(getattr(getattr(self.hsl, band), name)) for name in BAND_FIELDS}
@@ -323,6 +385,9 @@ def from_dict(data):
     data = migrate(data)
     wb = _section(data, "white_balance")
     basic = _section(data, "basic")
+    presence = _section(data, "presence")
+    sharpening = _section(data, "sharpening")
+    noise = _section(data, "noise")
     colour = _section(data, "colour")
     hsl = _section(data, "hsl")
     grading = _section(data, "grading")
@@ -345,6 +410,20 @@ def from_dict(data):
         temperature=_number(wb.get("temperature"), 0.0, WARMTH),
         tint=_number(wb.get("tint"), 0.0, WARMTH),
         basic=Basic(**{name: _number(basic.get(name), 0.0, BASIC) for name in BASIC_FIELDS}),
+        presence=Presence(
+            **{name: _number(presence.get(name), 0.0, PRESENCE) for name in PRESENCE_FIELDS}
+        ),
+        sharpening=Sharpening(
+            amount=_number(sharpening.get("amount"), 0.0, SHARPEN_AMOUNT),
+            radius=_number(sharpening.get("radius"), DEFAULT_SHARPEN_RADIUS, SHARPEN_RADIUS),
+            detail=_number(sharpening.get("detail"), DEFAULT_SHARPEN_DETAIL, PERCENT),
+            masking=_number(sharpening.get("masking"), 0.0, PERCENT),
+        ),
+        noise=NoiseReduction(
+            luminance=_number(noise.get("luminance"), 0.0, PERCENT),
+            detail=_number(noise.get("detail"), DEFAULT_NOISE_DETAIL, PERCENT),
+            colour=_number(noise.get("colour"), 0.0, PERCENT),
+        ),
         colour=Colour(**{name: _number(colour.get(name), 0.0, COLOUR) for name in COLOUR_FIELDS}),
         hsl=Hsl(
             **{
@@ -432,7 +511,26 @@ def _to_6(data):
     }
 
 
-_MIGRATIONS = {1: _to_2, 2: _to_3, 3: _to_4, 4: _to_5, 5: _to_6}
+def _to_7(data):
+    # Version 7 added texture, clarity and dehaze: all at zero, which changes nothing
+    return {"presence": {name: 0.0 for name in PRESENCE_FIELDS}, **data}
+
+
+def _to_8(data):
+    # Version 8 added sharpening and noise reduction: both off, which changes nothing
+    return {
+        "sharpening": {
+            "amount": 0.0,
+            "radius": DEFAULT_SHARPEN_RADIUS,
+            "detail": DEFAULT_SHARPEN_DETAIL,
+            "masking": 0.0,
+        },
+        "noise": {"luminance": 0.0, "detail": DEFAULT_NOISE_DETAIL, "colour": 0.0},
+        **data,
+    }
+
+
+_MIGRATIONS = {1: _to_2, 2: _to_3, 3: _to_4, 4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8}
 
 
 def migrate(data):
@@ -470,6 +568,9 @@ SECTIONS = (
     "exposure",
     "white_balance",
     "basic",
+    "presence",
+    "sharpening",
+    "noise",
     "colour",
     "hsl",
     "grading",

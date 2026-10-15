@@ -14,7 +14,10 @@ from lumina.core.edit.params import (
     Hsl,
     Matte,
     NewerParams,
+    NoiseReduction,
     Params,
+    Presence,
+    Sharpening,
     Vignette,
     Wheel,
 )
@@ -26,6 +29,9 @@ def edited():
         temperature=20.0,
         tint=-5.0,
         basic=Basic(contrast=20, highlights=-60, shadows=35, whites=-10, blacks=5),
+        presence=Presence(texture=15, clarity=-25, dehaze=40),
+        sharpening=Sharpening(amount=60, radius=1.4, detail=30, masking=45),
+        noise=NoiseReduction(luminance=35, detail=60, colour=20),
         colour=Colour(vibrance=30, saturation=-15),
         hsl=Hsl(red=Band(hue=-20, saturation=40), blue=Band(luminance=-60)),
         vignette=Vignette(amount=-45, midpoint=35, feather=60),
@@ -345,3 +351,67 @@ def test_an_edit_or_a_document_from_a_newer_lumina_is_not_pasted_over():
         params.pasted(json.dumps(newer), older_document)
     with pytest.raises(NewerParams):
         params.pasted(None, newer)
+
+
+def test_a_version_6_edit_gets_texture_clarity_and_dehaze_at_zero():
+    stored = {"version": 6, "exposure": 0.5, "grain": {"amount": 20}}
+
+    edit = params.from_dict(stored)
+
+    assert edit == Params(exposure=0.5, grain=edit.grain)
+    assert edit.presence == Presence() and edit.presence.is_identity()
+
+
+def test_presence_is_checked():
+    edit = params.from_dict({"presence": {"texture": 900, "clarity": "lots", "dehaze": -40}})
+
+    assert edit.presence == Presence(texture=params.PRESENCE[1], dehaze=-40.0)
+
+
+def test_a_preset_can_keep_the_presence():
+    look = edited()
+
+    applied = params.apply_preset(Params(), params.preset(look, ["presence"]))
+
+    assert applied == Params(presence=look.presence)
+
+
+def test_a_version_7_edit_gets_sharpening_and_noise_reduction_off():
+    stored = {"version": 7, "exposure": 0.5, "presence": {"clarity": 10}}
+
+    edit = params.from_dict(stored)
+
+    assert edit == Params(exposure=0.5, presence=Presence(clarity=10))
+    assert edit.sharpening.is_identity() and edit.noise.is_identity()
+    assert edit.sharpening.radius == params.DEFAULT_SHARPEN_RADIUS
+    assert edit.noise.detail == params.DEFAULT_NOISE_DETAIL
+
+
+def test_sharpening_and_noise_reduction_are_checked():
+    edit = params.from_dict(
+        {
+            "sharpening": {"amount": 900, "radius": 0.01, "detail": "lots", "masking": None},
+            "noise": {"luminance": -5, "detail": 400, "colour": "no"},
+        }
+    )
+
+    assert edit.sharpening == Sharpening(
+        amount=params.SHARPEN_AMOUNT[1], radius=params.SHARPEN_RADIUS[0]
+    )
+    assert edit.noise == NoiseReduction(detail=params.PERCENT[1])
+
+
+def test_these_are_no_edit_without_an_amount_whatever_the_rest():
+    assert Sharpening(radius=2.5, detail=90, masking=70).is_identity()
+    assert not Sharpening(amount=1).is_identity()
+    assert NoiseReduction(detail=10).is_identity()
+    assert not NoiseReduction(luminance=1).is_identity()
+    assert not NoiseReduction(colour=1).is_identity()
+
+
+def test_a_preset_can_keep_sharpening_and_noise_reduction():
+    look = edited()
+
+    applied = params.apply_preset(Params(), params.preset(look, ["sharpening", "noise"]))
+
+    assert applied == Params(sharpening=look.sharpening, noise=look.noise)

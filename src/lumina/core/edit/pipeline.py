@@ -16,19 +16,34 @@ in [0, 1]) and every step works on linear floats until the output encoding:
 4. Colour: the matte's shadow desaturation, then vibrance and saturation, the HSL
    bands and colour grading, on sRGB-encoded values (see colour.py, hsl.py and
    grading.py).
-5. Effects: the vignette, then the grain, on the cropped photo (see effects.py).
-6. Output: sRGB encoding to 8 or 16 bits.
+5. Detail: dehaze, noise reduction, clarity and texture, then sharpening. These look at
+   the pixels around each one, so they need rows beyond a tile: see `render` (dehaze.py,
+   denoise.py, detail.py and sharpen.py).
+6. Effects: the vignette, then the grain, on the cropped photo (see effects.py).
+7. Output: sRGB encoding to 8 or 16 bits.
 
 Highlights pushed past white by exposure or white balance are clipped at step 3:
 at white, or with the Basic controls in use, at basic.HEADROOM times white, where
 the Basic curve can bring them back.
 """
 
+from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
 
-from lumina.core.edit import basic, colour, curves, effects, grading, hsl
+from lumina.core.edit import (
+    basic,
+    colour,
+    curves,
+    dehaze,
+    denoise,
+    effects,
+    grading,
+    hsl,
+    sharpen,
+)
+from lumina.core.edit import detail as detail_steps
 
 # Entries of the tone LUT over linear [0, 1]
 TONE_SIZE = 65536
@@ -276,13 +291,24 @@ def output_size(width, height, params):
 # The whole
 
 
-def render(image, params, bits=8, tile_rows=512):
+def render(image, params, bits=8, tile_rows=512, full=None):
     """`image` (H x W x 3 linear: uint16, or float32 in [0, 1]) rendered with `params`
     to H' x W' x 3 sRGB, uint8 for `bits` 8 or uint16 for 16.
 
     Works `tile_rows` rows at a time, so a full-resolution render never holds more
     than one tile as floats. 8 bits go through LUTs (fast, for the screen); 16 bits
-    are computed exactly (for export), where a LUT's steps could show."""
+    are computed exactly (for export), where a LUT's steps could show.
+
+    `full` is the (width, height) of the photo at full size, when `image` is a smaller
+    copy of it (the proxy, the screen's, a thumbnail's): sharpening and noise reduction
+    are in pixels of the full-size photo and are made smaller to match. Without it
+    `image` is taken to be the full size.
+
+    A photo with a step that looks at the pixels around each one (texture, clarity,
+    dehaze, noise reduction, sharpening) is rendered in two passes: the first does
+    everything that treats a pixel on its own and keeps the photo as 16-bit sRGB (a
+    third of the memory of floats); the second takes it in tiles with rows to spare
+    beyond each, applies those steps, the effects, and the output encoding."""
     if bits not in (8, 16):
         raise ValueError(f"bits must be 8 or 16, not {bits}")
     view = geometry(image, params)
@@ -295,12 +321,100 @@ def render(image, params, bits=8, tile_rows=512):
     gains = gains / np.float32(tone_range(params))
     tone = None if _is_tone_identity(params) else tone_luts(params)
     desaturation = params.matte.shadow_desaturation
-    plan = _colour_plan(params, (height, width))
+    plan = _plan(params, (height, width), _scale(image, params, full))
     step = max(1, tile_rows or height)
+    if plan is not None and plan.detail is not None:
+        _render_in_two_passes(view, gains, tone, desaturation, plan, params, out, step)
+        return out
     for start in range(0, height, step):
         tile = view[start : start + step].astype(np.float32) * gains
         out[start : start + step] = _render_tile(tile, tone, desaturation, plan, bits, start)
     return out
+
+
+@dataclass(frozen=True)
+class Plan:
+    """What the steps after the tone step will do to a photo of `size` (height, width) as
+    rendered: `colour` (vividness, bands, grading), `detail` (the steps that look at
+    neighbours, see detail.py) and `effects` (vignette, grain), each None for nothing."""
+
+    colour: tuple | None
+    detail: tuple | None
+    effects: tuple | None
+    size: tuple
+
+
+def _scale(image, params, full):
+    """How large the render of `image` is, as a share of the render of the photo at
+    `full` (width, height) size: 1 for the full size, or without `full`."""
+    if full is None:
+        return 1.0
+    here = max(output_size(image.shape[1], image.shape[0], params))
+    return min(1.0, here / max(output_size(full[0], full[1], params)))
+
+
+def _plan(params, size, scale=1.0):
+    """The `Plan` for `params` on a photo `size` (height, width) as rendered, at `scale`
+    of its full size, or None when there is nothing after the tone step."""
+    vividness = (params.colour.vibrance, params.colour.saturation)
+    bands = None if params.hsl.is_identity() else hsl.tables(params.hsl)
+    graded = None if params.grading.is_identity() else grading.prepare(params.grading)
+    coloured = (vividness, bands, graded) if any(vividness) or bands or graded else None
+    detail = _detail_plan(params, size, scale)
+    vignette = None if params.vignette.is_identity() else effects.prepare_vignette(params.vignette)
+    grain = None if params.grain.is_identity() else effects.prepare_grain(params.grain, size)
+    finish = (vignette, grain) if vignette is not None or grain is not None else None
+    if coloured is None and detail is None and finish is None:
+        return None
+    return Plan(coloured, detail, finish, size)
+
+
+@dataclass(frozen=True)
+class Detail:
+    """The steps that look at the pixels around each one, in the order they are made."""
+
+    dehaze: float
+    noise: tuple | None
+    local: tuple
+    sharpen: tuple | None
+
+    def reach(self):
+        """(rows beyond a tile that the steps need, the multiple a tile must start at)."""
+        rows, align = 0, 1
+        if self.noise is not None:
+            rows += denoise.reach(self.noise)
+            align = denoise.align(self.noise)
+        if any(self.local):
+            local, local_align = detail_steps.layout(self.local)
+            rows += local
+            align = max(align, local_align)
+        if self.sharpen is not None:
+            rows += sharpen.reach(self.sharpen)
+        return -(-rows // align) * align, align
+
+
+def _detail_plan(params, size, scale):
+    dehazed = params.presence.dehaze
+    noise = denoise.prepare(params.noise, scale)
+    local = detail_steps.prepare(params.presence, size)
+    sharp = sharpen.prepare(params.sharpening, scale)
+    if not dehazed and noise is None and not any(local) and sharp is None:
+        return None
+    return Detail(dehazed, noise, local, sharp)
+
+
+def _tone_step(linear, tone, desaturation, bits):
+    """The tone LUT and the matte's shadow desaturation, in place on `linear` (floats
+    in [0, 1]): through LUT lookups for 8 bits, interpolated tables for 16."""
+    if tone is not None:
+        for c in range(3):
+            if bits == 8:
+                index = (linear[..., c] * (TONE_SIZE - 1) + 0.5).astype(np.uint16)
+                linear[..., c] = tone[c][index]
+            else:
+                linear[..., c] = _lookup(linear[..., c], tone[c])
+    if desaturation:
+        _desaturate_shadows(linear, desaturation)
 
 
 def _render_tile(linear, tone, desaturation, plan, bits, first_row):
@@ -315,63 +429,88 @@ def _render_tile(linear, tone, desaturation, plan, bits, first_row):
         for c in range(3):
             toned[..., c] = tone[c][index[..., c]]
         return out[(toned * (TONE_SIZE - 1) + 0.5).astype(np.uint16)]
-    if tone is not None:
-        for c in range(3):
-            if bits == 8:
-                index = (linear[..., c] * (TONE_SIZE - 1) + 0.5).astype(np.uint16)
-                linear[..., c] = tone[c][index]
-            else:
-                linear[..., c] = _lookup(linear[..., c], tone[c])
-    if desaturation:
-        _desaturate_shadows(linear, desaturation)
+    _tone_step(linear, tone, desaturation, bits)
     if bits == 8 and plan is None:
         return _output_lut(8)[(linear * (TONE_SIZE - 1) + 0.5).astype(np.uint16)]
-    np.clip(linear, 0.0, 1.0, out=linear)
-    encoded = _lookup(linear, _encode_table())
+    encoded = _encoded(linear)
     if plan is not None:
-        _adjust_colour(encoded, plan, first_row)
+        _adjust(encoded, first_row, plan.size, plan.colour, plan.effects)
+    return _quantized(encoded, bits)
+
+
+def _encoded(linear):
+    """`linear` (floats, in place) as sRGB-encoded floats in [0, 1]."""
+    np.clip(linear, 0.0, 1.0, out=linear)
+    return _lookup(linear, _encode_table())
+
+
+def _quantized(encoded, bits):
+    """`encoded` (floats in [0, 1], in place) as 8 or 16 bits."""
     encoded *= np.float32(255.0 if bits == 8 else 65535.0)
     encoded += np.float32(0.5)
     return encoded.astype(np.uint8 if bits == 8 else np.uint16)
 
 
-def _colour_plan(params, size):
-    """What the steps after the tone step will do to a photo `size` (height, width) as
-    rendered, or None for nothing."""
-    vividness = (params.colour.vibrance, params.colour.saturation)
-    bands = None if params.hsl.is_identity() else hsl.tables(params.hsl)
-    graded = None if params.grading.is_identity() else grading.prepare(params.grading)
-    vignette = None if params.vignette.is_identity() else effects.prepare_vignette(params.vignette)
-    grain = None if params.grain.is_identity() else effects.prepare_grain(params.grain, size)
-    if (
-        not any(vividness)
-        and bands is None
-        and graded is None
-        and vignette is None
-        and grain is None
-    ):
-        return None
-    return vividness, bands, graded, vignette, grain, size
-
-
-def _adjust_colour(encoded, plan, first_row):
-    """The colour steps and effects on `encoded` (sRGB-encoded floats, the rows of the
-    photo from `first_row`), a few rows at a time so the temporaries stay in the CPU
-    cache."""
-    vividness, bands, graded, vignette, grain, size = plan
+def _adjust(encoded, first_row, size, coloured, finishing):
+    """The colour steps, then the effects, on `encoded` (sRGB-encoded floats, the rows
+    of the photo of `size` from `first_row`), a few rows at a time so the temporaries
+    stay in the CPU cache. Either may be None."""
     for start in range(0, len(encoded), colour.ROWS):
         rows = encoded[start : start + colour.ROWS]
         row = first_row + start
-        if any(vividness):
-            colour.adjust_rows(rows, *vividness)
-        if bands is not None:
-            hsl.adjust_rows(rows, bands)
-        if graded is not None:
-            grading.adjust_rows(rows, graded)
-        if vignette is not None:
-            effects.vignette_rows(rows, row, size, vignette)
-        if grain is not None:
-            effects.grain_rows(rows, row, size, grain)
+        if coloured is not None:
+            vividness, bands, graded = coloured
+            if any(vividness):
+                colour.adjust_rows(rows, *vividness)
+            if bands is not None:
+                hsl.adjust_rows(rows, bands)
+            if graded is not None:
+                grading.adjust_rows(rows, graded)
+        if finishing is not None:
+            vignette, grain = finishing
+            if vignette is not None:
+                effects.vignette_rows(rows, row, size, vignette)
+            if grain is not None:
+                effects.grain_rows(rows, row, size, grain)
+
+
+def _render_in_two_passes(view, gains, tone, desaturation, plan, params, out, step):
+    """`render` for a photo with steps that need the pixels around each one: see there."""
+    height, width = view.shape[:2]
+    bits = 8 if out.dtype == np.uint8 else 16
+    detail = plan.detail
+    # First pass: what treats each pixel on its own, kept as 16-bit sRGB. The exact
+    # tables, for 8 bits too, so that a photo looks the same at either
+    stage = np.empty((height, width, 3), dtype=np.uint16)
+    for start in range(0, height, step):
+        tile = view[start : start + step].astype(np.float32) * gains
+        np.clip(tile, 0.0, 1.0, out=tile)
+        _tone_step(tile, tone, desaturation, 16)
+        encoded = _encoded(tile)
+        _adjust(encoded, start, plan.size, plan.colour, None)
+        stage[start : start + step] = _quantized(encoded, 16)
+    analysis = dehaze.analyse(stage, detail.dehaze) if detail.dehaze else None
+    # Second pass: tiles with the rows the neighbour-looking steps reach beyond them
+    halo, align = detail.reach()
+    # Tiles of at least four halos, to a multiple of the rows a blur's copy is cut at
+    step = -(-max(step, 4 * halo) // align) * align
+    for start in range(0, height, step):
+        stop = min(start + step, height)
+        first, last = max(0, start - halo), min(height, stop + halo)
+        x = stage[first:last].astype(np.float32)
+        x *= np.float32(1.0 / 65535.0)
+        if detail.dehaze:
+            dehaze.apply_rows(x, first, analysis, detail.dehaze)
+        if detail.noise is not None:
+            denoise.apply_rows(x, detail.noise)
+        if any(detail.local):
+            detail_steps.apply_rows(x, detail.local)
+        if detail.sharpen is not None:
+            sharpen.apply_rows(x, detail.sharpen)
+        kept = x[start - first : stop - first]
+        if plan.effects is not None:
+            _adjust(kept, start, plan.size, None, plan.effects)
+        out[start:stop] = _quantized(np.ascontiguousarray(kept), bits)
 
 
 def _desaturate_shadows(linear, amount):

@@ -26,5 +26,5 @@ def edited_pixels(path, max_side, edit_json):
     full = pipeline.output_size(width, height, edit)
     if max_side is not None:
         linear = source.fitted(linear, edit, max_side)
-    image = pipeline.render(linear, edit)
+    image = pipeline.render(linear, edit, full=(width, height))
     return Pixels(image.shape[1], image.shape[0], image.tobytes(), full)

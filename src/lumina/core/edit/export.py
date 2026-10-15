@@ -88,10 +88,11 @@ def export(
     if linear is None:
         linear = source.load_linear(source_path)
     check_stop()
+    full = (linear.shape[1], linear.shape[0])
     if options.max_side:
         linear = source.fitted(linear, params, options.max_side)
     check_stop()
-    pixels = pipeline.render(linear, params, bits=options.bits)
+    pixels = pipeline.render(linear, params, bits=options.bits, full=full)
     check_stop()
     _write(pixels, destination, options, replace, source_path, check_stop)
     return destination
