@@ -1,4 +1,5 @@
-"""The larger image for the viewer, decoded in a worker process.
+"""The larger image for the viewer, decoded in a worker process: at about the
+screen's size, or in full for 100 %.
 
 Only the newest request counts: an earlier one still waiting is cancelled, and the
 result of one already running is dropped.
@@ -13,8 +14,8 @@ from lumina.qt_models.images import to_image
 
 
 class PreviewLoader(QObject):
-    # The path and its image
-    ready = Signal(str, object)
+    # The path, its image, and the photo's (width, height) in full or None
+    ready = Signal(str, object, object)
     # The path and why it could not be read
     failed = Signal(str, str)
 
@@ -24,7 +25,8 @@ class PreviewLoader(QObject):
         self._future = None
 
     def request(self, path, max_side, edit_json=None):
-        """The photo at `path`, with its edit if `edit_json` is one."""
+        """The photo at `path`, with its edit if `edit_json` is one, at most `max_side`
+        on its longer side, or in full with None."""
         self.cancel()
         token = self._token
         call = (
@@ -52,7 +54,7 @@ class PreviewLoader(QObject):
     def _done(self, token, path, pixels):
         if token == self._token:
             self._future = None
-            self.ready.emit(path, to_image(pixels))
+            self.ready.emit(path, to_image(pixels), pixels.full)
 
     def _error(self, token, path, error):
         if token == self._token:
