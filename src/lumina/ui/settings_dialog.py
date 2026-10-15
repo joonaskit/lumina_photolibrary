@@ -1,7 +1,7 @@
 """The app's settings, in one window. A change is made as it is picked: there is no
 OK to press, only Close. What is chosen is kept in `ui/settings.py`."""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
 )
 
@@ -20,14 +21,27 @@ from lumina.integration import style
 from lumina.ui import settings
 
 _DENSITIES = (("comfortable", "Comfortable"), ("compact", "Compact"))
+# After the limit was last changed, so that spinning it down does not delete on the way
+_LIMIT_SETTLE_MS = 1500
+_MAX_LIMIT_GB = 1000
+
+
+def size_text(size):
+    """Bytes for people: megabytes below a gigabyte."""
+    if size >= 1024**3:
+        return f"{size / 1024**3:.1f} GB"
+    return f"{size / 1024**2:.0f} MB"
 
 
 class SettingsDialog(QDialog):
-    """`search` is the SearchService; without one there is no Search section."""
+    """`search` is the SearchService and `library` the LibraryService; without one there
+    is no Search, or no Thumbnails, section."""
 
-    def __init__(self, search=None, parent=None):
+    def __init__(self, search=None, library=None, parent=None):
         super().__init__(parent)
         self.search = search
+        self.library = library
+        self._closed = False
         self.setWindowTitle("Settings")
         self.setMinimumWidth(style.px(460))
 
@@ -61,6 +75,33 @@ class SettingsDialog(QDialog):
                 "one, and never in the Develop view."
             )
         )
+
+        if library is not None:
+            self.cache_limit = QSpinBox()
+            self.cache_limit.setRange(0, _MAX_LIMIT_GB)
+            self.cache_limit.setSuffix(" GB")
+            self.cache_limit.setSpecialValueText("No limit")
+            self.cache_limit.setValue(settings.thumbnail_limit_gb())
+            self.cache_limit.valueChanged.connect(self._on_limit_changed)
+            self._limit_timer = QTimer(self)
+            self._limit_timer.setSingleShot(True)
+            self._limit_timer.setInterval(_LIMIT_SETTLE_MS)
+            self._limit_timer.timeout.connect(self.apply_cache_limit)
+            self.cache_usage = self._note("")
+            form = QFormLayout()
+            form.addRow("Size limit", self.cache_limit)
+            layout.addWidget(self._heading("Thumbnails"))
+            layout.addLayout(form)
+            layout.addWidget(self.cache_usage)
+            layout.addWidget(
+                self._note(
+                    "Over the limit, the thumbnails used longest ago are deleted, those of "
+                    "photos on drives that are not connected last: they come again from "
+                    "the photos, when the drive is. Your photos are never touched."
+                )
+            )
+            library.thumbnails_pruned.connect(self._show_usage)
+            self._show_usage()
 
         if search is not None:
             self.model_state = QLabel()
@@ -100,6 +141,29 @@ class SettingsDialog(QDialog):
         label.setWordWrap(True)
         return label
 
+    def _limit_timer_pending(self):
+        return self.library is not None and self._limit_timer.isActive()
+
+    def _on_limit_changed(self, gigabytes):
+        settings.set_thumbnail_limit_gb(gigabytes)
+        self._limit_timer.start()
+
+    def apply_cache_limit(self):
+        """Prune to the limit now: after the spin box has been left alone for a moment."""
+        self._limit_timer.stop()
+        self.library.set_thumbnail_limit(settings.thumbnail_limit())
+
+    def _show_usage(self, *_pruned):
+        self.cache_usage.setText("Counting…")
+        self.library.thumbnail_usage(self._on_usage)
+
+    def _on_usage(self, size):
+        if self._closed:
+            return
+        self.cache_usage.setText(
+            "They take " + size_text(size) + " now." if size is not None else ""
+        )
+
     def _on_density_changed(self):
         name = self.density.currentData()
         settings.set_density(name)
@@ -138,6 +202,11 @@ class SettingsDialog(QDialog):
             self.search.remove_model()
 
     def done(self, result):
+        self._closed = True
+        if self._limit_timer_pending():
+            self.apply_cache_limit()
+        if self.library is not None:
+            self.library.thumbnails_pruned.disconnect(self._show_usage)
         if self.search is not None:
             self.search.model_changed.disconnect(self._show_model)
         super().done(result)

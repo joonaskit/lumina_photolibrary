@@ -93,6 +93,28 @@ def set_rejected_photos(mode):
     _settings().setValue("library/rejected", mode)
 
 
+# The most the thumbnail cache may take, in gigabytes; 0 is no limit
+THUMBNAIL_LIMIT_DEFAULT = 4
+
+
+def thumbnail_limit_gb():
+    value = _settings().value("cache/thumbnail_limit_gb")
+    try:
+        return max(0, int(value)) if value not in (None, "") else THUMBNAIL_LIMIT_DEFAULT
+    except (TypeError, ValueError):
+        return THUMBNAIL_LIMIT_DEFAULT
+
+
+def set_thumbnail_limit_gb(gigabytes):
+    _settings().setValue("cache/thumbnail_limit_gb", max(0, int(gigabytes)))
+
+
+def thumbnail_limit():
+    """The limit in bytes, or None for none."""
+    gigabytes = thumbnail_limit_gb()
+    return gigabytes * 1024**3 if gigabytes else None
+
+
 def density():
     """How much room the interface takes: "comfortable" or "compact"."""
     value = _settings().value("view/density")

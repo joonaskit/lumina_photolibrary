@@ -427,6 +427,19 @@ class Library:
 
     # Photos, for the grid
 
+    def offline_content_ids(self, connected_volume_keys):
+        """The content ids of photos that can't be read now: marked unavailable, or on a
+        drive that is not among `connected_volume_keys`."""
+        keys = list(connected_volume_keys)
+        marks = ", ".join("?" * len(keys))
+        rows = self.db.execute(
+            "SELECT DISTINCT p.content_id FROM photos p JOIN volumes v ON v.id = p.volume_id "
+            "WHERE p.content_id IS NOT NULL "
+            f"AND (p.available = 0 OR v.key NOT IN ({marks}))",
+            keys,
+        )
+        return {row[0] for row in rows}
+
     def photos(self, shown=None):
         """The photos `shown` (a Filter) selects, oldest first."""
         where, args = _where(shown or Filter())

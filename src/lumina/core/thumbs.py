@@ -8,6 +8,8 @@ is a convenience: when it cannot be read or written the thumbnail is made anyway
 
 import os
 import tempfile
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
@@ -21,6 +23,13 @@ from lumina.core.images import Pixels
 # Goes up when the files change format or look: a new folder, the old one unused
 FORMAT_VERSION = 1
 _QUALITY = 85
+# A thumbnail read is noted in its file's time, for pruning, when the note is older
+# than this: not on every read, which a scrolling grid makes thousands of
+_TOUCH_AFTER = 3600
+# A file being written is left alone; one this old was left by a crash
+_STALE_PART = 3600
+# Pruning goes below the limit, not just to it, so the next thumbnails do not prune again
+_PRUNE_TO = 0.9
 
 
 def default_cache_dir():
@@ -47,6 +56,7 @@ class ThumbnailCache:
         except (OSError, ValueError):
             _remove(path)
             return None
+        _touch(path)
         return Pixels(image.width, image.height, image.tobytes())
 
     def put(self, cid, side, pixels):
@@ -76,10 +86,88 @@ class ThumbnailCache:
 
 
 def _remove(path):
+    """Delete a file; whether it went."""
     try:
         os.remove(path)
     except OSError:
+        return False
+    return True
+
+
+def _touch(path):
+    """Note that the thumbnail was used now: pruning keeps what was used last."""
+    try:
+        if time.time() - os.stat(path).st_mtime > _TOUCH_AFTER:
+            os.utime(path)
+    except OSError:
         pass
+
+
+@dataclass(frozen=True)
+class Pruned:
+    # Files deleted and the bytes they were, and what the cache is now
+    removed: int
+    freed: int
+    remaining: int
+
+
+def _entries(folder):
+    """(path, size, mtime) of every file in the cache's folders: `folder/xx/name`."""
+    try:
+        subfolders = [entry.path for entry in os.scandir(folder) if entry.is_dir()]
+    except OSError:
+        return
+    for subfolder in subfolders:
+        try:
+            files = list(os.scandir(subfolder))
+        except OSError:
+            continue
+        for entry in files:
+            try:
+                info = entry.stat()
+            except OSError:
+                continue
+            if entry.is_file():
+                yield entry.path, info.st_size, info.st_mtime
+
+
+def cache_size(root):
+    """The bytes the thumbnails under `root` take."""
+    return sum(
+        size for path, size, _mtime in _entries(ThumbnailCache(root).root) if path.endswith(".webp")
+    )
+
+
+def prune(root, limit, keep=frozenset(), now=None):
+    """Keep the cache under `root` within `limit` bytes (None: no limit) by deleting the
+    thumbnails used longest ago, down to 90 % of it. Those of the content ids in `keep`
+    go last: they are the photos on drives that are not connected, whose thumbnails
+    cannot be made again until the drive is. Only Lumina's own thumbnails are
+    deleted, and the unfinished ones a crash left."""
+    now = time.time() if now is None else now
+    thumbnails = []
+    total = removed = freed = 0
+    for path, size, mtime in _entries(ThumbnailCache(root).root):
+        if path.endswith(".part"):
+            if now - mtime > _STALE_PART and _remove(path):
+                removed += 1
+                freed += size
+        elif path.endswith(".webp"):
+            thumbnails.append((path, size, mtime))
+            total += size
+    if limit is None or total <= limit:
+        return Pruned(removed, freed, total)
+    goal = limit * _PRUNE_TO
+    # "<id>-<side>.webp", or "<id>-<edit>-<side>.webp": the id is up to the first dash
+    thumbnails.sort(key=lambda item: (os.path.basename(item[0]).split("-")[0] in keep, item[2]))
+    for path, size, _mtime in thumbnails:
+        if total <= goal:
+            break
+        if _remove(path):
+            total -= size
+            removed += 1
+            freed += size
+    return Pruned(removed, freed, total)
 
 
 def load_thumbnail(path, side, cache_root, edit_json=None):

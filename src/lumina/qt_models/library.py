@@ -13,13 +13,13 @@ not running. A quit in the middle of a job leaves it queued for the next start.
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from lumina.core import db as dbm
 from lumina.core import library as scanning
-from lumina.core import metadata, volumes
+from lumina.core import metadata, thumbs, volumes
 from lumina.core.edit import params as _params
 from lumina.qt_models import workers
 
@@ -41,6 +41,8 @@ FINDING, DETAILS = scanning.FINDING, scanning.DETAILS
 # How often the mounts are read, and how often the grid hears of photos a scan wrote
 _MOUNTS_MS = 3000
 _PHOTOS_EVERY = 2.0
+# How soon after the thumbnails were pruned a job's end prunes them again, in seconds
+_PRUNE_EVERY = 600.0
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,8 @@ class LibraryService(QObject):
     job_changed = Signal(object)
     # The job ended: a JobStatus
     job_ended = Signal(object)
+    # The thumbnail cache was looked after: a thumbs.Pruned
+    thumbnails_pruned = Signal(object)
 
     def __init__(
         self,
@@ -121,6 +125,13 @@ class LibraryService(QObject):
         self._quitting = threading.Event()
         self._remove_after = set()
         self._photos_told = 0.0
+        # The most the thumbnail cache may take, in bytes, or None for no limit; the
+        # application sets it from the settings
+        self.thumbnail_limit = None
+        self._pruning = False
+        self._prune_again = False
+        self._pruned_at = None
+        self.prune_future = None
         self._timer = QTimer(self)
         self._timer.setInterval(mounts_ms)
         self._timer.timeout.connect(self.check_mounts)
@@ -131,6 +142,7 @@ class LibraryService(QObject):
             self.db.add_job(scanning.SCAN, folder.id)
         self._timer.start()
         self._next_job()
+        self.prune_thumbnails()
 
     def close(self):
         """For the app's exit: a running job stops and stays queued for the next start."""
@@ -298,6 +310,60 @@ class LibraryService(QObject):
                 self.db.add_job(scanning.SCAN, folder.id)
         self._next_job()
 
+    # The thumbnail cache
+
+    def set_thumbnail_limit(self, limit):
+        """The most the cache may take, in bytes, or None for no limit: and prune to it."""
+        self.thumbnail_limit = limit
+        self.prune_thumbnails()
+
+    def prune_thumbnails(self):
+        """Delete the thumbnails used longest ago while the cache is over its limit, on a
+        thread of its own; those of photos on drives that are not connected last. At the
+        start, when the limit changes, and after a scan. It is the cache only: no photo,
+        and nothing in the library, is touched."""
+        if self.thumbnail_limit is None or self._quitting.is_set():
+            return
+        if self._pruning:
+            self._prune_again = True
+            return
+        self._pruning = True
+        self._prune_again = False
+        keys = [mount.volume_id for mount in self.mounts]
+        self.prune_future = workers.submit(
+            _prune_thumbnails,
+            self.path,
+            thumbs.default_cache_dir(),
+            self.thumbnail_limit,
+            keys,
+            on_done=self._on_pruned,
+            on_error=lambda _error: self._on_pruned(None),
+            owner=self,
+            process=workers.CACHE,
+        )
+
+    def _on_pruned(self, result):
+        self._pruning = False
+        self._pruned_at = time.monotonic()
+        if self._quitting.is_set():
+            return
+        if result is not None:
+            self.thumbnails_pruned.emit(result)
+        if self._prune_again:
+            self.prune_thumbnails()
+
+    def thumbnail_usage(self, on_done):
+        """`on_done(bytes)` with what the thumbnails take, or None when it can't be
+        told: counted on a thread, as it is a walk of every thumbnail."""
+        workers.submit(
+            thumbs.cache_size,
+            thumbs.default_cache_dir(),
+            on_done=on_done,
+            on_error=lambda _error: on_done(None),
+            owner=self,
+            process=workers.CACHE,
+        )
+
     # Jobs
 
     def is_busy(self):
@@ -345,10 +411,12 @@ class LibraryService(QObject):
             process=False,
         )
 
-    def _on_progress(self, job_id, name, _phase, _done, _total, changed):
+    def _on_progress(self, job_id, name, phase, _done, _total, changed):
         if self._quitting.is_set() or self._running is None or self._running[0] != job_id:
             return
-        self._tell(job_id, name)
+        # The phase the scan reported, not the one the database has by the time this is
+        # delivered: a quick phase would otherwise never be told
+        self.job_changed.emit(replace(self._status(job_id, name), phase=phase))
         now = time.monotonic()
         if changed and now - self._photos_told >= _PHOTOS_EVERY:
             self._photos_told = now
@@ -367,6 +435,8 @@ class LibraryService(QObject):
         self.job_changed.emit(status)
         self.job_ended.emit(status)
         self._next_job()
+        if self._pruned_at is None or time.monotonic() - self._pruned_at >= _PRUNE_EVERY:
+            self.prune_thumbnails()
 
     def _on_failed(self, job_id, folder_id, name, error):
         if isinstance(error, scanning.NotConnected):
@@ -404,6 +474,13 @@ def _last_seen(folder):
     if folder.last_mount:
         return os.path.join(folder.last_mount, folder.path) if folder.path else folder.last_mount
     return "/" + folder.path
+
+
+def _prune_thumbnails(path, root, limit, volume_keys):
+    """On the cache thread, with a connection of its own."""
+    with dbm.Library(path) as library:
+        keep = library.offline_content_ids(volume_keys)
+    return thumbs.prune(root, limit, keep)
 
 
 def _run_scan(path, job_id, folder_id, mounts, stop, quitting, exiftool, report):

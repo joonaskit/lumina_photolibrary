@@ -59,6 +59,7 @@ def run(folder=None):
     except NewerDatabase as error:
         QMessageBox.critical(None, "Lumina", f"{error}\n\nIt was left as it is.")
         return 1
+    service.thumbnail_limit = settings.thumbnail_limit()
     # Nothing is fetched until the user asks: without the model, no indexing
     search = SearchService(service, parent=app)
     # A scan or indexing in progress stops and is queued for the next start

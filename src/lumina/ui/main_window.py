@@ -588,7 +588,9 @@ class MainWindow(QMainWindow):
         self.search_field.draw_icons()
 
     def open_settings(self):
-        SettingsDialog(self.search, self).exec()
+        dialog = SettingsDialog(self.search, self.service, self)
+        dialog.exec()
+        dialog.deleteLater()
 
     # Folders
 
