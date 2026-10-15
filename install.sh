@@ -29,6 +29,9 @@ fi
 
 .venv/bin/python -c "import PySide6, rawpy, onnxruntime, pillow_heif" ||
     { echo "PySide6, rawpy, onnxruntime or pillow_heif is not importable from the venv" >&2; exit 1; }
+# iPhone photos are HEVC: without a decoder in libheif the .heic files are listed but not shown
+.venv/bin/python -c "import sys, pillow_heif; sys.exit(not pillow_heif.libheif_info()['decoders'])" ||
+    echo "warning: libheif has no HEVC decoder, so .heic photos from phones will not open" >&2
 
 mkdir -p "$bin_dir"
 ln -sf "$PWD/.venv/bin/lumina" "$bin_dir/lumina"
