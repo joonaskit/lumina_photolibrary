@@ -35,11 +35,9 @@ class SearchField(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(style.px(6))
         self.chip = QToolButton()
         self.chip.setObjectName("chip")
         self.chip.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.chip.setFixedHeight(style.px(style.CONTROL_HEIGHT - 4))
         self.chip.clicked.connect(self.similar_cleared)
         self.chip.hide()
         self.edit = QLineEdit()
@@ -47,7 +45,6 @@ class SearchField(QWidget):
         self.edit.setMinimumWidth(style.px(160))
         self.edit.setMaximumWidth(style.px(360))
         # As tall and as round as the toolbar's cards beside it
-        self.edit.setFixedHeight(style.px(style.ROW_HEIGHT))
         self.edit.setObjectName("row")
         self.edit.setPlaceholderText("Search photos, in any language")
         self.edit.setToolTip("Describe what is in the photo: “sunset over the sea”, “majakka”")
@@ -55,6 +52,7 @@ class SearchField(QWidget):
         self.edit.addAction(self._glass, QLineEdit.ActionPosition.LeadingPosition)
         layout.addWidget(self.chip)
         layout.addWidget(self.edit)
+        style.follow_density(self, lambda: self._fit(layout))
         self._typing = QTimer(self)
         self._typing.setSingleShot(True)
         self._typing.setInterval(_TYPING_MS)
@@ -74,6 +72,11 @@ class SearchField(QWidget):
 
     def text(self):
         return self.edit.text().strip()
+
+    def _fit(self, layout):
+        layout.setSpacing(style.gap(6))
+        self.chip.setFixedHeight(style.row_height() - style.px(4))
+        self.edit.setFixedHeight(style.row_height())
 
     def focus(self):
         self.edit.setFocus(Qt.FocusReason.ShortcutFocusReason)

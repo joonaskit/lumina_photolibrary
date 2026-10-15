@@ -93,6 +93,16 @@ def set_rejected_photos(mode):
     _settings().setValue("library/rejected", mode)
 
 
+def density():
+    """How much room the interface takes: "comfortable" or "compact"."""
+    value = _settings().value("view/density")
+    return value if value in ("comfortable", "compact") else "comfortable"
+
+
+def set_density(name):
+    _settings().setValue("view/density", name)
+
+
 def advance_after_flag():
     """Whether the viewer steps to the next photo after one is flagged. Off at first."""
     return _settings().value("viewer/advance_after_flag") in (True, "true")

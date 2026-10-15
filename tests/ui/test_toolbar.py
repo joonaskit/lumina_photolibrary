@@ -121,7 +121,7 @@ def test_every_control_in_the_toolbar_and_the_filters_is_as_tall(qtbot, service,
             filters.clear_button,
         )
     }
-    assert set(heights.values()) == {style.px(style.ROW_HEIGHT)}, heights
+    assert set(heights.values()) == {style.row_height()}, heights
     # The buttons inside a card fit in it
     up = button_of(window.marking, window.pick_action)
     assert up.height() == window.rating_bar.height() == style.row_inner_height()

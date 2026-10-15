@@ -3,9 +3,12 @@ OK to press, only Close. What is chosen is kept in `ui/settings.py`."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -15,6 +18,8 @@ from PySide6.QtWidgets import (
 
 from lumina.integration import style
 from lumina.ui import settings
+
+_DENSITIES = (("comfortable", "Comfortable"), ("compact", "Compact"))
 
 
 class SettingsDialog(QDialog):
@@ -27,7 +32,23 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(style.px(460))
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(style.px(10))
+        style.follow_density(self, lambda: layout.setSpacing(style.gap(10)))
+
+        self.density = QComboBox()
+        for key, text in _DENSITIES:
+            self.density.addItem(text, key)
+        self.density.setCurrentIndex(max(0, self.density.findData(settings.density())))
+        self.density.currentIndexChanged.connect(self._on_density_changed)
+        appearance = QFormLayout()
+        appearance.addRow("Density", self.density)
+        layout.addWidget(self._heading("Appearance"))
+        layout.addLayout(appearance)
+        layout.addWidget(
+            self._note(
+                "Compact takes less room for the menus, buttons and the Develop panel. "
+                "The text, the icons and the thumbnails stay as large."
+            )
+        )
 
         self.advance = QCheckBox("Go to the next photo after flagging or rating")
         self.advance.setChecked(settings.advance_after_flag())
@@ -78,6 +99,11 @@ class SettingsDialog(QDialog):
         label.setEnabled(False)
         label.setWordWrap(True)
         return label
+
+    def _on_density_changed(self):
+        name = self.density.currentData()
+        settings.set_density(name)
+        style.set_density(name, QApplication.instance())
 
     def _show_model(self):
         search = self.search

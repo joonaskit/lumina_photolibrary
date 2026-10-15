@@ -15,6 +15,7 @@ from lumina.integration.theme_watcher import ThemeWatcher
 from lumina.qt_models import workers
 from lumina.qt_models.library import LibraryService, NewerDatabase
 from lumina.qt_models.search import SearchService
+from lumina.ui import settings
 from lumina.ui.main_window import MainWindow
 
 # How often the garbage is collected, in milliseconds
@@ -49,6 +50,7 @@ def run(folder=None):
 
     # The same look as filehouse: the shell's theme.json over the same defaults, followed
     # while the app runs
+    style.set_density(settings.density())
     style.apply(app, theme.load_theme())
     ThemeWatcher(app, parent=app)
 

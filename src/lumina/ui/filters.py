@@ -51,8 +51,6 @@ class FilterBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, style.px(8))
-        layout.setSpacing(style.px(8))
         self.year = self._combo("All years")
         self.camera = self._combo("All cameras")
         self.lens = self._combo("All lenses")
@@ -80,11 +78,16 @@ class FilterBar(QWidget):
         self.clear_button.clicked.connect(self.clear)
         layout.addWidget(self.clear_button)
         # As tall and as round as the toolbar's cards and search field, whatever the font
-        for widget in (*self._combos(), self.clear_button):
-            widget.setFixedHeight(style.px(style.ROW_HEIGHT))
         for combo in self._combos():
             combo.setObjectName("row")
+        style.follow_density(self, lambda: self._fit(layout))
         self._update_clear()
+
+    def _fit(self, layout):
+        layout.setContentsMargins(0, 0, 0, style.gap(8))
+        layout.setSpacing(style.gap(8))
+        for widget in (*self._combos(), self.clear_button):
+            widget.setFixedHeight(style.row_height())
 
     def _combos(self):
         return (self.year, self.camera, self.lens, self.flag, self.rating, self.edit)

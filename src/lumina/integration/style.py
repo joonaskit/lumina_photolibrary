@@ -8,6 +8,7 @@ stylesheet is for shapes and takes every colour, radius and size from here.
 
 import os
 
+import shiboken6
 from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
@@ -25,19 +26,18 @@ from lumina import APP_ID
 from lumina.integration import theme as theme_reader
 
 BASE_FONT_PX = 13
-# Height of a control, and the space between a toolbar group's edge and its buttons:
-# filehouse's "comfortable" density
-CONTROL_HEIGHT = 36
-GROUP_PADDING = 4
-# Everything in the toolbar and the filter row is this tall from edge to edge: a group's
-# card, the search field, the combos and the buttons beside them
-ROW_HEIGHT = CONTROL_HEIGHT
 
-
-def row_inner_height():
-    """The height of a button inside a group's card of ROW_HEIGHT: less its padding and
-    its 1 pixel border on each side. Scaled."""
-    return px(ROW_HEIGHT) - 2 * px(GROUP_PADDING) - 2
+# How much room the interface takes: the padding and spacing of the menus, buttons, lists
+# and the Develop panel, and the height of the toolbar's and the filters' row. Not the
+# fonts (the theme's font scale), the icons or the thumbnails. "comfortable" is
+# filehouse's density. `factor` scales what is made with `gap()`; the heights are their
+# own, as a control needs room for its icon. Unscaled pixels, like every size here
+DENSITIES = ("comfortable", "compact")
+_DENSITY_SIZES = {
+    "comfortable": {"factor": 1.0, "row_height": 36, "group_padding": 4},
+    "compact": {"factor": 0.7, "row_height": 30, "group_padding": 3},
+}
+_density = "comfortable"
 
 
 # The kinds of widget a platform theme may give a font of its own
@@ -66,6 +66,9 @@ class _Themed(QObject):
     # A theme was applied while the app runs: whatever holds an icon or a colour
     # made from the old one has to make it again
     changed = Signal()
+    # The density changed while the app runs: whatever fixed a size from it has to fix
+    # it again (see `follow_density`)
+    density_changed = Signal()
 
 
 themed = _Themed()
@@ -106,6 +109,75 @@ _rounder = None
 def px(size):
     """An unscaled pixel size at the user's UI scale."""
     return theme_reader.scaled(_theme, size)
+
+
+def density():
+    """The name of the density in use."""
+    return _density
+
+
+def set_density(name, app=None):
+    """Use a density from now on. Before apply() at the start; with `app` while it runs:
+    the stylesheet is made again and `themed.density_changed` is emitted, for what fixed
+    a size when it was made. Returns whether it changed."""
+    global _density
+    name = name if name in _DENSITY_SIZES else "comfortable"
+    if name == _density:
+        return False
+    _density = name
+    if app is not None:
+        app.setStyleSheet(_stylesheet())
+    themed.density_changed.emit()
+    return True
+
+
+def gap(size):
+    """An unscaled padding, margin or spacing at the user's UI scale and the density.
+    What sits inside a control or between controls, not the control's own size."""
+    scaled = px(size) * _DENSITY_SIZES[_density]["factor"]
+    return max(1, round(scaled)) if size else 0
+
+
+def row_height():
+    """The height of everything in the toolbar and the filter row, from edge to edge: a
+    group's card, the search field, the combos and the buttons beside them. Scaled."""
+    return px(_DENSITY_SIZES[_density]["row_height"])
+
+
+def group_padding():
+    """The space between a toolbar group's edge and its buttons. Scaled."""
+    return px(_DENSITY_SIZES[_density]["group_padding"])
+
+
+def row_inner_height():
+    """The height of a button inside a group's card: less its padding and its 1 pixel
+    border on each side. Scaled."""
+    return row_height() - 2 * group_padding() - 2
+
+
+class _Follower(QObject):
+    def __init__(self, owner, apply):
+        super().__init__(owner)
+        self._apply = apply
+        themed.density_changed.connect(self.run)
+
+    def run(self):
+        if not shiboken6.isValid(self):
+            # The owner is gone and took this with it, but not the connection: what
+            # `apply` holds may be gone too
+            themed.density_changed.disconnect(self.run)
+            return
+        self._apply()
+
+
+def follow_density(owner, apply, now=True):
+    """Call `apply()` now (unless `now` is False) and again whenever the density
+    changes, for as long as the QObject `owner` lives. `apply` sets the sizes that come
+    from `gap()`, `row_height()` and the like, which are fixed in a widget when it is
+    made."""
+    if now:
+        apply()
+    _Follower(owner, apply)
 
 
 def font_px(size):
@@ -349,10 +421,11 @@ def _stylesheet():
     window, card, raised = (layer(name).name() for name in ("window", "card", "raised"))
     card_border = overlay(_CARD_BORDER)
     small_font = theme_reader.font_scaled(_theme, 11)
-    group = GROUP_PADDING
+    row = _DENSITY_SIZES[_density]["row_height"]
+    group = _DENSITY_SIZES[_density]["group_padding"]
     return f"""
         QToolBar {{
-            border: none; spacing: {px(8)}px; padding: {px(8)}px;
+            border: none; spacing: {gap(8)}px; padding: {gap(8)}px;
             background: {window};
         }}
 
@@ -360,14 +433,14 @@ def _stylesheet():
         #group, #card {{
             background: {card}; border: 1px solid {card_border}; border-radius: {large}px;
         }}
-        #group {{ border-radius: {radius_within("large", ROW_HEIGHT)}px; }}
+        #group {{ border-radius: {radius_within("large", row)}px; }}
         #group QToolButton {{
-            border-radius: {radius_within("medium", ROW_HEIGHT - 2 * group)}px;
-            padding: {px(3)}px;
+            border-radius: {radius_within("medium", row - 2 * group)}px;
+            padding: {gap(3)}px;
         }}
 
         QToolButton {{
-            border: none; border-radius: {small}px; padding: {px(5)}px;
+            border: none; border-radius: {small}px; padding: {gap(5)}px;
             background: transparent;
         }}
         QToolButton:hover {{ background: {hover}; }}
@@ -376,27 +449,27 @@ def _stylesheet():
 
         QPushButton {{
             border: none; border-radius: {radius_within("large", 40)}px;
-            padding: {px(8)}px {px(16)}px; background: {raised};
+            padding: {gap(8)}px {gap(16)}px; background: {raised};
         }}
         QPushButton:hover {{ background: {hover}; }}
         QPushButton:pressed {{ background: {pressed}; }}
-        /* A button in the toolbar or the filter row: ROW_HEIGHT tall, so a radius made
+        /* A button in the toolbar or the filter row: row_height() tall, so a radius made
            for a taller button would not fit and the corners would be drawn square */
         QPushButton#row {{
-            border-radius: {radius_within("large", ROW_HEIGHT)}px; padding: 0 {px(16)}px;
+            border-radius: {radius_within("large", row)}px; padding: 0 {gap(16)}px;
         }}
 
         QPushButton:checked {{ background: {selected}; }}
         QPushButton:disabled {{ color: {colors["textTertiary"]}; }}
         /* A button that reads as a link: "Reset Curve" */
         QPushButton#link {{
-            background: transparent; padding: {px(2)}px {px(4)}px; color: {colors["accent"]};
+            background: transparent; padding: {gap(2)}px {gap(4)}px; color: {colors["accent"]};
         }}
         QPushButton#link:hover {{ background: {hover}; }}
 
         /* RGB / R / G / B: one row of buttons, one of them on */
         QToolButton#segment {{
-            border-radius: {small}px; padding: {px(4)}px; background: {raised};
+            border-radius: {small}px; padding: {gap(4)}px; background: {raised};
         }}
         QToolButton#segment:hover {{ background: {hover}; }}
         QToolButton#segment:checked {{ background: {selected}; }}
@@ -408,11 +481,11 @@ def _stylesheet():
 
         /* "Like IMG_1234.CR3" in front of the search field: click to end it */
         QToolButton#chip {{
-            border-radius: {medium}px; padding: {px(4)}px {px(10)}px; background: {selected};
+            border-radius: {medium}px; padding: {gap(4)}px {gap(10)}px; background: {selected};
         }}
         QToolButton#chip:hover {{ background: {hover}; }}
 
-        QSlider {{ min-height: {px(20)}px; }}
+        QSlider {{ min-height: {gap(20)}px; }}
         QSlider::groove:horizontal {{
             height: {px(4)}px; border-radius: {track_radius}px; background: {raised};
         }}
@@ -428,7 +501,7 @@ def _stylesheet():
 
         QSpinBox {{
             border: 1px solid {divider}; border-radius: {medium}px;
-            padding: {px(4)}px {px(8)}px; background: {raised};
+            padding: {gap(4)}px {gap(8)}px; background: {raised};
         }}
         QSpinBox:focus {{ border-color: {colors["accent"]}; }}
         QSpinBox::up-button, QSpinBox::down-button {{ width: 0; border: none; }}
@@ -439,30 +512,30 @@ def _stylesheet():
 
         QLineEdit {{
             border: 1px solid {divider}; border-radius: {medium}px;
-            padding: {px(4)}px {px(8)}px; background: {raised};
+            padding: {gap(4)}px {gap(8)}px; background: {raised};
         }}
         QLineEdit:focus {{ border-color: {colors["accent"]}; }}
         /* The search field in the toolbar: rounded as the cards beside it */
-        QLineEdit#row {{ border-radius: {radius_within("large", ROW_HEIGHT)}px; }}
+        QLineEdit#row {{ border-radius: {radius_within("large", row)}px; }}
 
         QListView {{ border: none; outline: none; background: transparent; }}
-        QListView::item {{ border-radius: {medium}px; padding: {px(4)}px; }}
+        QListView::item {{ border-radius: {medium}px; padding: {gap(4)}px; }}
         QListView::item:hover {{ background: {hover}; }}
         QListView::item:selected {{ background: {selected}; color: {colors["textPrimary"]}; }}
 
         /* The grid and the viewer have a border around them, as the cards beside them */
         #pane {{
-            border: 1px solid {card_border}; border-radius: {large}px; padding: {px(2)}px;
+            border: 1px solid {card_border}; border-radius: {large}px; padding: {gap(2)}px;
         }}
 
         /* The library's folders, as filehouse's sidebar */
         #sidebar {{
-            padding: {px(8)}px; background: {card}; border: 1px solid {card_border};
+            padding: {gap(8)}px; background: {card}; border: 1px solid {card_border};
             border-radius: {large}px;
         }}
         #sidebar QListWidget {{ border: none; outline: none; background: transparent; }}
         #sidebar QListWidget::item {{
-            padding: {px(6)}px {px(8)}px; border-radius: {medium}px;
+            padding: {gap(6)}px {gap(8)}px; border-radius: {medium}px;
         }}
         #sidebar QListWidget::item:hover {{ background: {hover}; }}
         #sidebar QListWidget::item:selected {{
@@ -470,24 +543,24 @@ def _stylesheet():
         }}
         #heading {{
             color: {colors["textSecondary"]}; font-size: {small_font}px; font-weight: 600;
-            padding: {px(4)}px {px(8)}px;
+            padding: {gap(4)}px {gap(8)}px;
         }}
 
         /* The arrow sits inside the rounded box, in the padding, not in a square
            button of the platform style's own */
         QComboBox {{
             border: 1px solid {divider}; border-radius: {medium}px;
-            padding: {px(4)}px {px(10)}px; padding-right: {px(10 + _ARROW_BOX)}px;
+            padding: {gap(4)}px {gap(10)}px; padding-right: {gap(10) + px(_ARROW_BOX)}px;
             background: {raised};
         }}
         QComboBox::drop-down {{
             subcontrol-origin: padding; subcontrol-position: center right;
             width: {px(_ARROW_BOX)}px; border: none; background: transparent;
-            margin-right: {px(6)}px;
+            margin-right: {gap(6)}px;
         }}
         QComboBox::down-arrow {{ {_arrow_image()} width: {px(_ARROW)}px; height: {px(_ARROW)}px; }}
         /* The filters above the grid: rounded as the toolbar's cards */
-        QComboBox#row {{ border-radius: {radius_within("large", ROW_HEIGHT)}px; }}
+        QComboBox#row {{ border-radius: {radius_within("large", row)}px; }}
         QComboBox:hover {{ border-color: {overlay(0.2)}; }}
         QComboBox:focus {{ border-color: {colors["accent"]}; }}
         /* The list's window: transparent, the list inside it is the rounded card */
@@ -497,11 +570,11 @@ def _stylesheet():
         QComboBox {{ combobox-popup: 0; }}
         QComboBox QAbstractItemView {{
             background: {card}; border: 1px solid {divider}; border-radius: {large}px;
-            padding: {px(6)}px; outline: none;
+            padding: {gap(6)}px; outline: none;
             selection-background-color: {hover}; selection-color: {colors["textPrimary"]};
         }}
         QComboBox QAbstractItemView::item {{
-            padding: {px(6)}px {px(10)}px; border-radius: {medium}px; min-height: {px(20)}px;
+            padding: {gap(6)}px {gap(10)}px; border-radius: {medium}px; min-height: {gap(20)}px;
         }}
         QComboBox QAbstractItemView::item:selected, QComboBox QAbstractItemView::item:hover {{
             background: {hover}; color: {colors["textPrimary"]};
@@ -514,14 +587,14 @@ def _stylesheet():
 
         QMenu {{
             background: {card}; border: 1px solid {divider};
-            border-radius: {large}px; padding: {px(6)}px;
+            border-radius: {large}px; padding: {gap(6)}px;
         }}
         QMenu::item {{
-            padding: {px(8)}px {px(14)}px; border-radius: {medium}px; margin: 0 {px(2)}px;
+            padding: {gap(8)}px {gap(14)}px; border-radius: {medium}px; margin: 0 {gap(2)}px;
         }}
         QMenu::item:selected {{ background: {hover}; color: {colors["textPrimary"]}; }}
         QMenu::item:disabled {{ color: {colors["textTertiary"]}; }}
-        QMenu::separator {{ height: 1px; background: {divider}; margin: {px(6)}px {px(8)}px; }}
+        QMenu::separator {{ height: 1px; background: {divider}; margin: {gap(6)}px {gap(8)}px; }}
 
         QScrollBar:vertical {{ background: transparent; width: {px(10)}px; margin: {px(2)}px; }}
         QScrollBar:horizontal {{ background: transparent; height: {px(10)}px; margin: {px(2)}px; }}

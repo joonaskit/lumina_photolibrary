@@ -27,6 +27,13 @@ def fresh_settings():
 
 
 @pytest.fixture(autouse=True)
+def comfortable_density():
+    """The density is the app's, not a window's: back to the default after a test."""
+    yield
+    style.set_density("comfortable")
+
+
+@pytest.fixture(autouse=True)
 def fresh_fake():
     FakeExifTool.reset()
 

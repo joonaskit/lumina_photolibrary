@@ -329,7 +329,7 @@ class DevelopView(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(style.px(8))
+        style.follow_density(self, lambda: layout.setSpacing(style.gap(8)))
         layout.addWidget(frame, 1)
         layout.addWidget(self._make_panel())
 
@@ -378,9 +378,13 @@ class DevelopView(QWidget):
         panel = QFrame()
         panel.setObjectName("card")
         layout = QVBoxLayout(panel)
-        margin = style.px(14)
-        layout.setContentsMargins(margin, margin, margin, margin)
-        layout.setSpacing(style.px(10))
+
+        def space():
+            margin = style.gap(14)
+            layout.setContentsMargins(margin, margin, margin, margin)
+            layout.setSpacing(style.gap(10))
+
+        style.follow_density(panel, space)
 
         self.before_button = QPushButton("Show Original")
         self.before_button.setCheckable(True)

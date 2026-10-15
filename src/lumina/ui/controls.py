@@ -21,7 +21,7 @@ class ValueSlider(QWidget):
         self.default = default
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(style.px(2))
+        style.follow_density(self, lambda: layout.setSpacing(style.gap(2)))
         row = QHBoxLayout()
         self.title = QLabel(title)
         self.value_label = QLabel()

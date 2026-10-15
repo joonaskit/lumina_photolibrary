@@ -80,13 +80,13 @@ class StarRating(QWidget):
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setToolTip("Rate the photo (keys 1 to 5); the same star again clears it")
-        self.setFixedHeight(style.px(style.CONTROL_HEIGHT))
+        self.setFixedHeight(style.row_height())
 
     def _cell(self):
         return style.px(22)
 
     def sizeHint(self):
-        return QSize(5 * self._cell() + style.px(4), style.px(style.CONTROL_HEIGHT))
+        return QSize(5 * self._cell() + style.px(4), style.row_height())
 
     def minimumSizeHint(self):
         return self.sizeHint()

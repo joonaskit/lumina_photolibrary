@@ -196,19 +196,23 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.develop)
         outer = QWidget()
         column = QVBoxLayout(outer)
-        column.setContentsMargins(style.px(8), 0, style.px(8), 0)
-        column.setSpacing(style.px(8))
         # Between the toolbar and the filters
         divider = QFrame()
         divider.setObjectName("divider")
         divider.setFixedHeight(1)
         column.addWidget(divider)
         layout = QHBoxLayout()
-        layout.setSpacing(style.px(8))
         layout.addWidget(self.sidebar)
         layout.addWidget(self.pages, 1)
         column.addLayout(layout, 1)
         self.setCentralWidget(outer)
+
+        def space():
+            column.setContentsMargins(style.gap(8), 0, style.gap(8), 0)
+            column.setSpacing(style.gap(8))
+            layout.setSpacing(style.gap(8))
+
+        style.follow_density(outer, space)
 
         self.status = QLabel()
         self.statusBar().addWidget(self.status, 1)
@@ -222,10 +226,15 @@ class MainWindow(QMainWindow):
         # How the grid shows the photos, not which: at the right of its status bar
         self.grid_view_options = QWidget()
         options = QHBoxLayout(self.grid_view_options)
-        options.setContentsMargins(style.px(8), 0, 0, 0)
-        options.setSpacing(style.px(8))
         options.addWidget(self.flag_options)
         options.addWidget(self.grid_size)
+        style.follow_density(
+            self.grid_view_options,
+            lambda: (
+                options.setContentsMargins(style.gap(8), 0, 0, 0),
+                options.setSpacing(style.gap(8)),
+            ),
+        )
         self.statusBar().addPermanentWidget(self.grid_view_options)
         if search is not None:
             self.search_status.cancel_download.connect(search.cancel_download)
@@ -391,7 +400,6 @@ class MainWindow(QMainWindow):
         left = QWidget()
         left_row = QHBoxLayout(left)
         left_row.setContentsMargins(0, 0, 0, 0)
-        left_row.setSpacing(style.px(8))
         self.navigation = self._group(self.back_action, self.previous_action, self.next_action)
         left_row.addWidget(self.navigation)
         self.title = QLabel(APP_NAME)
@@ -410,7 +418,6 @@ class MainWindow(QMainWindow):
         right = QWidget()
         right_row = QHBoxLayout(right)
         right_row.setContentsMargins(0, 0, 0, 0)
-        right_row.setSpacing(style.px(8))
         right_row.addStretch(1)
         right_row.addWidget(self.search_field)
         right_row.addWidget(self._group(self.preferences_action))
@@ -418,35 +425,45 @@ class MainWindow(QMainWindow):
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(style.px(8))
         layout.addWidget(left, 1)
         layout.addWidget(self.marking)
         layout.addWidget(right, 1)
         toolbar.addWidget(row)
+        style.follow_density(
+            row, lambda: [rows.setSpacing(style.gap(8)) for rows in (left_row, right_row, layout)]
+        )
 
     def _group(self, *items):
         """Buttons for actions, and any widgets, in one rounded card, as filehouse's
         toolbar has them."""
         frame = QFrame()
         frame.setObjectName("group")
-        frame.setFixedHeight(style.px(style.ROW_HEIGHT))
         layout = QHBoxLayout(frame)
-        padding = style.px(style.GROUP_PADDING)
-        layout.setContentsMargins(padding, padding, padding, padding)
-        layout.setSpacing(style.px(2))
-        inner = style.row_inner_height()
+        widgets = []
         for action in items:
             if isinstance(action, QWidget):
-                action.setFixedHeight(inner)
+                widgets.append(action)
                 layout.addWidget(action)
                 continue
             button = QToolButton()
             button.setDefaultAction(action)
-            # Square with an icon; wider when the icon theme has none and the text shows
-            button.setFixedHeight(inner)
-            button.setMinimumWidth(inner)
             button.setIconSize(QSize(style.px(18), style.px(18)))
+            widgets.append(button)
             layout.addWidget(button)
+
+        def fit():
+            frame.setFixedHeight(style.row_height())
+            padding = style.group_padding()
+            layout.setContentsMargins(padding, padding, padding, padding)
+            layout.setSpacing(style.gap(2))
+            inner = style.row_inner_height()
+            for widget in widgets:
+                widget.setFixedHeight(inner)
+                # Square with an icon; wider when the icon theme has none and the text shows
+                if isinstance(widget, QToolButton):
+                    widget.setMinimumWidth(inner)
+
+        style.follow_density(frame, fit)
         return frame
 
     def _framed(self, widget):
@@ -496,6 +513,10 @@ class MainWindow(QMainWindow):
         self._delegate = _CellDelegate(QSize(), self.grid)
         self.grid.setItemDelegate(self._delegate)
         self._apply_grid_size(settings.grid_size())
+        # Closer cells in a compact window; the thumbnails stay as large
+        style.follow_density(
+            self.grid, lambda: self._apply_grid_size(self.grid_size.value()), now=False
+        )
         # Only while the grid shows: the Develop view may want these keys for its own zoom
         for action in (self.larger_action, self.smaller_action):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -1020,10 +1041,10 @@ class MainWindow(QMainWindow):
         self.grid_size.set_value(name)
         side = style.px(GRID_ICONS[name])
         cell = QSize(
-            side + style.px(GRID_CELL_EXTRA.width()), side + style.px(GRID_CELL_EXTRA.height())
+            side + style.gap(GRID_CELL_EXTRA.width()), side + style.gap(GRID_CELL_EXTRA.height())
         )
         self.grid.setIconSize(QSize(side, side))
-        self._delegate.set_size(cell.shrunkBy(_margins(style.px(GRID_GAP))))
+        self._delegate.set_size(cell.shrunkBy(_margins(style.gap(GRID_GAP))))
         self.grid.setGridSize(cell)
         # The photo the user was on stays in view
         if self.grid.currentIndex().isValid():
@@ -1390,4 +1411,4 @@ def _margins(gap):
 
 def _inset():
     # Inside the first cell, past the grid's own margin
-    return QPoint(style.px(GRID_GAP * 2), style.px(GRID_GAP * 2))
+    return QPoint(style.gap(GRID_GAP * 2), style.gap(GRID_GAP * 2))
