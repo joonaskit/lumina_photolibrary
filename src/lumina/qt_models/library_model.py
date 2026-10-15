@@ -9,11 +9,11 @@ With a search (a text, or "like this photo"), the same rows are shown ranked by 
 SearchService, best first, and only those that match. The search is run again when
 the rows are read again and while indexing makes more photos findable.
 
-Flags (thumbs up or down) narrow what is shown here, not in the query, so that
-flagging is instant and a photo flagged out of the view stays until the user moves
-on (`settle`): a photo given a thumbs down while thumbs-down photos are hidden does
-not vanish under the pointer. Flag changes can be undone, for any photo, also one no
-longer shown.
+Flags (thumbs up or down) and ratings (stars) narrow what is shown here, not in the
+query, so that flagging and rating are instant and a photo flagged or rated out of the
+view stays until the user moves on (`settle`): a photo given a thumbs down while
+thumbs-down photos are hidden does not vanish under the pointer. Changes of either can
+be undone, in one order, for any photo, also one no longer shown.
 """
 
 import os
@@ -35,14 +35,19 @@ ID_ROLE = Qt.ItemDataRole.UserRole + 2
 FLAG_ROLE = Qt.ItemDataRole.UserRole + 3
 # Whether the cell is drawn greyed out: a thumbs-down photo, while they are dimmed
 DIMMED_ROLE = Qt.ItemDataRole.UserRole + 4
+# The photo's stars, 0 to 5
+RATING_ROLE = Qt.ItemDataRole.UserRole + 5
 
 # What becomes of thumbs-down photos when no flag filter is chosen
 SHOW, DIM, HIDE = "show", "dim", "hide"
 
 # While indexing, a search is run again at most this often, in seconds
 _RESEARCH_EVERY = 3.0
-# Flag changes that can be undone
+# Flag and rating changes that can be undone
 _HISTORY = 200
+# The rating filter's "no stars": any other value is that many stars or more
+NOT_RATED = 0
+STARS = (1, 2, 3, 4, 5)
 
 # The edit filter: only photos with an edit (of their own, not a virtual copy's), or
 # only those without
@@ -67,7 +72,7 @@ class LibraryModel(QAbstractListModel):
     loading_changed = Signal(bool)
     # The search changed, or its results came
     search_changed = Signal()
-    # Flags were set, undone or redone: what can be undone changed
+    # Flags or ratings were set, undone or redone: what can be undone changed
     flags_changed = Signal()
 
     def __init__(self, service, search=None, parent=None):
@@ -80,6 +85,9 @@ class LibraryModel(QAbstractListModel):
         self.flag_filter = None
         # EDITED or UNEDITED to show only those, or None for any
         self.edit_filter = None
+        # NOT_RATED for photos without stars, or a number of stars for those with that
+        # many or more, or None for any
+        self.rating_filter = None
         self.rejected = DIM
         # Every row of the filter; `_ranked` the ids a search found, best first; `_rows`
         # what is shown
@@ -89,8 +97,10 @@ class LibraryModel(QAbstractListModel):
         self._ranked = None
         self._rows = []
         self._index = {}
-        # Photos flagged out of the view, shown until the user moves on
+        # Photos flagged or rated out of the view, shown until the user moves on
         self._kept = set()
+        # Changes that can be undone: (field, {photo id: value it had}) with field "flag"
+        # or "rating"
         self._undo = []
         self._redo = []
         self._loading = False
@@ -236,10 +246,17 @@ class LibraryModel(QAbstractListModel):
             return True
         return (photo.edit is not None) == (self.edit_filter == EDITED)
 
+    def _rating_passes(self, photo):
+        if self.rating_filter is None:
+            return True
+        if self.rating_filter == NOT_RATED:
+            return photo.rating == 0
+        return photo.rating >= self.rating_filter
+
     def _passes(self, photo):
         if photo.id in self._kept:
             return True
-        if not self._edit_passes(photo):
+        if not (self._edit_passes(photo) and self._rating_passes(photo)):
             return False
         if self.flag_filter is not None:
             return photo.flag == self.flag_filter
@@ -301,6 +318,14 @@ class LibraryModel(QAbstractListModel):
             self._kept.clear()
             self._show(self._compose(), reset=False)
 
+    def set_rating_filter(self, stars):
+        """Show only photos without stars (NOT_RATED), or with `stars` or more, or any
+        (None)."""
+        if stars != self.rating_filter:
+            self.rating_filter = stars
+            self._kept.clear()
+            self._show(self._compose(), reset=False)
+
     def set_rejected(self, mode):
         """SHOW, DIM or HIDE thumbs-down photos (with no flag filter)."""
         if mode != self.rejected:
@@ -312,35 +337,49 @@ class LibraryModel(QAbstractListModel):
         """How many photos of the filter or search the flags leave out."""
         if self.flag_filter is None and self.rejected != HIDE:
             return 0
-        # Of the photos the edit filter lets through, those the flags leave out
+        # Of the photos the edit and rating filters let through, those the flags leave out
         if self._ranked is None:
             base = self._all
         else:
             base = [self._all[self._positions[i]] for i in self._ranked if i in self._positions]
-        return sum(1 for p in base if self._edit_passes(p)) - sum(
-            1 for p in self._rows if self._edit_passes(p)
-        )
+
+        def wanted(photo):
+            return self._edit_passes(photo) and self._rating_passes(photo)
+
+        return sum(1 for p in base if wanted(p)) - sum(1 for p in self._rows if wanted(p))
 
     def flag(self, row):
         return self._rows[row].flag
 
+    def rating(self, row):
+        return self._rows[row].rating
+
     def toggle_flag(self, rows, flag):
         """Give the photos of `rows` `flag`; when they all have it already, clear it, as
         pressing the key again does. Returns the flag given, or None for no change."""
+        return self._toggle("flag", rows, flag, UNFLAGGED)
+
+    def toggle_rating(self, rows, stars):
+        """Give the photos of `rows` `stars` (0 clears); when they all have that many
+        already, clear it, as pressing the key again does. Returns the stars given, or
+        None for no change."""
+        return self._toggle("rating", rows, stars, 0)
+
+    def _toggle(self, field, rows, value, none):
         photos = [self._rows[row] for row in rows if 0 <= row < len(self._rows)]
         if not photos:
             return None
-        if all(photo.flag == flag for photo in photos):
-            flag = UNFLAGGED
-        changes = {photo.id: flag for photo in photos if photo.flag != flag}
+        if all(getattr(photo, field) == value for photo in photos):
+            value = none
+        changes = {photo.id: value for photo in photos if getattr(photo, field) != value}
         if not changes:
             return None
-        before = {photo.id: photo.flag for photo in photos if photo.id in changes}
-        self._write(changes)
-        self._undo = [*self._undo[-(_HISTORY - 1) :], before]
+        before = {photo.id: getattr(photo, field) for photo in photos if photo.id in changes}
+        self._write(field, changes)
+        self._undo = [*self._undo[-(_HISTORY - 1) :], (field, before)]
         self._redo.clear()
         self.flags_changed.emit()
-        return flag
+        return value
 
     def can_undo_flags(self):
         return bool(self._undo)
@@ -349,28 +388,33 @@ class LibraryModel(QAbstractListModel):
         return bool(self._redo)
 
     def undo_flags(self):
-        """Put back the flags before the last change. Returns how many photos it set."""
+        """Put back what the last change of flags or ratings changed. Returns how many
+        photos it set."""
         return self._step_history(self._undo, self._redo)
 
     def redo_flags(self):
         return self._step_history(self._redo, self._undo)
 
+    def last_change(self):
+        """What undo would undo, "flag" or "rating", or None."""
+        return self._undo[-1][0] if self._undo else None
+
     def _step_history(self, source, target):
         if not source:
             return 0
-        flags = source.pop()
-        # From the library: a photo not in the rows still has its flag there
-        target.append(self.service.flags(flags))
-        self._write(flags)
+        field, values = source.pop()
+        # From the library: a photo not in the rows still has its value there
+        target.append((field, getattr(self.service, f"{field}s")(values)))
+        self._write(field, values)
         self.flags_changed.emit()
-        return len(flags)
+        return len(values)
 
-    def _write(self, flags):
-        self.service.set_flags(flags)
-        for photo_id, flag in flags.items():
+    def _write(self, field, values):
+        getattr(self.service, f"set_{field}s")(values)
+        for photo_id, value in values.items():
             position = self._positions.get(photo_id)
             if position is not None:
-                self._all[position] = replace(self._all[position], flag=flag)
+                self._all[position] = replace(self._all[position], **{field: value})
             if photo_id in self._index:
                 self._kept.add(photo_id)
         if self._querying:
@@ -415,6 +459,8 @@ class LibraryModel(QAbstractListModel):
             return photo.id
         if role == FLAG_ROLE:
             return photo.flag
+        if role == RATING_ROLE:
+            return photo.rating
         if role == DIMMED_ROLE:
             return photo.flag == REJECTED and self.rejected != SHOW and self.flag_filter != REJECTED
         path = self.path(index.row())

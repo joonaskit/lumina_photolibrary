@@ -9,6 +9,7 @@ a file under its own name is always whole.
 
 import hashlib
 import os
+import shutil
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -92,6 +93,17 @@ def is_installed(model, root=None):
         except OSError:
             return False
     return True
+
+
+def remove(model, root=None):
+    """Delete `model`'s files, whole and partly fetched, and the folder of its name
+    when that held nothing else. Nothing outside its own folder is touched."""
+    folder = directory(model, root)
+    shutil.rmtree(folder, ignore_errors=True)
+    try:
+        os.rmdir(os.path.dirname(folder))
+    except OSError:
+        pass
 
 
 def download(

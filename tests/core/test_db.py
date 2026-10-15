@@ -302,3 +302,48 @@ def test_a_flag_outlives_a_missing_file_and_a_changed_one(library):
     library.write_scan(folder, volume, changed=[(photo, 2, 2, "2021")])
 
     assert library.flags([photo]) == {photo: dbm.REJECTED}
+
+
+def test_ratings_are_kept_and_read_back_apart_from_flags(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    ids = add_photos(library, folder, volume, ["p/a.jpg", "p/b.jpg", "p/c.jpg"])
+
+    library.set_ratings({ids["p/a.jpg"]: 5, ids["p/b.jpg"]: 2})
+    library.set_flags({ids["p/b.jpg"]: dbm.PICKED})
+
+    assert {photo.path: (photo.rating, photo.flag) for photo in library.photos()} == {
+        "p/a.jpg": (5, dbm.UNFLAGGED),
+        "p/b.jpg": (2, dbm.PICKED),
+        "p/c.jpg": (0, dbm.UNFLAGGED),
+    }
+    assert library.ratings([ids["p/a.jpg"], ids["p/c.jpg"], 999]) == {
+        ids["p/a.jpg"]: 5,
+        ids["p/c.jpg"]: 0,
+    }
+    for bad in (6, -1, 2.5):
+        with pytest.raises(ValueError):
+            library.set_ratings({ids["p/a.jpg"]: bad})
+    assert library.ratings([ids["p/a.jpg"]]) == {ids["p/a.jpg"]: 5}
+
+
+def test_ratings_are_read_for_more_photos_than_sqlite_takes_at_once(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    ids = list(add_photos(library, folder, volume, [f"p/{n}.jpg" for n in range(1200)]).values())
+
+    library.set_ratings(dict.fromkeys(ids, 3))
+
+    assert library.ratings(ids) == dict.fromkeys(ids, 3)
+
+
+def test_a_rating_outlives_a_missing_file_and_a_changed_one(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    photo = add_photos(library, folder, volume, ["p/a.jpg"])["p/a.jpg"]
+    library.set_ratings({photo: 4})
+
+    library.mark_missing([photo])
+    library.write_scan(folder, volume, changed=[(photo, 2, 2, "2021")])
+
+    assert library.ratings([photo]) == {photo: 4}

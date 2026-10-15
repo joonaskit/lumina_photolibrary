@@ -25,6 +25,8 @@ UNFINISHED = (QUEUED, RUNNING)
 # A photo's `flag`: thumbs up, none, thumbs down
 PICKED, UNFLAGGED, REJECTED = 1, 0, -1
 FLAGS = (PICKED, UNFLAGGED, REJECTED)
+# A photo's `rating`: 0 for none, or 1 to 5 stars
+RATINGS = (0, 1, 2, 3, 4, 5)
 
 
 def default_path():
@@ -174,8 +176,18 @@ def _migrate_4(db):
     )
 
 
+def _migrate_5(db):
+    db.executescript(
+        """
+        -- Stars, 1 to 5, or none (0). Separate from the flag; one a photo, not per copy,
+        -- and kept while the file is missing, as the flag and the edits are
+        ALTER TABLE photos ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;
+        """
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
-_MIGRATIONS = [_migrate_1, _migrate_2, _migrate_3, _migrate_4]
+_MIGRATIONS = [_migrate_1, _migrate_2, _migrate_3, _migrate_4, _migrate_5]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
 
@@ -211,6 +223,7 @@ class PhotoRow:
     # The photo's own edit as parameters JSON, or None
     edit: str | None = None
     flag: int = UNFLAGGED
+    rating: int = 0
 
 
 @dataclass(frozen=True)
@@ -419,13 +432,13 @@ class Library:
         where, args = _where(shown or Filter())
         rows = self.db.execute(
             "SELECT p.id, v.key, p.path, p.content_id, p.available, "
-            "COALESCE(p.captured, p.file_time) AS taken, e.params, p.flag "
+            "COALESCE(p.captured, p.file_time) AS taken, e.params, p.flag, p.rating "
             f"FROM photos p JOIN volumes v ON v.id = p.volume_id "
             "LEFT JOIN edits e ON e.photo_id = p.id AND e.copy = 0 "
             f"{where} ORDER BY taken, p.path",
             args,
         )
-        return [PhotoRow(r[0], r[1], r[2], r[3], bool(r[4]), r[5], r[6], r[7]) for r in rows]
+        return [PhotoRow(r[0], r[1], r[2], r[3], bool(r[4]), r[5], r[6], r[7], r[8]) for r in rows]
 
     def photo(self, photo_id):
         row = self.db.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
@@ -456,28 +469,42 @@ class Library:
 
         return years, distinct("model"), distinct("lens")
 
-    # Flags
+    # Flags and ratings
 
     def set_flags(self, flags):
         """{photo id: PICKED, UNFLAGGED or REJECTED}, in one transaction."""
-        for flag in flags.values():
-            if flag not in FLAGS:
-                raise ValueError(f"Not a flag: {flag!r}")
-        with self.db:
-            self.db.executemany(
-                "UPDATE photos SET flag = ? WHERE id = ?",
-                [(flag, photo) for photo, flag in flags.items()],
-            )
+        self._set_marks("flag", FLAGS, flags)
 
     def flags(self, ids):
         """{photo id: flag} of those of `ids` in the library."""
+        return self._marks("flag", ids)
+
+    def set_ratings(self, ratings):
+        """{photo id: 0 for none, or 1 to 5 stars}, in one transaction."""
+        self._set_marks("rating", RATINGS, ratings)
+
+    def ratings(self, ids):
+        """{photo id: rating} of those of `ids` in the library."""
+        return self._marks("rating", ids)
+
+    def _set_marks(self, column, allowed, values):
+        for value in values.values():
+            if value not in allowed:
+                raise ValueError(f"Not a {column}: {value!r}")
+        with self.db:
+            self.db.executemany(
+                f"UPDATE photos SET {column} = ? WHERE id = ?",
+                [(value, photo) for photo, value in values.items()],
+            )
+
+    def _marks(self, column, ids):
         ids = list(ids)
         found = {}
         # In slices: SQLite has a limit on the number of parameters
         for start in range(0, len(ids), 500):
             part = ids[start : start + 500]
             marks = ", ".join("?" * len(part))
-            rows = self.db.execute(f"SELECT id, flag FROM photos WHERE id IN ({marks})", part)
+            rows = self.db.execute(f"SELECT id, {column} FROM photos WHERE id IN ({marks})", part)
             found.update((row[0], row[1]) for row in rows)
         return found
 
