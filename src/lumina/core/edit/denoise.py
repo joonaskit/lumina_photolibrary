@@ -115,14 +115,10 @@ def _smoothed_colour(red, blue, chroma):
     amount, sigma, colour_range = chroma
     height, width = red.shape
     pair = np.dstack([red, blue, np.zeros_like(red)])
-    small = cv2.resize(
-        pair,
-        (max(1, round(width / _COLOUR_FACTOR)), max(1, round(height / _COLOUR_FACTOR))),
-        interpolation=cv2.INTER_AREA,
-    )
+    small = colour.shrunk(pair, _COLOUR_FACTOR)
     size = 2 * math.ceil(1.5 * sigma) + 1
     small = cv2.bilateralFilter(small, size, colour_range, sigma)
-    smooth = cv2.resize(small, (width, height), interpolation=cv2.INTER_LINEAR)
+    smooth = colour.grown(small, _COLOUR_FACTOR, (height, width))
     result = []
     for index, plane in enumerate((red, blue)):
         change = smooth[..., index] - plane

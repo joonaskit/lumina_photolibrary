@@ -27,7 +27,7 @@ at white, or with the Basic controls in use, at basic.HEADROOM times white, wher
 the Basic curve can bring them back.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 
 import numpy as np
@@ -219,12 +219,17 @@ def _crop_box(width, height, crop):
     return top, max(bottom, top + 1), left, max(right, left + 1)
 
 
-def geometry(image, params):
+def geometry(image, params, region=None):
     """`image` turned, mirrored, straightened and cropped: a view when not straightened,
-    a new array of the same type when it is."""
+    a new array of the same type when it is. With `region` (left, top, right, bottom, in
+    pixels of the result), only that part of it."""
     image = _oriented(image, params)
     height, width = image.shape[:2]
     top, bottom, left, right = _crop_box(width, height, params.crop)
+    if region is not None:
+        x0, y0, x1, y1 = region
+        left, right = left + x0, min(right, left + x1)
+        top, bottom = top + y0, min(bottom, top + y1)
     if params.straighten == 0:
         return image[top:bottom, left:right]
     return _straightened(image, params.straighten, (top, bottom, left, right))
@@ -291,7 +296,7 @@ def output_size(width, height, params):
 # The whole
 
 
-def render(image, params, bits=8, tile_rows=512, full=None):
+def render(image, params, bits=8, tile_rows=512, full=None, region=None, haze=None):
     """`image` (H x W x 3 linear: uint16, or float32 in [0, 1]) rendered with `params`
     to H' x W' x 3 sRGB, uint8 for `bits` 8 or uint16 for 16.
 
@@ -304,6 +309,11 @@ def render(image, params, bits=8, tile_rows=512, full=None):
     are in pixels of the full-size photo and are made smaller to match. Without it
     `image` is taken to be the full size.
 
+    `region` (left, top, right, bottom) renders only that part of the result, the same
+    pixels as in the whole render: what is rendered around it for the steps that look at
+    neighbours is cut away. Dehaze measures the whole photo, which a part cannot: `haze`
+    is then the measure of the whole (`haze_analysis`), made from a smaller copy.
+
     A photo with a step that looks at the pixels around each one (texture, clarity,
     dehaze, noise reduction, sharpening) is rendered in two passes: the first does
     everything that treats a pixel on its own and keeps the photo as 16-bit sRGB (a
@@ -311,25 +321,78 @@ def render(image, params, bits=8, tile_rows=512, full=None):
     beyond each, applies those steps, the effects, and the output encoding."""
     if bits not in (8, 16):
         raise ValueError(f"bits must be 8 or 16, not {bits}")
-    view = geometry(image, params)
-    height, width = view.shape[:2]
-    out = np.empty((height, width, 3), dtype=np.uint8 if bits == 8 else np.uint16)
+    width, height = output_size(image.shape[1], image.shape[0], params)
+    wanted = region = _clipped(region, width, height)
+    plan = _plan(params, (height, width), _scale(image, params, full))
+    detailed = plan is not None and plan.detail is not None
+    if detailed and region != (0, 0, width, height):
+        region = _with_halo(region, plan.detail, width, height)
+    view = geometry(image, params, None if region == (0, 0, width, height) else region)
+    origin = (region[1], region[0])
+    out = np.empty((view.shape[0], view.shape[1], 3), dtype=np.uint8 if bits == 8 else np.uint16)
+    gains, tone, desaturation = _per_pixel(view.dtype, params)
+    step = max(1, tile_rows or view.shape[0])
+    if detailed:
+        if haze is not None:
+            haze = replace(haze, size=(height, width))
+        _render_in_two_passes(view, gains, tone, desaturation, plan, out, step, origin, haze)
+    else:
+        for start in range(0, view.shape[0], step):
+            tile = view[start : start + step].astype(np.float32) * gains
+            out[start : start + step] = _render_tile(
+                tile, tone, desaturation, plan, bits, (origin[0] + start, origin[1])
+            )
+    if region != wanted:
+        out = out[
+            wanted[1] - region[1] : wanted[3] - region[1],
+            wanted[0] - region[0] : wanted[2] - region[0],
+        ]
+    return out
+
+
+def _clipped(region, width, height):
+    """`region` (left, top, right, bottom) within a `width` x `height` result, or all of it."""
+    if region is None:
+        return 0, 0, width, height
+    left, top, right, bottom = region
+    left, top = min(max(left, 0), width - 1), min(max(top, 0), height - 1)
+    return left, top, min(max(right, left + 1), width), min(max(bottom, top + 1), height)
+
+
+def _with_halo(region, detail, width, height):
+    """`region` grown by the rows and columns the steps that look at neighbours reach,
+    cut at the multiple of `align` that the whole photo is cut at (a copy made smaller
+    to blur on must be cut the same way), and kept inside the photo."""
+    halo, align = detail.reach()
+    left, top, right, bottom = region
+    left, top = max(0, left - halo) // align * align, max(0, top - halo) // align * align
+    right = min(width, -(-(right + halo) // align) * align)
+    bottom = min(height, -(-(bottom + halo) // align) * align)
+    return left, top, right, bottom
+
+
+def _per_pixel(dtype, params):
+    """The gains and tone LUTs that every pixel goes through, and the shadows' desaturation."""
     gains = channel_gains(params)
-    if view.dtype == np.uint16:
+    if dtype == np.uint16:
         gains = gains / np.float32(65535.0)
     # The tone LUT spans [0, tone_range] in linear light: scaled to [0, 1] with the gains
     gains = gains / np.float32(tone_range(params))
     tone = None if _is_tone_identity(params) else tone_luts(params)
-    desaturation = params.matte.shadow_desaturation
-    plan = _plan(params, (height, width), _scale(image, params, full))
-    step = max(1, tile_rows or height)
-    if plan is not None and plan.detail is not None:
-        _render_in_two_passes(view, gains, tone, desaturation, plan, params, out, step)
-        return out
-    for start in range(0, height, step):
-        tile = view[start : start + step].astype(np.float32) * gains
-        out[start : start + step] = _render_tile(tile, tone, desaturation, plan, bits, start)
-    return out
+    return gains, tone, params.matte.shadow_desaturation
+
+
+def haze_analysis(image, params):
+    """What dehaze measures of the whole photo, from `image`, a copy of it (the proxy):
+    for rendering a part of it with `render(region=..., haze=...)`. None when dehaze is
+    not in use."""
+    if params.presence.dehaze == 0:
+        return None
+    view = geometry(image, params)
+    gains, tone, desaturation = _per_pixel(view.dtype, params)
+    plan = _plan(params, view.shape[:2])
+    stage = _first_pass(view, gains, tone, desaturation, plan, view.shape[0], (0, 0))
+    return dehaze.analyse(stage, params.presence.dehaze)
 
 
 @dataclass(frozen=True)
@@ -417,7 +480,7 @@ def _tone_step(linear, tone, desaturation, bits):
         _desaturate_shadows(linear, desaturation)
 
 
-def _render_tile(linear, tone, desaturation, plan, bits, first_row):
+def _render_tile(linear, tone, desaturation, plan, bits, first):
     np.clip(linear, 0.0, 1.0, out=linear)
     if bits == 8 and desaturation == 0 and plan is None:
         # One lookup per channel: tone and output together
@@ -434,7 +497,7 @@ def _render_tile(linear, tone, desaturation, plan, bits, first_row):
         return _output_lut(8)[(linear * (TONE_SIZE - 1) + 0.5).astype(np.uint16)]
     encoded = _encoded(linear)
     if plan is not None:
-        _adjust(encoded, first_row, plan.size, plan.colour, plan.effects)
+        _adjust(encoded, first, plan.size, plan.colour, plan.effects)
     return _quantized(encoded, bits)
 
 
@@ -451,10 +514,11 @@ def _quantized(encoded, bits):
     return encoded.astype(np.uint8 if bits == 8 else np.uint16)
 
 
-def _adjust(encoded, first_row, size, coloured, finishing):
+def _adjust(encoded, first, size, coloured, finishing):
     """The colour steps, then the effects, on `encoded` (sRGB-encoded floats, the rows
-    of the photo of `size` from `first_row`), a few rows at a time so the temporaries
-    stay in the CPU cache. Either may be None."""
+    and columns of the photo of `size` from `first`, (row, column)), a few rows at a time
+    so the temporaries stay in the CPU cache. Either may be None."""
+    first_row, first_column = first
     for start in range(0, len(encoded), colour.ROWS):
         rows = encoded[start : start + colour.ROWS]
         row = first_row + start
@@ -469,27 +533,39 @@ def _adjust(encoded, first_row, size, coloured, finishing):
         if finishing is not None:
             vignette, grain = finishing
             if vignette is not None:
-                effects.vignette_rows(rows, row, size, vignette)
+                effects.vignette_rows(rows, row, size, vignette, first_column)
             if grain is not None:
-                effects.grain_rows(rows, row, size, grain)
+                effects.grain_rows(rows, row, size, grain, first_column)
 
 
-def _render_in_two_passes(view, gains, tone, desaturation, plan, params, out, step):
-    """`render` for a photo with steps that need the pixels around each one: see there."""
+def _first_pass(view, gains, tone, desaturation, plan, step, origin):
+    """What treats each pixel on its own, kept as 16-bit sRGB. The exact tables, for 8
+    bits too, so that a photo looks the same at either. `origin` is where `view` starts in
+    the photo (row, column)."""
     height, width = view.shape[:2]
-    bits = 8 if out.dtype == np.uint8 else 16
-    detail = plan.detail
-    # First pass: what treats each pixel on its own, kept as 16-bit sRGB. The exact
-    # tables, for 8 bits too, so that a photo looks the same at either
     stage = np.empty((height, width, 3), dtype=np.uint16)
     for start in range(0, height, step):
         tile = view[start : start + step].astype(np.float32) * gains
         np.clip(tile, 0.0, 1.0, out=tile)
         _tone_step(tile, tone, desaturation, 16)
         encoded = _encoded(tile)
-        _adjust(encoded, start, plan.size, plan.colour, None)
+        if plan is not None:
+            _adjust(encoded, (origin[0] + start, origin[1]), plan.size, plan.colour, None)
         stage[start : start + step] = _quantized(encoded, 16)
-    analysis = dehaze.analyse(stage, detail.dehaze) if detail.dehaze else None
+    return stage
+
+
+def _render_in_two_passes(view, gains, tone, desaturation, plan, out, step, origin, haze):
+    """`render` for a photo with steps that need the pixels around each one: see there.
+    `view` starts at `origin` (row, column) of the photo; `haze` is the measure of the
+    whole photo's haze, or None to measure `view`."""
+    height = view.shape[0]
+    bits = 8 if out.dtype == np.uint8 else 16
+    detail = plan.detail
+    stage = _first_pass(view, gains, tone, desaturation, plan, step, origin)
+    analysis = haze
+    if analysis is None and detail.dehaze:
+        analysis = dehaze.analyse(stage, detail.dehaze)
     # Second pass: tiles with the rows the neighbour-looking steps reach beyond them
     halo, align = detail.reach()
     # Tiles of at least four halos, to a multiple of the rows a blur's copy is cut at
@@ -500,7 +576,7 @@ def _render_in_two_passes(view, gains, tone, desaturation, plan, params, out, st
         x = stage[first:last].astype(np.float32)
         x *= np.float32(1.0 / 65535.0)
         if detail.dehaze:
-            dehaze.apply_rows(x, first, analysis, detail.dehaze)
+            dehaze.apply_rows(x, (origin[0] + first, origin[1]), analysis, detail.dehaze)
         if detail.noise is not None:
             denoise.apply_rows(x, detail.noise)
         if any(detail.local):
@@ -509,7 +585,7 @@ def _render_in_two_passes(view, gains, tone, desaturation, plan, params, out, st
             sharpen.apply_rows(x, detail.sharpen)
         kept = x[start - first : stop - first]
         if plan.effects is not None:
-            _adjust(kept, start, plan.size, None, plan.effects)
+            _adjust(kept, (origin[0] + start, origin[1]), plan.size, None, plan.effects)
         out[start:stop] = _quantized(np.ascontiguousarray(kept), bits)
 
 

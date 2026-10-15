@@ -177,9 +177,13 @@ class MainWindow(QMainWindow):
                 self.next_action,
                 self.undo_action,
                 self.redo_action,
+                *self.zoom_actions,
                 *self.settings_actions,
             ]
         )
+        self.develop.image.zoom_changed.connect(self._on_zoom_changed)
+        self.session.region_ready.connect(lambda *_part: self._on_zoom_changed())
+        self.session.image_ready.connect(lambda *_image: self._on_zoom_changed())
         self.develop.copy_settings_button.clicked.connect(self.copy_settings)
         self.develop.paste_settings_button.clicked.connect(self.paste_settings)
         self.service.settings_copied.connect(self._update_settings_actions)
@@ -293,16 +297,17 @@ class MainWindow(QMainWindow):
         self.smaller_action = QAction("Smaller Thumbnails", self)
         self.smaller_action.setShortcuts([QKeySequence.StandardKey.ZoomOut])
         self.smaller_action.triggered.connect(lambda: self.step_grid_size(-1))
-        # The viewer's zoom: Z between fitted and 100 %, Ctrl+Plus and Minus in steps
+        # The zoom of the viewer and of the Develop view: Z between fitted and 100 %,
+        # Ctrl+Plus and Minus in steps
         self.zoom_action = QAction("Zoom to 100 %", self)
         self.zoom_action.setShortcut(QKeySequence(Qt.Key.Key_Z))
-        self.zoom_action.triggered.connect(lambda: self.viewer.toggle_zoom())
+        self.zoom_action.triggered.connect(lambda: self._zoom_view().toggle_zoom())
         self.zoom_in_action = QAction("Zoom In", self)
         self.zoom_in_action.setShortcuts([QKeySequence.StandardKey.ZoomIn, QKeySequence("Ctrl+=")])
-        self.zoom_in_action.triggered.connect(lambda: self.viewer.zoom_in())
+        self.zoom_in_action.triggered.connect(lambda: self._zoom_view().zoom_in())
         self.zoom_out_action = QAction("Zoom Out", self)
         self.zoom_out_action.setShortcuts([QKeySequence.StandardKey.ZoomOut])
-        self.zoom_out_action.triggered.connect(lambda: self.viewer.zoom_out())
+        self.zoom_out_action.triggered.connect(lambda: self._zoom_view().zoom_out())
         self.zoom_actions = (self.zoom_action, self.zoom_in_action, self.zoom_out_action)
         self.copy_settings_action = QAction("Copy Settings…", self)
         self.copy_settings_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
@@ -1001,8 +1006,20 @@ class MainWindow(QMainWindow):
         if self._zoom_state() != self._zoom_shown:
             self._update_status()
 
+    def _zoom_view(self):
+        """The image view that zooms: the Develop view's while it shows, else the viewer's."""
+        return self.develop.image if self.pages.currentIndex() == _DEVELOP else self.viewer
+
+    def _zoom_loading(self, view):
+        """Whether the image shown is short of what the zoom shows."""
+        if view is self.viewer:
+            return view.needs_full()
+        # Zoomed in the Develop view, the photo's own pixels come after the screen-sized image
+        return view.is_zoomed() and not view.has_detail()
+
     def _zoom_state(self):
-        return (self.viewer.is_zoomed(), self.viewer.zoom(), self.viewer.needs_full())
+        view = self._zoom_view()
+        return (view.is_zoomed(), view.zoom(), self._zoom_loading(view))
 
     def step(self, delta):
         row = self._viewed_row()
@@ -1022,6 +1039,9 @@ class MainWindow(QMainWindow):
         if self.pages.currentIndex() == _DEVELOP:
             if self.develop.is_cropping():
                 self.develop.cancel_crop()
+                return
+            if self.develop.image.is_zoomed():
+                self.develop.image.reset_zoom()
                 return
             self.session.close()
             row = self._viewed_row()
@@ -1057,6 +1077,9 @@ class MainWindow(QMainWindow):
             )
             return
         self.previews.cancel()
+        if self.pages.currentIndex() != _DEVELOP:
+            # Stepping keeps the zoom, as in the viewer; coming in from outside starts fitted
+            self.develop.image.reset_zoom()
         self._viewed_id = self.model.photo_id(row)
         self.model.settle(self._viewed_id)
         row = self.model.row_of(self._viewed_id)
@@ -1172,10 +1195,11 @@ class MainWindow(QMainWindow):
             where = self.model.path(row) or f"{self.model.name(row)} (not connected)"
             flag = FLAG_NAMES.get(self.model.flag(row))
             zoom = None
-            if self.pages.currentIndex() == _VIEWER and self.viewer.is_zoomed():
-                zoom = f"{round(self.viewer.zoom() * 100)} %"
-                if self.viewer.needs_full():
-                    zoom += ", loading full size…"
+            view = self._zoom_view()
+            if view.is_zoomed():
+                zoom = f"{round(view.zoom() * 100)} %"
+                if self._zoom_loading(view):
+                    zoom += ", loading full size…" if view is self.viewer else ", rendering…"
             parts = (f"{row + 1} of {count}", zoom, flag, details, where)
             text = "  ·  ".join(part for part in parts if part)
         else:

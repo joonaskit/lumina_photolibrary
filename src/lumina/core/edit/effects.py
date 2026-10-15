@@ -54,13 +54,14 @@ def prepare_vignette(vignette):
     return vignette.amount / 100.0, middle - half, middle + half
 
 
-def vignette_rows(encoded, first_row, size, prepared):
-    """`encoded` (rows x W x 3 float32) from row `first_row` of a photo `size` (height,
-    width) with the vignette applied, in place."""
+def vignette_rows(encoded, first_row, size, prepared, first_column=0):
+    """`encoded` (rows x columns x 3 float32) from row `first_row` and column
+    `first_column` of a photo `size` (height, width) with the vignette applied, in place."""
     amount, begin, end = prepared
     height, width = size
     ys = (np.arange(first_row, first_row + len(encoded), dtype=np.float32) + 0.5) / (height / 2) - 1
-    xs = (np.arange(width, dtype=np.float32) + 0.5) / (width / 2) - 1
+    columns = np.arange(first_column, first_column + encoded.shape[1], dtype=np.float32)
+    xs = (columns + 0.5) / (width / 2) - 1
     # 0 at the centre, 1 at a corner
     distance = np.sqrt(xs[None, :] ** 2 + ys[:, None] ** 2) * np.float32(np.sqrt(0.5))
     weight = colour.smoothstep(begin, end, distance)
@@ -113,22 +114,22 @@ def prepare_grain(grain, size):
     return _STRENGTH * grain.amount / 100.0 * unit, cell
 
 
-def grain_rows(encoded, first_row, size, prepared):
-    """`encoded` (rows x W x 3 float32) from row `first_row` of a photo `size` (height,
-    width) with the grain added, in place."""
+def grain_rows(encoded, first_row, size, prepared, first_column=0):
+    """`encoded` (rows x columns x 3 float32) from row `first_row` and column
+    `first_column` of a photo `size` (height, width) with the grain added, in place."""
     strength, cell = prepared
-    rows, width = len(encoded), size[1]
+    rows, columns = encoded.shape[:2]
     y = np.arange(first_row, first_row + rows, dtype=np.float32) / np.float32(cell)
-    x = np.arange(width, dtype=np.float32) / np.float32(cell)
+    x = np.arange(first_column, first_column + columns, dtype=np.float32) / np.float32(cell)
     iy, ix = y.astype(np.int64), x.astype(np.int64)
     fy, fx = _smooth(y - iy), _smooth(x - ix)
     # The lattice points the rows and columns lie between
-    first = iy[0]
-    points = _lattice(np.arange(ix[-1] + 2)[None, :], np.arange(first, iy[-1] + 2)[:, None])
+    first, left = iy[0], ix[0]
+    points = _lattice(np.arange(left, ix[-1] + 2)[None, :], np.arange(first, iy[-1] + 2)[:, None])
     above, below = points[iy - first], points[iy - first + 1]
     line = above + (below - above) * fy[:, None]
-    noise = line[:, ix]
-    noise += (line[:, ix + 1] - noise) * fx[None, :]
+    noise = line[:, ix - left]
+    noise += (line[:, ix - left + 1] - noise) * fx[None, :]
     luma = encoded @ colour.LUMA
     # Full strength in the middle, `_EDGES` of it towards black and white, none at them
     noise *= strength * (_EDGES + (1.0 - _EDGES) * (1.0 - (2.0 * luma - 1.0) ** 2))

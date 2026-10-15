@@ -18,6 +18,7 @@ take, which keeps its hue and luma and leaves colours that are already at the ed
 the range where they are, rather than clipping one channel and shifting the hue.
 """
 
+import cv2
 import numpy as np
 
 # Rec. 709 / sRGB luminance weights
@@ -26,6 +27,30 @@ LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 # Rows done at a time: small enough that the temporaries stay in the CPU cache, which
 # is most of the speed of a step that does little arithmetic per value
 ROWS = 32
+
+
+def shrunk(plane, factor):
+    """`plane` (H x W, or H x W x channels) averaged over blocks of `factor` x `factor`
+    pixels, a smaller copy to filter on. A size that is not a multiple of `factor` is
+    filled out with its own reflection first, so that every block is whole and the copy
+    is the same whichever part of the photo it is made of, as long as the part starts at a
+    multiple of `factor`."""
+    height, width = plane.shape[:2]
+    down, right = -height % factor, -width % factor
+    if down or right:
+        plane = cv2.copyMakeBorder(plane, 0, down, 0, right, cv2.BORDER_REFLECT_101)
+    return cv2.resize(
+        plane, ((width + right) // factor, (height + down) // factor), interpolation=cv2.INTER_AREA
+    )
+
+
+def grown(small, factor, size):
+    """`small` (from `shrunk`) scaled up again to `size` (height, width)."""
+    height, width = size
+    big = cv2.resize(
+        small, (small.shape[1] * factor, small.shape[0] * factor), interpolation=cv2.INTER_LINEAR
+    )
+    return big[:height, :width]
 
 
 def _plane():
