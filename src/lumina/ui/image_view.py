@@ -7,6 +7,10 @@ full size (`full`), which the image shown may not have yet: `needs_full` says
 when a larger one should be fetched. The zoom and the place (as a fraction of the
 photo) are kept when another photo is shown, so the same detail of each can be
 compared.
+
+A part of the photo made at the zoom (`set_detail`) is drawn over the image shown, in
+its place, for as long as the image stays: zoomed in on an edit, the image shown is a
+screen-sized render scaled up, and the part is the photo's own pixels there.
 """
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
@@ -42,6 +46,9 @@ class ImageView(QWidget):
         self._dragged = False
         # The image made smaller for the fitted view, and the size it was made for
         self._scaled = None
+        # A part of the photo at the zoom: (pixmap, (left, top), (width, height) of the
+        # whole), in pixels of the image it is a part of
+        self._detail = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._update_cursor()
@@ -61,6 +68,7 @@ class ImageView(QWidget):
         self._pixmap = image
         self._message = ""
         self._scaled = None
+        self._detail = None
         if image is None or image.isNull():
             self._full = None
         elif full is not None:
@@ -74,9 +82,32 @@ class ImageView(QWidget):
     def set_message(self, text):
         self._pixmap = None
         self._scaled = None
+        self._detail = None
         self._message = text
         self._update_cursor()
         self.update()
+
+    def set_detail(self, image, corner, whole):
+        """Draw `image` (a QImage) over the image shown: the part of the photo at `corner`
+        (left, top) of a whole of `whole` (width, height), in pixels of the same scale as
+        `image`. It goes with the next `set_image`. None takes it away."""
+        self._detail = None
+        if image is not None and self._pixmap is not None:
+            self._detail = (QPixmap.fromImage(image), tuple(corner), tuple(whole))
+        self.update()
+
+    def has_detail(self):
+        return self._detail is not None
+
+    def region_wanted(self):
+        """What a part of the photo to draw over the image would be: (zoom, the place as
+        fractions of the photo, (width, height) of the view in device pixels), or None
+        when the photo is fitted."""
+        if self._zoom is None or self._full is None:
+            return None
+        area = self._area()
+        ratio = self.devicePixelRatioF()
+        return self._zoom, self._center, (round(area.width() * ratio), round(area.height() * ratio))
 
     def full_size(self):
         """The photo's (width, height) at full size, or None without one."""
@@ -141,7 +172,36 @@ class ImageView(QWidget):
         self.set_zoom(None if self.is_zoomed() else 1.0, anchor)
 
     def reset_zoom(self):
-        self.set_zoom(None)
+        """Fitted, with or without a photo shown."""
+        if self._zoom is None:
+            return
+        self._zoom, self._center = None, (0.5, 0.5)
+        self._scaled = None
+        self._update_cursor()
+        self.update()
+        self.zoom_changed.emit()
+
+    def zoom_state(self):
+        """The zoom and the place, to be put back with `restore_zoom`."""
+        return self._zoom, self._center
+
+    def restore_zoom(self, state):
+        """Zoomed as `state` (from `zoom_state`) says, as far as the photo shown allows."""
+        zoom, center = state
+        if zoom is None:
+            self.reset_zoom()
+            return
+        self._zoom, self._center = zoom, center
+        self._scaled = None
+        self._clamp()
+        self._update_cursor()
+        self.update()
+        self.zoom_changed.emit()
+
+    def set_zoomable(self, on):
+        """Whether a click, the wheel and the keys zoom."""
+        self._zoomable = on
+        self._update_cursor()
 
     def zoom_in(self, anchor=None):
         current = self.zoom()
@@ -231,6 +291,7 @@ class ImageView(QWidget):
                 painter.drawPixmap(target, fitted, QRectF(fitted.rect()))
             else:
                 self._paint_zoomed(painter, target, area)
+                self._paint_detail(painter, target, area)
             self.paint_over(painter, target)
         elif self._message:
             painter.setPen(style.color("textSecondary"))
@@ -269,6 +330,29 @@ class ImageView(QWidget):
             shown.height() * sy,
         )
         painter.drawPixmap(shown, self._pixmap, source)
+
+    def _paint_detail(self, painter, target, area):
+        if self._detail is None:
+            return
+        pixmap, (left, top), (width, height) = self._detail
+        # A pixel of the part, in view pixels
+        kx, ky = target.width() / width, target.height() / height
+        rect = QRectF(
+            target.left() + left * kx,
+            target.top() + top * ky,
+            pixmap.width() * kx,
+            pixmap.height() * ky,
+        )
+        shown = rect.intersected(area)
+        if shown.isEmpty():
+            return
+        source = QRectF(
+            (shown.left() - rect.left()) / kx,
+            (shown.top() - rect.top()) / ky,
+            shown.width() / kx,
+            shown.height() / ky,
+        )
+        painter.drawPixmap(shown, pixmap, source)
 
     def paint_over(self, painter, target):
         """For a subclass: draw over the image, which is at `target`."""

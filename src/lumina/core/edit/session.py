@@ -9,6 +9,7 @@ Runs in a process of its own (qt_models/workers.py, the "develop" pool), so this
 module's state is that process's.
 """
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -17,10 +18,13 @@ from lumina.core.edit import params as edit_params
 from lumina.core.edit import pipeline
 from lumina.core.edit.source import EditSource, fitted
 
-PROXY, SCREEN = "proxy", "screen"
+PROXY, SCREEN, REGION = "proxy", "screen", "region"
 
 _open = None
 _screen = {}
+# The photo made smaller for a zoom under 100 %, and what dehaze measured of it
+_zoomed = {}
+_haze = {}
 
 
 @dataclass(frozen=True)
@@ -30,8 +34,14 @@ class Rendered:
     # RGB, 8 bits, rows without padding
     data: bytes
     # 4 x 256 counts: red, green, blue and luminance of the rendered image
-    histogram: np.ndarray
+    histogram: np.ndarray | None
     kind: str
+    # The size of the whole photo as this edit renders it at full size
+    full: tuple = (0, 0)
+    # For a REGION: its (left, top) in the whole as rendered, and the whole's (width, height)
+    # as rendered, both in pixels of the image this part is of
+    corner: tuple = (0, 0)
+    whole: tuple = (0, 0)
 
 
 def _source(path):
@@ -60,7 +70,74 @@ def render(path, params_json, kind=PROXY, screen_side=2560):
     else:
         image = _screen_image(source, screen_side)
     pixels = pipeline.render(image, edit, full=source.size())
-    return Rendered(pixels.shape[1], pixels.shape[0], pixels.tobytes(), histogram(pixels), kind)
+    return Rendered(
+        pixels.shape[1],
+        pixels.shape[0],
+        pixels.tobytes(),
+        histogram(pixels),
+        kind,
+        full=pipeline.output_size(*source.size(), edit),
+    )
+
+
+def render_region(path, params_json, zoom, centre, view):
+    """The part of the photo in a view: `view` (width, height) device pixels, at `zoom`
+    (device pixels a pixel of the photo at full size; 1 is 100 %), with `centre` (fractions
+    of the photo as the edit renders it) in the middle.
+
+    Rendered from the full decode (REGION) at the zoom, or at 100 % and left to be
+    scaled up when zoomed in past it, with the halo that the steps that look at
+    neighbours need. The part is a little larger than the view."""
+    source = _source(path)
+    edit = edit_params.from_json(params_json)
+    scale = min(zoom, 1.0)
+    image = source.full if scale >= 0.999 else _zoomed_image(source, scale)
+    width, height = pipeline.output_size(image.shape[1], image.shape[0], edit)
+    # A pixel of the image is this many device pixels in the view
+    step = zoom / scale
+    wide = min(width, math.ceil(view[0] / step) + 2)
+    high = min(height, math.ceil(view[1] / step) + 2)
+    left = min(max(round(centre[0] * width - wide / 2), 0), width - wide)
+    top = min(max(round(centre[1] * height - high / 2), 0), height - high)
+    pixels = pipeline.render(
+        image,
+        edit,
+        full=source.size(),
+        region=(left, top, left + wide, top + high),
+        haze=_haze_of(source, params_json, edit),
+    )
+    return Rendered(
+        wide,
+        high,
+        pixels.tobytes(),
+        None,
+        REGION,
+        full=pipeline.output_size(*source.size(), edit),
+        corner=(left, top),
+        whole=(width, height),
+    )
+
+
+def _zoomed_image(source, scale):
+    # The decode made smaller, once per photo and size: the one before goes first
+    side = max(1, round(max(source.size()) * scale))
+    key = (source.path, side)
+    if key not in _zoomed:
+        _zoomed.clear()
+        _zoomed[key] = fitted(source.full, edit_params.Params(), side)
+    return _zoomed[key]
+
+
+def _haze_of(source, params_json, edit):
+    # What dehaze measures of the whole photo, from the proxy, kept while the edit is the
+    # same (panning asks again and again)
+    if not edit.presence.dehaze:
+        return None
+    key = (source.path, params_json)
+    if key not in _haze:
+        _haze.clear()
+        _haze[key] = pipeline.haze_analysis(source.proxy, edit)
+    return _haze[key]
 
 
 def _screen_image(source, side):
@@ -86,3 +163,5 @@ def close():
     global _open
     _open = None
     _screen.clear()
+    _zoomed.clear()
+    _haze.clear()

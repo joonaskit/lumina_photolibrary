@@ -4,7 +4,9 @@ Renders run in the Develop view's own worker process (core/edit/session.py), whi
 keeps the photo decoded. At most one render is in flight; while it runs, a newer
 request replaces the waiting one, so the image follows a dragged control as fast
 as renders come back and never falls behind. While a control moves the proxy is
-rendered; when it stops, the screen-sized image.
+rendered; when it stops, the screen-sized image. Zoomed in, the part of the photo in view
+is then rendered from the full decode (`request_region`), and kept while a newer one is
+made.
 
 An edit is saved to the library when a change is committed (a control let go, a
 point dropped, undo), not on every move. Undo and redo are a stack of committed
@@ -23,6 +25,7 @@ from lumina.core.edit import curves as _curves
 from lumina.core.edit import export as _export
 from lumina.core.edit import hsl as _hsl
 from lumina.core.edit import params as _params
+from lumina.core.edit import pipeline as _pipeline
 from lumina.core.edit import session as _session
 from lumina.qt_models import workers
 
@@ -80,7 +83,7 @@ DESATURATION = _params.DESATURATION
 STRAIGHTEN = _params.STRAIGHTEN
 PRESET_SECTIONS = _params.SECTIONS
 IDENTITY_CURVE = _curves.IDENTITY
-PROXY, SCREEN = _session.PROXY, _session.SCREEN
+PROXY, SCREEN, REGION = _session.PROXY, _session.SCREEN, _session.REGION
 
 
 def curve_values(points, count):
@@ -96,6 +99,15 @@ def suggested_name(path, options):
     return _export.suggested_name(path, options)
 
 
+def _replaces(new, waiting):
+    """Whether a request of kind `new` takes the place of the one waiting. A part of the
+    photo never replaces what changes the look (the part is asked for again when the new
+    look is shown); a proxy never replaces a screen render of the same look."""
+    if new == REGION:
+        return waiting == REGION
+    return not (waiting == SCREEN and new == PROXY)
+
+
 class DevelopSession(QObject):
     # The parameters shown changed: a move, a commit, undo, a preset
     params_changed = Signal(object)
@@ -103,6 +115,11 @@ class DevelopSession(QObject):
     image_ready = Signal(object, object, str)
     # The photo was decoded: its width and height
     opened = Signal(int, int)
+    # A part of the photo rendered at the zoom came back: QImage, its (left, top) and the
+    # size of the whole, in pixels of the image it is a part of
+    region_ready = Signal(object, object, object)
+    # A part of the photo started to be rendered, or no more is wanted or waiting
+    region_loading_changed = Signal()
     # The original is being shown instead of the edit, or is not any more
     before_changed = Signal(bool)
     # The photo could not be opened or rendered: why
@@ -132,6 +149,10 @@ class DevelopSession(QObject):
         self._before = False
         # The open photo's (width, height) as decoded, before any turning of the edit
         self.size = None
+        # A control is moving: what is shown is the proxy, and a part is not wanted
+        self._moving = False
+        # What the render in flight is of
+        self._running = None
 
     # Opening and closing
 
@@ -140,6 +161,7 @@ class DevelopSession(QObject):
         self.close()
         self.photo_id, self.path = photo_id, path
         self.size = None
+        self._moving = False
         self._token += 1
         stored = self.service.edit_json(photo_id)
         try:
@@ -167,7 +189,8 @@ class DevelopSession(QObject):
         if self.path is None:
             return
         self._token += 1
-        self._busy, self._waiting = False, None
+        self._busy, self._waiting, self._running = False, None, None
+        self._moving = False
         self._crop_view = False
         if self._before:
             self._before = False
@@ -194,7 +217,7 @@ class DevelopSession(QObject):
     def _on_failed(self, token, error):
         if token != self._token:
             return
-        self._busy = False
+        self._busy, self._running = False, None
         self.failed.emit(getattr(error, "message", None) or str(error))
 
     # Changing the edit
@@ -207,6 +230,7 @@ class DevelopSession(QObject):
         self.params = params
         self.params_changed.emit(params)
         if not same_look:
+            self._moving = True
             self.request(PROXY)
 
     def set_crop_view(self, on):
@@ -232,6 +256,13 @@ class DevelopSession(QObject):
 
     def is_before(self):
         return self._before
+
+    def full_size(self):
+        """The photo's (width, height) as the edit shows it at full size, or None before
+        it is known."""
+        if self.size is None:
+            return None
+        return _pipeline.output_size(*self.size, self._shown(self.params))
 
     def photo_aspect(self):
         """The open photo's width over its height as the edit turns it (the crop and the
@@ -264,6 +295,7 @@ class DevelopSession(QObject):
 
     def _set(self, params):
         same_look = self._shown(params) == self._shown(self.params)
+        self._moving = False
         self.params = params
         self.params_changed.emit(params)
         self._save()
@@ -337,36 +369,53 @@ class DevelopSession(QObject):
 
     def request(self, kind):
         """Render the current parameters; the newest request waiting wins."""
-        if not self.is_open():
-            return
-        job = (self._shown(self.params).to_json(), kind)
-        if self._busy:
-            # A screen render waiting is not replaced by a proxy one for the same look
-            if not (self._waiting and self._waiting[1] == SCREEN and job[1] == PROXY):
-                self._waiting = job
-            return
-        self._start(job)
+        if self.is_open():
+            self._enqueue((self._look(), kind, None))
+
+    def request_region(self, zoom, centre, view):
+        """Render the part of the photo in a view of `view` (width, height) device pixels
+        at `zoom` (1.0: 100 %) with `centre` (fractions of the photo) in the middle. Not
+        while a control moves: what is shown is then the proxy."""
+        if self.is_open() and not self._moving:
+            self._enqueue((self._look(), REGION, (zoom, tuple(centre), tuple(view))))
+
+    def region_loading(self):
+        """Whether a part of the photo is being rendered or waits to be."""
+        return REGION in (self._running, self._waiting[1] if self._waiting else None)
+
+    def _look(self):
+        return self._shown(self.params).to_json()
+
+    def _enqueue(self, job):
+        before = self.region_loading()
+        if not self._busy:
+            self._start(job)
+        elif self._waiting is None or _replaces(job[1], self._waiting[1]):
+            self._waiting = job
+        if self.region_loading() != before:
+            self.region_loading_changed.emit()
 
     def _start(self, job):
-        params_json, kind = job
-        self._busy = True
+        params_json, kind, spec = job
+        self._busy, self._running = True, kind
         token = self._token
+        if kind == REGION:
+            call = (_session.render_region, self.path, params_json, *spec)
+        else:
+            call = (_session.render, self.path, params_json, kind, self.screen_side)
         workers.submit(
-            _session.render,
-            self.path,
-            params_json,
-            kind,
-            self.screen_side,
-            on_done=lambda rendered: self._on_rendered(token, params_json, rendered),
+            *call,
+            on_done=lambda rendered: self._on_rendered(token, job, rendered),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
             process=workers.DEVELOP,
         )
 
-    def _on_rendered(self, token, params_json, rendered):
+    def _on_rendered(self, token, job, rendered):
         if token != self._token:
             return
-        self._busy = False
+        before = self.region_loading()
+        self._busy, self._running = False, None
         image = QImage(
             rendered.data,
             rendered.width,
@@ -375,10 +424,16 @@ class DevelopSession(QObject):
             QImage.Format.Format_RGB888,
         ).copy()
         waiting, self._waiting = self._waiting, None
-        # A proxy for a look the screen image already showed would step back in time
-        self.image_ready.emit(image, rendered.histogram, rendered.kind)
+        if rendered.kind == REGION:
+            # Only for the look that is shown: a part of an older one is dropped
+            if job[0] == self._look() and not self._moving:
+                self.region_ready.emit(image, rendered.corner, rendered.whole)
+        else:
+            self.image_ready.emit(image, rendered.histogram, rendered.kind)
         if waiting is not None:
             self._start(waiting)
+        if self.region_loading() != before:
+            self.region_loading_changed.emit()
 
     # Export
 

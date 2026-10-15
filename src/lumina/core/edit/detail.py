@@ -79,14 +79,9 @@ def layout(prepared):
 def _blur(plane, sigma, factor):
     if factor == 1:
         return cv2.GaussianBlur(plane, (0, 0), sigma, borderType=cv2.BORDER_REFLECT_101)
-    height, width = plane.shape
-    small = cv2.resize(
-        plane,
-        (max(1, round(width / factor)), max(1, round(height / factor))),
-        interpolation=cv2.INTER_AREA,
-    )
+    small = colour.shrunk(plane, factor)
     small = cv2.GaussianBlur(small, (0, 0), sigma / factor, borderType=cv2.BORDER_REFLECT_101)
-    return cv2.resize(small, (width, height), interpolation=cv2.INTER_LINEAR)
+    return colour.grown(small, factor, plane.shape)
 
 
 def apply_rows(x, prepared):

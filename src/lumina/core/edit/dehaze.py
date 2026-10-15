@@ -90,30 +90,36 @@ def analyse(stage, amount):
     )
 
 
-def _transmission_rows(analysis, first_row, rows):
-    """The transmission for `rows` rows of the photo from `first_row`, at full width."""
+def _transmission_rows(analysis, first, rows, columns):
+    """The transmission for `rows` rows and `columns` columns of the photo from `first`
+    (row, column)."""
     height, width = analysis.size
+    first_row, first_column = first
     small = analysis.transmission
     sx, sy = small.shape[1] / width, small.shape[0] / height
     # Output pixel (x, y) reads the small map at ((x + 0.5) * sx - 0.5, ...)
     matrix = np.array(
-        [[sx, 0.0, 0.5 * sx - 0.5], [0.0, sy, sy * first_row + 0.5 * sy - 0.5]],
+        [
+            [sx, 0.0, sx * first_column + 0.5 * sx - 0.5],
+            [0.0, sy, sy * first_row + 0.5 * sy - 0.5],
+        ],
         dtype=np.float64,
     )
     return cv2.warpAffine(
         small,
         matrix,
-        (width, rows),
+        (columns, rows),
         flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
         borderMode=cv2.BORDER_REPLICATE,
     )
 
 
-def apply_rows(x, first_row, analysis, amount):
-    """`x` (rows x W x 3 float32, sRGB-encoded) from row `first_row` with the haze taken
-    out (`amount` above zero) or put in (below), in place. `analysis` is from `analyse`."""
+def apply_rows(x, first, analysis, amount):
+    """`x` (rows x W x 3 float32, sRGB-encoded) from `first` (row, column) of the photo
+    with the haze taken out (`amount` above zero) or put in (below), in place. `analysis`
+    is from `analyse`."""
     if amount > 0:
-        transmission = _transmission_rows(analysis, first_row, len(x))
+        transmission = _transmission_rows(analysis, first, x.shape[0], x.shape[1])
         x -= analysis.light
         x /= transmission[..., None]
         x += analysis.light

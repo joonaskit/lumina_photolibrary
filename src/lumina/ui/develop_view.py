@@ -8,7 +8,7 @@ and edges; dragging inside it moves it.
 
 from dataclasses import replace
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -42,6 +42,9 @@ PANEL_WIDTH = 320
 # The handles' size and how near the pointer must be to take one, unscaled
 _HANDLE = 7
 _GRAB = 12
+# Milliseconds the zoom and the place stay as they are before the part of the photo in
+# view is rendered
+_REGION_DELAY = 80
 _CHANNELS = (("rgb", "RGB"), ("red", "R"), ("green", "G"), ("blue", "B"))
 _BANDS = tuple(zip(develop.BANDS, "ROYGABPM", strict=True))
 # The colour of a band's button border: its hue, as the band acts on it, in the middle
@@ -105,8 +108,10 @@ class CropImageView(ImageView):
     crop_committed = Signal(object)
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, zoomable=True)
         self.cropping = False
+        # The zoom there was when the crop was opened, which shows the whole photo
+        self._saved_zoom = None
         self.crop = Crop()
         self._drag = None
         # The frame's width over its height in pixels, and the photo's, while the crop is
@@ -131,7 +136,16 @@ class CropImageView(ImageView):
             self.update()
 
     def set_cropping(self, on, crop):
+        opened = on and not self.cropping
+        closed = self.cropping and not on
         self.cropping, self.crop = on, crop
+        if opened:
+            self._saved_zoom = self.zoom_state()
+            self.reset_zoom()
+            self.set_zoomable(False)
+        elif closed:
+            self.set_zoomable(True)
+            self.restore_zoom(self._saved_zoom)
         self.update()
 
     def set_crop(self, crop):
@@ -339,6 +353,14 @@ class DevelopView(QWidget):
         session.before_changed.connect(self.image.set_before)
         session.opened.connect(lambda *_size: self._sync_constraint())
         session.image_ready.connect(self._on_image)
+        session.region_ready.connect(self.image.set_detail)
+        # The part of the photo at the zoom is asked for when the zoom or the place has
+        # stopped changing
+        self._region_timer = QTimer(self)
+        self._region_timer.setSingleShot(True)
+        self._region_timer.setInterval(_REGION_DELAY)
+        self._region_timer.timeout.connect(self._request_region)
+        self.image.zoom_changed.connect(self._schedule_region)
         session.failed.connect(self._on_failed)
         session.service.presets_changed.connect(self._refresh_presets)
         self._refresh_presets()
@@ -798,9 +820,24 @@ class DevelopView(QWidget):
         else:
             self.session.preview(params)
 
-    def _on_image(self, image, histogram, _kind):
-        self.image.set_image(image)
+    def _on_image(self, image, histogram, kind):
+        self.image.set_image(image, self.session.full_size())
         self.curve.set_histogram(histogram)
+        if kind == develop.SCREEN:
+            # Zoomed, the screen-sized image is scaled up: the photo's own pixels follow
+            self._request_region()
+
+    def _schedule_region(self):
+        if self.image.region_wanted() is None or self.image.cropping:
+            self._region_timer.stop()
+            self.image.set_detail(None, None, None)
+        else:
+            self._region_timer.start()
+
+    def _request_region(self):
+        wanted = self.image.region_wanted()
+        if wanted is not None and not self.image.cropping:
+            self.session.request_region(*wanted)
 
     def _on_failed(self, message):
         self.image.set_message(message)
