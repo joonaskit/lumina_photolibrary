@@ -85,14 +85,27 @@ def upright_srgb(image):
     return to_srgb(ImageOps.exif_transpose(image).convert("RGB"), profile)
 
 
+def _draft_box(image, max_side):
+    """What to ask `draft` for, which is most of the time saved at a small size. A JPEG
+    is decoded at a reduced scale covering the square. A HEIC is read from a thumbnail
+    inside it (an iPhone's is 416 px, in 20 ms where the photo takes 0.5 to 1 s) when
+    one covers the photo at `max_side`, as stored; not the square, which a 416 x 312
+    thumbnail does not cover. Only one that is upright and in the photo's profile like
+    the photo is taken."""
+    if image.format != "HEIF":
+        return max_side, max_side
+    width, height = image.size
+    scale = max_side / max(width, height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
 def _load_image(path, max_side):
     try:
         with Image.open(path) as image:
             orientation = image.getexif().get(raw.EXIF_ORIENTATION, 1)
             full = raw.upright_size(image.size, orientation)
             if max_side:
-                # For a JPEG: decode at a reduced scale, which is most of the time saved
-                image.draft("RGB", (max_side, max_side))
+                image.draft("RGB", _draft_box(image, max_side))
             return upright_srgb(image), full
     except (OSError, ValueError, Image.DecompressionBombError) as error:
         raise PhotoError(path, f"cannot read image ({error})") from error

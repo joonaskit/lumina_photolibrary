@@ -52,3 +52,21 @@ def exiftool():
         pytest.skip(str(error))
     yield tool
     tool.close()
+
+
+@pytest.fixture
+def drafts(monkeypatch):
+    """What each `draft` of a HEIC chose: the thumbnail's (mode, box), or None for the
+    photo itself."""
+    from pillow_heif.as_plugin import HeifImageFile
+
+    chosen = []
+    draft = HeifImageFile.draft
+
+    def spy(self, mode, size):
+        result = draft(self, mode, size)
+        chosen.append(result)
+        return result
+
+    monkeypatch.setattr(HeifImageFile, "draft", spy)
+    return chosen

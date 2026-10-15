@@ -54,10 +54,12 @@ def make_jpeg_with_exif(path, orientation=1, gps=True):
     return path
 
 
-def make_heic(path, size=(64, 32), colour=(200, 40, 40), orientation=None, icc=None, exif=None):
+def make_heic(
+    path, size=(64, 32), colour=(200, 40, 40), orientation=None, icc=None, exif=None, thumbnail=None
+):
     """A HEIC of one colour, `size` as stored, with an EXIF orientation, an ICC profile
-    or a whole `Exif` if given. Lossy, as they all are: colours are right to a few
-    steps."""
+    or a whole `Exif` if given, and a thumbnail inside it `thumbnail` pixels on its
+    longer side. Lossy, as they all are: colours are right to a few steps."""
     import pillow_heif
 
     pillow_heif.register_heif_opener()
@@ -69,6 +71,8 @@ def make_heic(path, size=(64, 32), colour=(200, 40, 40), orientation=None, icc=N
     options = {"exif": exif.tobytes(), "quality": 95}
     if icc is not None:
         options["icc_profile"] = icc
+    if thumbnail is not None:
+        options["thumbnails"] = [thumbnail]
     image.save(path, "HEIF", **options)
     return path
 

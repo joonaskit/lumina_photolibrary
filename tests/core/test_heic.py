@@ -170,6 +170,40 @@ def test_a_heic_gets_a_thumbnail_that_is_cached(tmp_path):
     assert (again.width, again.height) == (160, 120)
 
 
+@pytest.mark.parametrize(
+    "orientation, shown", [(1, (320, 240)), (6, (240, 320)), (8, (240, 320)), (3, (320, 240))]
+)
+def test_a_small_heic_is_read_from_the_thumbnail_inside_it(tmp_path, drafts, orientation, shown):
+    # An iPhone's is 416 x 312, which covers the grid's 320 x 240 but not 320 x 320; it
+    # is turned as the photo is
+    path = make_heic(
+        tmp_path / "a.heic",
+        size=(1600, 1200),
+        colour=(30, 160, 60),
+        orientation=orientation,
+        icc=P3,
+        thumbnail=416,
+    )
+
+    pixels = images.load_pixels(path, 320)
+
+    assert drafts[-1] is not None
+    assert (pixels.width, pixels.height) == shown
+    # The viewer's 100 % is still the photo's
+    assert pixels.full == (shown[0] * 5, shown[1] * 5)
+    assert near(pixels.data[:3], in_srgb((30, 160, 60)))
+
+
+def test_a_heic_without_a_large_enough_thumbnail_is_decoded_in_full(tmp_path, drafts):
+    path = make_heic(tmp_path / "a.heic", size=(1600, 1200), colour=(30, 160, 60), thumbnail=200)
+
+    pixels = images.load_pixels(path, 320)
+
+    assert drafts[-1] is None
+    assert (pixels.width, pixels.height) == (320, 240)
+    assert near(pixels.data[:3], (30, 160, 60))
+
+
 def test_a_broken_heic_is_an_error_naming_it(tmp_path):
     path = tmp_path / "broken.heic"
     path.write_bytes(b"\0\0\0\x18ftypheic" + b"not really")

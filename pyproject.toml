@@ -15,8 +15,9 @@ dependencies = [
     "rawpy>=0.27",
     "numpy>=2.0",
     "Pillow>=11.0",
-    # HEIC and HEIF photos (phones): an opener for Pillow, with libheif in its wheel
-    "pillow-heif>=1.0",
+    # HEIC and HEIF photos (phones): an opener for Pillow, with libheif in its wheel;
+    # 1.8 reads the thumbnail inside the file for `draft`
+    "pillow-heif>=1.8",
     # Local contrast, sharpening and noise reduction: blurs and filters that are fast
     # on large photos (and, later, HDR merge and panoramas)
     "opencv-python-headless>=4.10",

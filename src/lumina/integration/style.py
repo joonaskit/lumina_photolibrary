@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontDatabase,
+    QFontMetrics,
     QIcon,
     QPainter,
     QPainterPath,
@@ -226,6 +227,16 @@ def radius_within(name, height):
     return min(radius(name), px(height) // 2)
 
 
+def _radius_for_text(name, padding, border=0):
+    """`small`, `medium` or `large` for a control as tall as a line of text, its
+    `padding` (unscaled, above and below) and its border, as long as it fits: in the
+    compact density, with a small font or with the shell's rounder corners the radius
+    is more than half the control's height, and a radius that does not fit is drawn
+    square."""
+    height = QFontMetrics(_font()).height() + 2 * (gap(padding) + border)
+    return min(radius(name), height // 2)
+
+
 def overlay(alpha):
     """The text colour at `alpha`: for hover, dividers and the like.
     From the text colour, not white, so it works on a light background too."""
@@ -416,6 +427,8 @@ def _stylesheet():
     # A slider's handle and track follow the roundness too: a circle and a pill at the
     # shell's default, squarer as its corners are
     handle_radius, track_radius = radius_within("medium", 14), radius_within("small", 4)
+    # A combo box, a field or a spin box: a line of text, its padding and a border
+    boxed = _radius_for_text("medium", 4, border=1)
     hover, pressed, divider = overlay(0.08), overlay(0.14), overlay(_DIVIDER)
     selected = tint("accent", 0.22)
     window, card, raised = (layer(name).name() for name in ("window", "card", "raised"))
@@ -448,7 +461,7 @@ def _stylesheet():
         QToolButton:checked {{ background: {raised}; }}
 
         QPushButton {{
-            border: none; border-radius: {radius_within("large", 40)}px;
+            border: none; border-radius: {_radius_for_text("medium", 8)}px;
             padding: {gap(8)}px {gap(16)}px; background: {raised};
         }}
         QPushButton:hover {{ background: {hover}; }}
@@ -500,7 +513,7 @@ def _stylesheet():
         QSlider::handle:horizontal:hover {{ background: {colors["accent"]}; }}
 
         QSpinBox {{
-            border: 1px solid {divider}; border-radius: {medium}px;
+            border: 1px solid {divider}; border-radius: {boxed}px;
             padding: {gap(4)}px {gap(8)}px; background: {raised};
         }}
         QSpinBox:focus {{ border-color: {colors["accent"]}; }}
@@ -511,7 +524,7 @@ def _stylesheet():
         }}
 
         QLineEdit {{
-            border: 1px solid {divider}; border-radius: {medium}px;
+            border: 1px solid {divider}; border-radius: {boxed}px;
             padding: {gap(4)}px {gap(8)}px; background: {raised};
         }}
         QLineEdit:focus {{ border-color: {colors["accent"]}; }}
@@ -549,7 +562,7 @@ def _stylesheet():
         /* The arrow sits inside the rounded box, in the padding, not in a square
            button of the platform style's own */
         QComboBox {{
-            border: 1px solid {divider}; border-radius: {medium}px;
+            border: 1px solid {divider}; border-radius: {boxed}px;
             padding: {gap(4)}px {gap(10)}px; padding-right: {gap(10) + px(_ARROW_BOX)}px;
             background: {raised};
         }}
