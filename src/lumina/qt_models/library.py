@@ -20,10 +20,13 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from lumina.core import db as dbm
 from lumina.core import library as scanning
 from lumina.core import metadata, volumes
+from lumina.core.edit import params as _params
 from lumina.qt_models import workers
 
 # For the application, which tells the user
 NewerDatabase = dbm.NewerDatabase
+# For the UI: an edit made by a newer Lumina
+NewerParams = _params.NewerParams
 
 # For the UI, which does not import core/: a job's states and steps
 QUEUED, RUNNING, DONE, FAILED, CANCELLED = (
@@ -64,6 +67,23 @@ class JobStatus:
     queued: int
 
 
+@dataclass(frozen=True)
+class CopiedSettings:
+    """Sections of an edit, kept to put over other photos."""
+
+    document: dict
+    # What the photo was called, and which sections: for telling the user
+    name: str
+    sections: tuple
+
+
+@dataclass(frozen=True)
+class PasteResult:
+    # How many photos got the settings, and (name, why) for each that could not
+    done: int
+    failed: tuple
+
+
 class LibraryService(QObject):
     folders_changed = Signal()
     # Photos were added or changed: the grid reads them again
@@ -71,6 +91,8 @@ class LibraryService(QObject):
     # The drives connected changed
     mounts_changed = Signal()
     presets_changed = Signal()
+    # Settings were copied: `copied` has them
+    settings_copied = Signal()
     # A JobStatus, while one runs and when it ends
     job_changed = Signal(object)
     # The job ended: a JobStatus
@@ -94,6 +116,8 @@ class LibraryService(QObject):
         self._running = None
         self._stop = None
         self.future = None
+        # What Copy Settings kept, or None
+        self.copied = None
         self._quitting = threading.Event()
         self._remove_after = set()
         self._photos_told = 0.0
@@ -201,6 +225,43 @@ class LibraryService(QObject):
         else:
             self.db.save_edit(photo_id, params_json)
         self.photos_changed.emit()
+
+    # Copying settings from one photo to others
+
+    def settings_document(self, photo_id, sections):
+        """The `sections` of the photo's own edit as a document to put over other photos
+        (see `paste_settings`). Raises NewerParams for an edit from a newer Lumina."""
+        stored = self.db.edit(photo_id)
+        edit = _params.from_json(stored) if stored else _params.Params()
+        return _params.preset(edit, sections)
+
+    def copy_settings(self, document, name, sections):
+        """Keep `document` (a photo's `settings_document`, or the Develop view's) of the
+        photo called `name` to paste later."""
+        self.copied = CopiedSettings(document, name, tuple(sections))
+        self.settings_copied.emit()
+
+    def paste_settings(self, photo_ids, document=None):
+        """Put the sections of `document` (what was copied, without one) over the edits
+        of the photos `photo_ids`, in one go: the other sections of each edit stay as
+        they were. A photo whose edit is from a newer Lumina is left alone and named in
+        the result's `failed`. The photos' files are not touched, nor is a photo on a
+        drive that is not connected left out: edits live in the library."""
+        document = document if document is not None else self.copied.document
+        edits, failed = {}, []
+        for photo_id in photo_ids:
+            try:
+                edits[photo_id] = _params.pasted(self.db.edit(photo_id), document)
+            except _params.NewerParams as error:
+                failed.append((self._photo_name(photo_id), str(error)))
+        self.db.save_edits(edits)
+        if edits:
+            self.photos_changed.emit()
+        return PasteResult(len(edits), tuple(failed))
+
+    def _photo_name(self, photo_id):
+        photo = self.db.photo(photo_id)
+        return os.path.basename(photo["path"]) if photo else str(photo_id)
 
     def presets(self):
         return self.db.presets()

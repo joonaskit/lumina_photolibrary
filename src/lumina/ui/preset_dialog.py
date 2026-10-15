@@ -1,4 +1,4 @@
-"""Saving the edit as a preset: its name, and which parts of the edit it keeps."""
+"""Choosing which parts of an edit to keep: for a preset, or to copy to other photos."""
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -23,6 +23,8 @@ _LIGHT_AND_COLOUR = (
     ("grading", "Colour grading"),
     ("curves", "Tone curve"),
     ("matte", "Matte"),
+    ("vignette", "Vignette"),
+    ("grain", "Grain"),
 )
 _GEOMETRY = (
     ("rotate", "Rotation"),
@@ -39,25 +41,36 @@ DEFAULT_SECTIONS = (
     "grading",
     "curves",
     "matte",
+    "vignette",
+    "grain",
 )
 
 
-class PresetDialog(QDialog):
-    def __init__(self, existing=(), parent=None):
-        """`existing`: the names of the presets there are, so that saving over one says so."""
+class SectionsDialog(QDialog):
+    """Choosing which parts of an edit to keep, with a button to go ahead with: a preset
+    (which has a name too) or settings to copy over other photos."""
+
+    def __init__(
+        self, title, prompt, action, chosen, remember, named=False, existing=(), parent=None
+    ):
+        """`chosen`: the sections ticked to begin with (or None for DEFAULT_SECTIONS),
+        `remember(sections)` is called with what is ticked when `action` is pressed,
+        `existing`: the names of the presets there are, for a named dialog."""
         super().__init__(parent)
-        self.setWindowTitle("Save Preset")
+        self.setWindowTitle(title)
         self._existing = {name.casefold() for name in existing}
+        self._remember = remember
+        self._action = action
         layout = QVBoxLayout(self)
         layout.setSpacing(style.px(8))
 
-        layout.addWidget(QLabel("Name"))
-        self.name_edit = QLineEdit()
-        layout.addWidget(self.name_edit)
-
-        layout.addSpacing(style.px(4))
-        layout.addWidget(QLabel("The preset keeps these parts of the edit:"))
-        chosen = settings.preset_sections()
+        self.name_edit = None
+        if named:
+            layout.addWidget(QLabel("Name"))
+            self.name_edit = QLineEdit()
+            layout.addWidget(self.name_edit)
+            layout.addSpacing(style.px(4))
+        layout.addWidget(QLabel(prompt))
         if chosen is None:
             chosen = DEFAULT_SECTIONS
         self.boxes = {}
@@ -78,13 +91,14 @@ class PresetDialog(QDialog):
         self.buttons.accepted.connect(self._accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
-        self.name_edit.textChanged.connect(lambda _text: self._update())
-        self.name_edit.returnPressed.connect(self.save_button.click)
+        if self.name_edit is not None:
+            self.name_edit.textChanged.connect(lambda _text: self._update())
+            self.name_edit.returnPressed.connect(self.save_button.click)
         self.setMinimumWidth(style.px(380))
         self._update()
 
     def name(self):
-        return self.name_edit.text().strip()
+        return self.name_edit.text().strip() if self.name_edit is not None else ""
 
     def sections(self):
         """The sections chosen, in the order the edit has them."""
@@ -95,10 +109,38 @@ class PresetDialog(QDialog):
             box.setChecked(name in sections)
 
     def _update(self):
-        replacing = self.name().casefold() in self._existing
-        self.save_button.setText("Replace" if replacing else "Save")
-        self.save_button.setEnabled(bool(self.name()) and bool(self.sections()))
+        named = self.name_edit is not None
+        replacing = named and self.name().casefold() in self._existing
+        self.save_button.setText("Replace" if replacing else self._action)
+        self.save_button.setEnabled((self.name() != "" or not named) and bool(self.sections()))
 
     def _accept(self):
-        settings.set_preset_sections(self.sections())
+        self._remember(self.sections())
         self.accept()
+
+
+class PresetDialog(SectionsDialog):
+    def __init__(self, existing=(), parent=None):
+        """`existing`: the names of the presets there are, so that saving over one says so."""
+        super().__init__(
+            "Save Preset",
+            "The preset keeps these parts of the edit:",
+            "Save",
+            settings.preset_sections(),
+            settings.set_preset_sections,
+            named=True,
+            existing=existing,
+            parent=parent,
+        )
+
+
+class CopyDialog(SectionsDialog):
+    def __init__(self, title="Copy Settings", prompt=None, action="Copy", parent=None):
+        super().__init__(
+            title,
+            prompt or "Copy these parts of the edit:",
+            action,
+            settings.copy_sections() or ("exposure", *DEFAULT_SECTIONS),
+            settings.set_copy_sections,
+            parent=parent,
+        )

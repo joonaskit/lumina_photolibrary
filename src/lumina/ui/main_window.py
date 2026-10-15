@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from lumina.integration import style
 from lumina.qt_models.develop import DevelopSession
+from lumina.qt_models.library import NewerParams
 from lumina.qt_models.library_model import (
     DIMMED_ROLE,
     FLAG_ROLE,
@@ -46,6 +47,7 @@ from lumina.ui.grid_size import NAMES as GRID_SIZE_NAMES
 from lumina.ui.grid_size import GridSizeSwitch
 from lumina.ui.image_view import ImageView
 from lumina.ui.job_status import JobStatus
+from lumina.ui.preset_dialog import CopyDialog
 from lumina.ui.search import SearchField, SearchStatus
 from lumina.ui.sidebar import Sidebar
 
@@ -175,8 +177,12 @@ class MainWindow(QMainWindow):
                 self.next_action,
                 self.undo_action,
                 self.redo_action,
+                *self.settings_actions,
             ]
         )
+        self.develop.copy_settings_button.clicked.connect(self.copy_settings)
+        self.develop.paste_settings_button.clicked.connect(self.paste_settings)
+        self.service.settings_copied.connect(self._update_settings_actions)
         self.pages.addWidget(self.develop)
         outer = QWidget()
         layout = QHBoxLayout(outer)
@@ -298,6 +304,20 @@ class MainWindow(QMainWindow):
         self.zoom_out_action.setShortcuts([QKeySequence.StandardKey.ZoomOut])
         self.zoom_out_action.triggered.connect(lambda: self.viewer.zoom_out())
         self.zoom_actions = (self.zoom_action, self.zoom_in_action, self.zoom_out_action)
+        self.copy_settings_action = QAction("Copy Settings…", self)
+        self.copy_settings_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.copy_settings_action.triggered.connect(self.copy_settings)
+        self.paste_settings_action = QAction("Paste Settings", self)
+        self.paste_settings_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
+        self.paste_settings_action.triggered.connect(self.paste_settings)
+        self.sync_settings_action = QAction("Sync Settings…", self)
+        self.sync_settings_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self.sync_settings_action.triggered.connect(self.sync_settings)
+        self.settings_actions = (
+            self.copy_settings_action,
+            self.paste_settings_action,
+            self.sync_settings_action,
+        )
         for action in (
             self.back_action,
             self.previous_action,
@@ -306,6 +326,7 @@ class MainWindow(QMainWindow):
             self.redo_action,
             *self.flag_actions,
             *self.zoom_actions,
+            *self.settings_actions,
         ):
             # Only while a photo is shown: in the grid the arrows move the selection.
             # The flags' keys are the grid's and the viewer's, not the search field's
@@ -410,7 +431,7 @@ class MainWindow(QMainWindow):
         self.grid.setWordWrap(False)
         self.grid.setSelectionMode(QListView.SelectionMode.ExtendedSelection)
         self.grid.activated.connect(lambda index: self.show_photo(index.row()))
-        self.grid.addActions(list(self.flag_actions))
+        self.grid.addActions([*self.flag_actions, *self.settings_actions])
         self.grid.selectionModel().selectionChanged.connect(self._update_flag_actions)
         self.grid.selectionModel().currentChanged.connect(self._on_current_changed)
         # Escape in the grid ends a search
@@ -438,6 +459,7 @@ class MainWindow(QMainWindow):
                 self.next_action,
                 *self.flag_actions,
                 *self.zoom_actions,
+                *self.settings_actions,
             ]
         )
         self.viewer.zoom_changed.connect(self._on_zoom_changed)
@@ -646,6 +668,10 @@ class MainWindow(QMainWindow):
         menu.addAction(self.pick_action)
         menu.addAction(self.reject_action)
         menu.addAction(self.unflag_action)
+        menu.addSeparator()
+        menu.addAction(self.copy_settings_action)
+        menu.addAction(self.paste_settings_action)
+        menu.addAction(self.sync_settings_action)
         menu.exec(self.grid.viewport().mapToGlobal(point))
 
     # Flags
@@ -713,6 +739,7 @@ class MainWindow(QMainWindow):
         browsing = page in (_GRID, _VIEWER)
         self.undo_flag_action.setEnabled(browsing and self.model.can_undo_flags())
         self.redo_flag_action.setEnabled(browsing and self.model.can_redo_flags())
+        self._update_settings_actions()
 
     def _on_current_changed(self, current, _previous):
         self._update_flag_actions()
@@ -720,6 +747,130 @@ class MainWindow(QMainWindow):
             photo_id = self.model.photo_id(current.row())
             # Not while the selection model is telling of the change
             QTimer.singleShot(0, self, lambda: self.model.settle(photo_id))
+
+    # Copying settings from one photo to others
+
+    def _settings_source(self):
+        """The id of the photo whose settings Copy takes: the one open, shown or current."""
+        page = self.pages.currentIndex()
+        if page == _DEVELOP:
+            return self.session.photo_id
+        if page == _VIEWER:
+            return self._viewed_id
+        if page == _GRID and self.grid.currentIndex().isValid():
+            return self.model.photo_id(self.grid.currentIndex().row())
+        return None
+
+    def _sync_rows(self):
+        """The rows Sync would copy to: the ones chosen in the grid but the current one;
+        none unless the current one is among them and there are others."""
+        if self.pages.currentIndex() != _GRID or not self.grid.currentIndex().isValid():
+            return []
+        chosen = {index.row() for index in self.grid.selectionModel().selectedIndexes()}
+        current = self.grid.currentIndex().row()
+        return sorted(chosen - {current}) if current in chosen else []
+
+    def _update_settings_actions(self):
+        page = self.pages.currentIndex()
+        self.copy_settings_action.setEnabled(self._settings_source() is not None)
+        can_paste = self.service.copied is not None and (
+            page == _DEVELOP or (page in (_GRID, _VIEWER) and bool(self._flag_rows()))
+        )
+        self.paste_settings_action.setEnabled(can_paste)
+        self.sync_settings_action.setEnabled(bool(self._sync_rows()))
+        self.develop.paste_settings_button.setEnabled(self.service.copied is not None)
+
+    def _photo_name(self, photo_id):
+        photo = self.service.photo_details(photo_id)
+        return os.path.basename(photo["path"]) if photo else str(photo_id)
+
+    def copy_settings(self):
+        """Keep some sections of the edit of the photo shown, open or current, to paste
+        over other photos."""
+        photo_id = self._settings_source()
+        if photo_id is None:
+            return
+        dialog = CopyDialog(parent=self)
+        if dialog.exec() != CopyDialog.DialogCode.Accepted:
+            return
+        sections, name = dialog.sections(), self._photo_name(photo_id)
+        try:
+            if self.pages.currentIndex() == _DEVELOP:
+                # The edit as it is now, saved or not
+                document = self.session.settings_document(sections)
+            else:
+                document = self.service.settings_document(photo_id, sections)
+        except NewerParams as error:
+            QMessageBox.warning(
+                self, "Copy Settings", f"The edit of {name} was made by a newer Lumina ({error})."
+            )
+            return
+        self.service.copy_settings(document, name, sections)
+        self.statusBar().showMessage(f"Copied settings of {name}", 5000)
+
+    def paste_settings(self):
+        """Put the copied settings over the edit of the photo open, shown, or the photos
+        chosen in the grid."""
+        copied = self.service.copied
+        if copied is None:
+            return
+        if self.pages.currentIndex() == _DEVELOP:
+            self.session.paste_settings(copied.document)
+            self.statusBar().showMessage(f"Pasted settings of {copied.name}", 5000)
+            return
+        ids = [self.model.photo_id(row) for row in self._flag_rows()]
+        if not ids:
+            return
+        if len(ids) > 1:
+            answer = QMessageBox.question(
+                self,
+                "Paste Settings",
+                f"Paste the settings of {copied.name} to {len(ids)} photos?\n\n"
+                "They replace the same parts of those photos' edits; the rest of each "
+                "edit stays as it is.",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._pasted(self.service.paste_settings(ids), copied.name)
+
+    def sync_settings(self):
+        """Copy sections of the edit of the current photo to the others chosen."""
+        rows = self._sync_rows()
+        if not rows:
+            return
+        source = self.model.photo_id(self.grid.currentIndex().row())
+        name = self._photo_name(source)
+        dialog = CopyDialog(
+            "Sync Settings",
+            f"Copy these parts of the edit of {name} to the {len(rows)} other "
+            f"photo{'' if len(rows) == 1 else 's'} chosen:",
+            "Sync",
+            parent=self,
+        )
+        if dialog.exec() != CopyDialog.DialogCode.Accepted:
+            return
+        try:
+            document = self.service.settings_document(source, dialog.sections())
+        except NewerParams as error:
+            QMessageBox.warning(
+                self, "Sync Settings", f"The edit of {name} was made by a newer Lumina ({error})."
+            )
+            return
+        ids = [self.model.photo_id(row) for row in rows]
+        self._pasted(self.service.paste_settings(ids, document), name)
+
+    def _pasted(self, result, source_name):
+        """Tell of a paste that went to photos in the library."""
+        if self.pages.currentIndex() == _VIEWER and self._viewed_row() is not None:
+            # The photo shown has a new edit
+            self.show_photo(self._viewed_row())
+        photos = f"{result.done} photo{'' if result.done == 1 else 's'}"
+        self.statusBar().showMessage(f"Settings of {source_name} put on {photos}", 6000)
+        if result.failed:
+            lines = "\n".join(f"{name}: {why}" for name, why in result.failed)
+            QMessageBox.warning(
+                self, "Paste Settings", f"These photos were left as they were:\n\n{lines}"
+            )
 
     # The grid's thumbnail size
 

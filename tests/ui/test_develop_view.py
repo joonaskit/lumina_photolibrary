@@ -5,13 +5,25 @@ from conftest import TIMEOUT
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QMessageBox
 
-from lumina.qt_models.develop import Band, Basic, Colour, Crop, Grading, Hsl, Params, Wheel
+from lumina.qt_models.develop import (
+    Band,
+    Basic,
+    Colour,
+    Crop,
+    Grading,
+    Grain,
+    Hsl,
+    Params,
+    Vignette,
+    Wheel,
+)
 from lumina.ui import develop_view
 from lumina.ui.controls import ValueSlider
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.main_window import MainWindow
 from lumina.ui.preset_dialog import PresetDialog
+from lumina.ui.ratio_dialog import RatioDialog
 
 
 @pytest.fixture
@@ -609,6 +621,8 @@ def test_the_preset_dialog_starts_with_the_look_and_not_the_framing(qtbot):
         "grading",
         "curves",
         "matte",
+        "vignette",
+        "grain",
     ]
 
 
@@ -624,3 +638,237 @@ def test_the_preset_dialog_needs_a_name_and_a_part_and_says_when_it_replaces(qtb
     assert dialog.save_button.text() == "Replace"
     dialog.set_sections([])
     assert not dialog.save_button.isEnabled()
+
+
+def test_the_effects_sliders_commit_their_control_and_show_the_edit(qtbot, window):
+    open_editor(qtbot, window)
+    assert window.develop.vignette["midpoint"].value() == 50
+    assert window.develop.grain["size"].value() == 25
+
+    drag(window.develop.vignette["amount"], -40)
+    drag(window.develop.vignette["feather"], 70)
+    drag(window.develop.grain["amount"], 35)
+    drag(window.develop.grain["size"], 60)
+
+    assert window.session.params == Params(
+        vignette=Vignette(amount=-40, feather=70), grain=Grain(amount=35, size=60)
+    )
+    assert window.develop.vignette["amount"].value_label.text() == "-40"
+    window.undo_action.trigger()
+    assert window.develop.grain["size"].value() == 25
+    assert window.develop.grain["amount"].value() == 35
+    settled(qtbot, window)
+
+
+def test_a_saved_preset_can_keep_the_effects(qtbot, window, monkeypatch):
+    open_editor(qtbot, window)
+    look = Params(vignette=Vignette(amount=-30), grain=Grain(amount=20, size=40))
+    window.session.commit(look.with_changes(exposure=1.0))
+    save_preset_as(monkeypatch, window, "Filmic", ["vignette", "grain"])
+    window.session.commit(Params())
+
+    window.session.apply_preset("Filmic")
+
+    assert window.session.params == look
+    settled(qtbot, window)
+
+
+# The crop's aspect ratio
+
+
+def crop_shape(window):
+    """The crop's width over its height in pixels, on the photo (300 x 200 here)."""
+    crop = window.session.params.crop
+    aspect = window.session.photo_aspect()
+    return (crop.right - crop.left) * aspect / (crop.bottom - crop.top)
+
+
+def choose_aspect(window, text):
+    combo = window.develop.aspect
+    combo.setCurrentIndex(combo.findText(text))
+    combo.activated.emit(combo.currentIndex())
+
+
+def test_choosing_an_aspect_ratio_opens_the_crop_and_shapes_it(qtbot, window):
+    open_editor(qtbot, window)
+    assert window.session.photo_aspect() == pytest.approx(1.5)
+    assert not window.develop.swap_ratio.isEnabled()
+
+    choose_aspect(window, "1:1")
+
+    assert window.develop.is_cropping()
+    assert crop_shape(window) == pytest.approx(1.0, rel=1e-3)
+    assert window.develop.lock_ratio.isChecked()
+    assert window.develop.swap_ratio.isEnabled()
+    choose_aspect(window, "16:9")
+    assert crop_shape(window) == pytest.approx(16 / 9, rel=1e-3)
+    choose_aspect(window, "Original")
+    assert crop_shape(window) == pytest.approx(1.5, rel=1e-3)
+    settled(qtbot, window)
+
+
+def test_the_ratio_follows_the_orientation_of_the_photo_and_can_be_swapped(qtbot, window):
+    open_editor(qtbot, window)
+    choose_aspect(window, "4:5")
+    # A wide photo gets the wide frame: 5 wide, 4 high
+    assert crop_shape(window) == pytest.approx(5 / 4, rel=1e-3)
+
+    window.develop.swap_ratio.click()
+    assert crop_shape(window) == pytest.approx(4 / 5, rel=1e-3)
+    window.develop.swap_ratio.click()
+    assert crop_shape(window) == pytest.approx(5 / 4, rel=1e-3)
+    settled(qtbot, window)
+
+
+def test_turning_the_photo_turns_the_frame_and_the_ratio_with_it(qtbot, window):
+    open_editor(qtbot, window)
+    choose_aspect(window, "3:2")
+
+    window.develop.rotate_right.click()
+
+    assert window.session.photo_aspect() == pytest.approx(1 / 1.5)
+    assert window.develop.image.ratio == pytest.approx(1 / 1.5, rel=1e-3)
+    assert crop_shape(window) == pytest.approx(1 / 1.5, rel=1e-3)
+    settled(qtbot, window)
+
+
+def test_a_custom_ratio_is_asked_for(qtbot, window, monkeypatch):
+    open_editor(qtbot, window)
+    monkeypatch.setattr(RatioDialog, "exec", lambda self: RatioDialog.DialogCode.Accepted)
+    monkeypatch.setattr(RatioDialog, "ratio", lambda self: (5, 7))
+
+    choose_aspect(window, "Custom…")
+
+    # Taller than wide, as typed, on a wide photo
+    assert crop_shape(window) == pytest.approx(5 / 7, rel=1e-3)
+
+    monkeypatch.setattr(RatioDialog, "exec", lambda self: RatioDialog.DialogCode.Rejected)
+    window.develop.aspect.setCurrentIndex(window.develop.aspect.findText("1:1"))
+    window.develop.aspect.activated.emit(window.develop.aspect.currentIndex())
+    assert crop_shape(window) == pytest.approx(1.0, rel=1e-3)
+    choose_aspect(window, "Custom…")
+    # Cancelled: the choice before stays
+    assert window.develop.aspect.currentText() == "1:1"
+    assert crop_shape(window) == pytest.approx(1.0, rel=1e-3)
+    settled(qtbot, window)
+
+
+def test_free_lets_the_crop_go_and_the_lock_holds_its_current_shape(qtbot, window):
+    open_editor(qtbot, window)
+    choose_aspect(window, "1:1")
+    choose_aspect(window, "Free")
+    assert window.develop.image.ratio is None
+    assert not window.develop.lock_ratio.isChecked()
+    window.session.commit(window.session.params.with_changes(crop=Crop(0.1, 0.1, 0.7, 0.5)))
+    shape = crop_shape(window)
+
+    window.develop.lock_ratio.click()
+
+    assert window.develop.lock_ratio.isChecked()
+    assert window.develop.image.ratio == pytest.approx(shape, rel=1e-3)
+    window.develop.lock_ratio.click()
+    assert window.develop.image.ratio is None
+    assert window.develop.aspect.currentText() == "Free"
+    settled(qtbot, window)
+
+
+def test_dragging_a_corner_with_a_ratio_keeps_the_shape(qtbot, window):
+    open_editor(qtbot, window)
+    choose_aspect(window, "1:1")
+    view = window.develop.image
+    qtbot.waitUntil(lambda: view.image_rect() is not None, timeout=TIMEOUT)
+    target = view.image_rect()
+    frame = view._frame(target)
+    corner = frame.bottomRight()
+    end = QPointF(corner.x() - target.width() * 0.1, corner.y() - target.height() * 0.05)
+
+    with qtbot.waitSignal(view.crop_committed, timeout=TIMEOUT):
+        qtbot.mousePress(view, Qt.MouseButton.LeftButton, pos=corner.toPoint())
+        qtbot.mouseMove(view, end.toPoint())
+        qtbot.mouseRelease(view, Qt.MouseButton.LeftButton, pos=end.toPoint())
+
+    assert crop_shape(window) == pytest.approx(1.0, rel=0.01)
+    # Smaller than the frame it started as (a square, 1/6 to 5/6 across)
+    assert window.session.params.crop.right < 5 / 6 - 0.01
+    settled(qtbot, window)
+
+
+# The fine grid while straightening
+
+
+def test_the_fine_grid_shows_while_the_straighten_slider_moves(qtbot, window):
+    open_editor(qtbot, window)
+    view = window.develop.image
+    slider = window.develop.straighten
+    assert not view.grid
+
+    slider.slider.setSliderDown(True)
+    slider.slider.setValue(15)
+    assert view.grid
+    slider.slider.setSliderDown(False)
+
+    assert not view.grid
+    assert window.session.params.straighten == pytest.approx(1.5)
+    # It paints without trouble
+    view.set_grid(True)
+    assert not view.grab().isNull()
+    settled(qtbot, window)
+
+
+# Before and after
+
+
+def shown_centre(window):
+    image = window.develop.image.pixmap().toImage()
+    colour = image.pixelColor(image.width() // 2, image.height() // 2)
+    return colour.red() + colour.green() + colour.blue()
+
+
+def test_the_original_is_shown_while_the_button_is_down_and_the_edit_comes_back(qtbot, window):
+    open_editor(qtbot, window)
+    with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
+        window.session.commit(Params(exposure=1.0))
+    edited = shown_centre(window)
+
+    with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
+        window.develop.before_button.click()
+    original = shown_centre(window)
+
+    assert window.session.is_before() and window.develop.image.before
+    assert original < edited
+    # Only the view: the edit and its controls are as they were
+    assert window.session.params == Params(exposure=1.0)
+    assert window.develop.exposure.value() == 1.0
+    with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
+        window.develop.before_button.click()
+    assert not window.session.is_before() and not window.develop.image.before
+    assert shown_centre(window) == edited
+    settled(qtbot, window)
+
+
+def test_the_backslash_key_shows_the_original_while_held(qtbot, window):
+    open_editor(qtbot, window)
+    window.session.commit(Params(exposure=1.0))
+
+    qtbot.keyPress(window.develop, Qt.Key.Key_Backslash)
+    assert window.session.is_before()
+    qtbot.keyRelease(window.develop, Qt.Key.Key_Backslash)
+    assert not window.session.is_before()
+
+    # With the button pressed in, letting go of the key leaves the original showing
+    window.develop.before_button.click()
+    qtbot.keyPress(window.develop, Qt.Key.Key_Backslash)
+    qtbot.keyRelease(window.develop, Qt.Key.Key_Backslash)
+    assert window.session.is_before()
+    settled(qtbot, window)
+
+
+def test_the_original_goes_with_the_photo(qtbot, window):
+    open_editor(qtbot, window)
+    qtbot.keyPress(window.develop, Qt.Key.Key_Backslash)
+    assert window.session.is_before()
+
+    window.session.close()
+
+    assert not window.session.is_before() and not window.develop.image.before
+    settled(qtbot, window)

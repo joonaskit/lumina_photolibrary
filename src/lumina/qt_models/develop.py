@@ -33,6 +33,8 @@ Colour = _params.Colour
 Band = _params.Band
 Hsl = _params.Hsl
 Wheel = _params.Wheel
+Vignette = _params.Vignette
+Grain = _params.Grain
 Grading = _params.Grading
 Curves = _params.Curves
 Matte = _params.Matte
@@ -51,6 +53,11 @@ WHEEL = _params.WHEEL
 GRADING = _params.GRADING
 BLENDING = _params.BLENDING
 DEFAULT_BLENDING = _params.DEFAULT_BLENDING
+VIGNETTE = _params.VIGNETTE
+PERCENT = _params.PERCENT
+DEFAULT_MIDPOINT = _params.DEFAULT_MIDPOINT
+DEFAULT_FEATHER = _params.DEFAULT_FEATHER
+DEFAULT_GRAIN_SIZE = _params.DEFAULT_GRAIN_SIZE
 BANDS = _params.BANDS
 # Where each band sits on the hue circle, in degrees: for showing its colour
 BAND_HUES = dict(zip(_params.BANDS, _hsl.CENTRES, strict=True))
@@ -86,6 +93,8 @@ class DevelopSession(QObject):
     image_ready = Signal(object, object, str)
     # The photo was decoded: its width and height
     opened = Signal(int, int)
+    # The original is being shown instead of the edit, or is not any more
+    before_changed = Signal(bool)
     # The photo could not be opened or rendered: why
     failed = Signal(str)
     # Undo or redo became possible or not
@@ -109,6 +118,10 @@ class DevelopSession(QObject):
         self.screen_side = 2560
         # While the crop is being set, the whole photo is shown with the crop over it
         self._crop_view = False
+        # While true, the photo as it is, without the edit, is shown: to compare
+        self._before = False
+        # The open photo's (width, height) as decoded, before any turning of the edit
+        self.size = None
 
     # Opening and closing
 
@@ -116,6 +129,7 @@ class DevelopSession(QObject):
         """Edit the photo `photo_id` at `path` (it must be connected)."""
         self.close()
         self.photo_id, self.path = photo_id, path
+        self.size = None
         self._token += 1
         stored = self.service.edit_json(photo_id)
         try:
@@ -145,6 +159,9 @@ class DevelopSession(QObject):
         self._token += 1
         self._busy, self._waiting = False, None
         self._crop_view = False
+        if self._before:
+            self._before = False
+            self.before_changed.emit(False)
         self.photo_id = self.path = None
         workers.submit(
             _session.close,
@@ -160,6 +177,7 @@ class DevelopSession(QObject):
     def _on_opened(self, token, size):
         if token != self._token:
             return
+        self.size = (int(size[0]), int(size[1]))
         self.opened.emit(*size)
         self.request(SCREEN)
 
@@ -188,8 +206,32 @@ class DevelopSession(QObject):
             self.request(SCREEN)
 
     def _shown(self, params):
-        # What is rendered: in the crop view, the photo without its crop
+        # What is rendered: with the original wanted, no edit at all; in the crop view,
+        # the photo without its crop
+        if self._before:
+            return Params()
         return params.with_changes(crop=Crop()) if self._crop_view else params
+
+    def set_before(self, on):
+        """Show the photo as it is without the edit (`on`), or the edit again. Only what
+        is shown: the edit and its controls are as they were."""
+        if on != self._before:
+            self._before = on
+            self.before_changed.emit(on)
+            self.request(SCREEN)
+
+    def is_before(self):
+        return self._before
+
+    def photo_aspect(self):
+        """The open photo's width over its height as the edit turns it (the crop and the
+        straightening do not change it), or None before it is known."""
+        if self.size is None:
+            return None
+        width, height = self.size
+        if self.params.rotate % 2:
+            width, height = height, width
+        return width / height
 
     def commit(self, params=None):
         """A change is done: keep it for undo, save it, and render it at screen size."""
@@ -259,6 +301,19 @@ class DevelopSession(QObject):
             self.commit(_params.apply_preset(self.params, json.loads(document)))
         except (ValueError, _params.NewerParams) as error:
             self.failed.emit(f"Preset “{name}” can't be used: {error}")
+
+    def settings_document(self, sections):
+        """The `sections` of the edit as it is now, to put over other photos."""
+        return _params.preset(self.params, sections)
+
+    def paste_settings(self, document):
+        """Put the sections of `document` over the edit, as one change that can be undone."""
+        if not self.is_open():
+            return
+        try:
+            self.commit(_params.apply_preset(self.params, document))
+        except _params.NewerParams as error:
+            self.failed.emit(f"These settings can't be used: {error}")
 
     def save_preset(self, name, sections):
         """Keep `sections` of the current edit as the preset `name`."""

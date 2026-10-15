@@ -60,6 +60,19 @@ def set_preset_sections(sections):
     _settings().setValue("develop/preset_sections", ",".join(sections))
 
 
+def copy_sections():
+    """The parts of an edit the Copy Settings dialog had chosen last time, or None at
+    first (the dialog then offers the look and the exposure)."""
+    value = _settings().value("develop/copy_sections")
+    if not isinstance(value, str):
+        return None
+    return [name for name in value.split(",") if name]
+
+
+def set_copy_sections(sections):
+    _settings().setValue("develop/copy_sections", ",".join(sections))
+
+
 def grid_size():
     """The grid's thumbnail size: "small", "medium" or "large"."""
     value = _settings().value("library/grid_size")

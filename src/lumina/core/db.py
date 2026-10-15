@@ -499,6 +499,24 @@ class Library:
                 (photo_id, copy, params_json, time.time()),
             )
 
+    def save_edits(self, edits):
+        """{photo id: parameters JSON, or None for no edit} as the photos' own edits, in
+        one transaction: all of them or none."""
+        now = time.time()
+        with self.db:
+            for photo_id, params_json in edits.items():
+                if params_json is None:
+                    self.db.execute(
+                        "DELETE FROM edits WHERE photo_id = ? AND copy = 0", (photo_id,)
+                    )
+                    continue
+                self.db.execute(
+                    "INSERT INTO edits (photo_id, copy, params, updated_at) VALUES (?, 0, ?, ?) "
+                    "ON CONFLICT (photo_id, copy) DO UPDATE SET "
+                    "params = excluded.params, updated_at = excluded.updated_at",
+                    (photo_id, params_json, now),
+                )
+
     def delete_edit(self, photo_id, copy=0):
         """Back to the original. The photo's own edit and its copies are separate."""
         with self.db:

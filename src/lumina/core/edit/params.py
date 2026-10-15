@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 
 from lumina.core.edit import curves
 
-VERSION = 5
+VERSION = 6
 
 # Ranges, in the units the pipeline uses
 EXPOSURE = (-5.0, 5.0)  # stops
@@ -29,6 +29,11 @@ WHEEL = (0.0, 100.0)  # a grading wheel's saturation
 GRADING = (-100.0, 100.0)  # a grading wheel's luminance, and the balance
 BLENDING = (0.0, 100.0)  # how softly the three ranges meet: see grading.py
 DEFAULT_BLENDING = 50.0
+VIGNETTE = (-100.0, 100.0)  # negative darkens the corners, positive lightens them
+PERCENT = (0.0, 100.0)  # vignette midpoint and feather, grain amount and size
+DEFAULT_MIDPOINT = 50.0
+DEFAULT_FEATHER = 50.0
+DEFAULT_GRAIN_SIZE = 25.0
 MATTE_BLACK = (0.0, 0.5)  # how far black is raised, as a share of white
 MATTE_WHITE = (0.0, 0.5)  # how far white is lowered
 DESATURATION = (0.0, 1.0)
@@ -126,6 +131,31 @@ class Grading:
 
 
 @dataclass(frozen=True)
+class Vignette:
+    # Darkening (negative) or lightening (positive) of the corners of the cropped photo.
+    # Midpoint: how far from the centre it starts (higher is further out); feather: how
+    # gradually it comes in
+    amount: float = 0.0
+    midpoint: float = DEFAULT_MIDPOINT
+    feather: float = DEFAULT_FEATHER
+
+    def is_identity(self):
+        # With no amount there is no vignette, whatever the rest
+        return self.amount == 0
+
+
+@dataclass(frozen=True)
+class Grain:
+    # Film grain: how strong, and how coarse (relative to the size of the photo, so a
+    # small render looks like a large one)
+    amount: float = 0.0
+    size: float = DEFAULT_GRAIN_SIZE
+
+    def is_identity(self):
+        return self.amount == 0
+
+
+@dataclass(frozen=True)
 class Curves:
     # Points (x, y) in [0, 1]: "rgb" for all channels, then each channel on its own
     rgb: tuple = curves.IDENTITY
@@ -171,6 +201,8 @@ class Params:
     grading: Grading = field(default_factory=Grading)
     curves: Curves = field(default_factory=Curves)
     matte: Matte = field(default_factory=Matte)
+    vignette: Vignette = field(default_factory=Vignette)
+    grain: Grain = field(default_factory=Grain)
     # Quarter turns clockwise, 0 to 3; then mirrored left to right and top to bottom;
     # then turned by `straighten` degrees clockwise, scaled to fill the frame; then cropped
     rotate: int = 0
@@ -210,6 +242,12 @@ class Params:
                 "white": float(self.matte.white),
                 "shadow_desaturation": float(self.matte.shadow_desaturation),
             },
+            "vignette": {
+                "amount": float(self.vignette.amount),
+                "midpoint": float(self.vignette.midpoint),
+                "feather": float(self.vignette.feather),
+            },
+            "grain": {"amount": float(self.grain.amount), "size": float(self.grain.size)},
             "rotate": self.rotate,
             "flip": {"horizontal": self.flip_horizontal, "vertical": self.flip_vertical},
             "straighten": float(self.straighten),
@@ -288,6 +326,8 @@ def from_dict(data):
     colour = _section(data, "colour")
     hsl = _section(data, "hsl")
     grading = _section(data, "grading")
+    vignette = _section(data, "vignette")
+    grain = _section(data, "grain")
     curve_data = _section(data, "curves")
     matte = _section(data, "matte")
     crop = _section(data, "crop")
@@ -335,6 +375,15 @@ def from_dict(data):
             white=_number(matte.get("white"), 0.0, MATTE_WHITE),
             shadow_desaturation=_number(matte.get("shadow_desaturation"), 0.0, DESATURATION),
         ),
+        vignette=Vignette(
+            amount=_number(vignette.get("amount"), 0.0, VIGNETTE),
+            midpoint=_number(vignette.get("midpoint"), DEFAULT_MIDPOINT, PERCENT),
+            feather=_number(vignette.get("feather"), DEFAULT_FEATHER, PERCENT),
+        ),
+        grain=Grain(
+            amount=_number(grain.get("amount"), 0.0, PERCENT),
+            size=_number(grain.get("size"), DEFAULT_GRAIN_SIZE, PERCENT),
+        ),
         rotate=rotate % 4 if isinstance(rotate, int) and not isinstance(rotate, bool) else 0,
         flip_horizontal=flip.get("horizontal") is True,
         flip_vertical=flip.get("vertical") is True,
@@ -374,7 +423,16 @@ def _to_5(data):
     }
 
 
-_MIGRATIONS = {1: _to_2, 2: _to_3, 3: _to_4, 4: _to_5}
+def _to_6(data):
+    # Version 6 added the vignette and grain: both off, which changes nothing
+    return {
+        "vignette": {"amount": 0.0, "midpoint": DEFAULT_MIDPOINT, "feather": DEFAULT_FEATHER},
+        "grain": {"amount": 0.0, "size": DEFAULT_GRAIN_SIZE},
+        **data,
+    }
+
+
+_MIGRATIONS = {1: _to_2, 2: _to_3, 3: _to_4, 4: _to_5, 5: _to_6}
 
 
 def migrate(data):
@@ -417,6 +475,8 @@ SECTIONS = (
     "grading",
     "curves",
     "matte",
+    "vignette",
+    "grain",
     "rotate",
     "flip",
     "straighten",
@@ -431,6 +491,15 @@ def preset(params, sections):
     if unknown:
         raise ValueError(f"no such sections: {sorted(unknown)}")
     return {"version": VERSION, **{name: whole[name] for name in sections}}
+
+
+def pasted(edit_json, document):
+    """A stored edit (`edit_json`, or None for none) with the sections a settings
+    `document` (made by `preset`) has put over it, as JSON, or None when what is left
+    changes nothing. Raises NewerParams for an edit or a document from a newer Lumina."""
+    current = from_json(edit_json) if edit_json else Params()
+    result = apply_preset(current, document)
+    return None if result.is_identity() else result.to_json()
 
 
 def apply_preset(params, document):
