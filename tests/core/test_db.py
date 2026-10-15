@@ -195,6 +195,37 @@ def test_edits_and_virtual_copies(library):
     assert library.edit(photo) is None and library.copies(photo) == [1]
 
 
+def test_edits_are_saved_for_many_photos_at_once(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    ids = add_photos(library, folder, volume, ["p/a.jpg", "p/b.jpg", "p/c.jpg"])
+    a, b, c = ids["p/a.jpg"], ids["p/b.jpg"], ids["p/c.jpg"]
+    library.save_edit(a, '{"exposure": 1}')
+    library.save_edit(b, '{"exposure": 2}')
+    copy = library.new_copy(b, '{"exposure": -1}')
+
+    # New, replaced, and (None) back to the original: the photo's own edit, not its copies
+    library.save_edits({a: None, b: '{"exposure": 3}', c: '{"exposure": 4}'})
+
+    assert library.edit(a) is None
+    assert library.edit(b) == '{"exposure": 3}'
+    assert library.edit(c) == '{"exposure": 4}'
+    assert library.edit(b, copy) == '{"exposure": -1}'
+
+
+def test_saving_many_edits_is_all_or_nothing(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    a = add_photos(library, folder, volume, ["p/a.jpg"])["p/a.jpg"]
+    library.save_edit(a, '{"exposure": 1}')
+
+    with pytest.raises(sqlite3.Error):
+        # The second is no photo of the library
+        library.save_edits({a: '{"exposure": 2}', 9999: '{"exposure": 3}'})
+
+    assert library.edit(a) == '{"exposure": 1}'
+
+
 def test_a_photo_forgotten_with_its_folder_takes_its_edits(library):
     volume = library.volume_id("uuid:A")
     folder = library.add_folder("uuid:A", "p")

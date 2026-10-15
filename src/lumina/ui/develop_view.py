@@ -12,6 +12,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
@@ -31,16 +32,16 @@ from lumina.integration import style
 from lumina.qt_models import develop
 from lumina.qt_models.develop import Crop, Curves, Matte
 from lumina.ui.controls import ValueSlider
+from lumina.ui.crop_frame import dragged, dragged_to_ratio, reshaped
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.image_view import ImageView
 from lumina.ui.preset_dialog import PresetDialog
+from lumina.ui.ratio_dialog import RatioDialog
 
 PANEL_WIDTH = 320
 # The handles' size and how near the pointer must be to take one, unscaled
 _HANDLE = 7
 _GRAB = 12
-# The smallest crop, as a share of the photo
-_MIN_CROP = 0.02
 _CHANNELS = (("rgb", "RGB"), ("red", "R"), ("green", "G"), ("blue", "B"))
 _BANDS = tuple(zip(develop.BANDS, "ROYGABPM", strict=True))
 # The colour of a band's button border: its hue, as the band acts on it, in the middle
@@ -49,6 +50,19 @@ _BAND_COLOUR = (0.65, 0.9)
 # How much of its colour fills the band button that is chosen
 _TINT = 0.45
 _RANGES = tuple((name, name.capitalize()) for name in develop.RANGES)
+# The crop's aspect ratios: what is shown, and the long side over the short (a number),
+# "original" (the photo's own), "custom" (asked for) or None (free)
+_ASPECTS = (
+    ("Free", None),
+    ("Original", "original"),
+    ("1:1", 1.0),
+    ("4:5", 5 / 4),
+    ("3:2", 3 / 2),
+    ("16:9", 16 / 9),
+    ("Custom…", "custom"),
+)
+# How many squares the grid shown while straightening makes along the photo's short side
+_GRID = 8
 
 
 class _Segment(QToolButton):
@@ -95,7 +109,26 @@ class CropImageView(ImageView):
         self.cropping = False
         self.crop = Crop()
         self._drag = None
+        # The frame's width over its height in pixels, and the photo's, while the crop is
+        # held to a ratio; the fine grid while straightening; the label of the original
+        self.ratio = self.aspect = None
+        self.grid = False
+        self.before = False
         self.setMouseTracking(True)
+
+    def set_constraint(self, ratio, aspect):
+        """Hold the crop to `ratio` (None: free) on a photo of `aspect`."""
+        self.ratio, self.aspect = ratio, aspect
+
+    def set_grid(self, on):
+        if on != self.grid:
+            self.grid = on
+            self.update()
+
+    def set_before(self, on):
+        if on != self.before:
+            self.before = on
+            self.update()
 
     def set_cropping(self, on, crop):
         self.cropping, self.crop = on, crop
@@ -114,9 +147,49 @@ class CropImageView(ImageView):
             (c.bottom - c.top) * target.height(),
         )
 
+    def _paint_grid(self, painter, target):
+        # A fine grid over the photo, to level a horizon by
+        line = QColor(style.color("textPrimary"))
+        line.setAlphaF(0.35)
+        painter.setPen(QPen(line, 1))
+        step = min(target.width(), target.height()) / _GRID
+        x = target.left() + step
+        while x < target.right():
+            painter.drawLine(QPointF(x, target.top()), QPointF(x, target.bottom()))
+            x += step
+        y = target.top() + step
+        while y < target.bottom():
+            painter.drawLine(QPointF(target.left(), y), QPointF(target.right(), y))
+            y += step
+
+    def _paint_label(self, painter, target, text):
+        # A pill at the photo's corner: what is being shown
+        margin = style.px(10)
+        pad = style.px(8)
+        box = QRectF(painter.fontMetrics().boundingRect(text))
+        box = QRectF(
+            target.left() + margin,
+            target.top() + margin,
+            box.width() + 2 * pad,
+            box.height() + pad,
+        )
+        fill = QColor(style.color("background"))
+        fill.setAlphaF(0.75)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(fill)
+        painter.drawRoundedRect(box, box.height() / 2, box.height() / 2)
+        painter.setPen(style.color("textPrimary"))
+        painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
+
     def paint_over(self, painter, target):
-        if not self.cropping:
-            return
+        if self.grid:
+            self._paint_grid(painter, target)
+        if self.cropping:
+            self._paint_crop(painter, target)
+        if self.before:
+            self._paint_label(painter, target, "Original")
+
+    def _paint_crop(self, painter, target):
         frame = self._frame(target)
         # The part cut away is dimmed: the background colour, half through
         shade = QColor(style.color("background"))
@@ -200,7 +273,10 @@ class CropImageView(ImageView):
         part, start, before = self._drag
         dx = (event.position().x() - start.x()) / target.width()
         dy = (event.position().y() - start.y()) / target.height()
-        self.crop = dragged(before, part, dx, dy)
+        if self.ratio is not None and self.aspect:
+            self.crop = dragged_to_ratio(before, part, dx, dy, self.ratio, self.aspect)
+        else:
+            self.crop = dragged(before, part, dx, dy)
         self.crop_moved.emit(self.crop)
         self.update()
 
@@ -212,28 +288,18 @@ class CropImageView(ImageView):
         super().mouseReleaseEvent(event)
 
 
-def dragged(crop, part, dx, dy):
-    """`crop` with `part` (an edge, a corner, or "move") dragged by dx, dy shares."""
-    left, top, right, bottom = crop.left, crop.top, crop.right, crop.bottom
-    if part == "move":
-        dx = min(max(dx, -left), 1 - right)
-        dy = min(max(dy, -top), 1 - bottom)
-        return Crop(left + dx, top + dy, right + dx, bottom + dy)
-    if "l" in part:
-        left = min(max(left + dx, 0.0), right - _MIN_CROP)
-    if "r" in part:
-        right = max(min(right + dx, 1.0), left + _MIN_CROP)
-    if "t" in part:
-        top = min(max(top + dy, 0.0), bottom - _MIN_CROP)
-    if "b" in part:
-        bottom = max(min(bottom + dy, 1.0), top + _MIN_CROP)
-    return Crop(left, top, right, bottom)
-
-
 class DevelopView(QWidget):
     def __init__(self, session, parent=None):
         super().__init__(parent)
         self.session = session
+        # The crop's aspect ratio: the long side over the short (a number, "original"
+        # for the photo's own, None for free), and whether it is turned from the photo's
+        # own orientation
+        self._ratio_base = None
+        self._flipped = False
+        self._aspect_index = 0
+        # The original is shown while the button is down or the key is held
+        self._held = False
         self.image = CropImageView()
         self.image.crop_moved.connect(
             lambda crop: session.preview(session.params.with_changes(crop=crop))
@@ -270,6 +336,8 @@ class DevelopView(QWidget):
         self._crop_before = (Crop(), 0.0)
 
         session.params_changed.connect(self._show_params)
+        session.before_changed.connect(self.image.set_before)
+        session.opened.connect(lambda *_size: self._sync_constraint())
         session.image_ready.connect(self._on_image)
         session.failed.connect(self._on_failed)
         session.service.presets_changed.connect(self._refresh_presets)
@@ -291,6 +359,15 @@ class DevelopView(QWidget):
         margin = style.px(14)
         layout.setContentsMargins(margin, margin, margin, margin)
         layout.setSpacing(style.px(10))
+
+        self.before_button = QPushButton("Show Original")
+        self.before_button.setCheckable(True)
+        self.before_button.setToolTip(
+            "The photo as it is, without the edit: stays on while pressed in, "
+            "or only while the \\ key is held"
+        )
+        self.before_button.toggled.connect(lambda _on: self._update_before())
+        layout.addWidget(self.before_button)
 
         self._heading(layout, "LIGHT")
         self.exposure = self._slider(
@@ -447,6 +524,22 @@ class DevelopView(QWidget):
         row.addWidget(self.crop_button)
         row.addWidget(self.reset_crop)
         layout.addLayout(row)
+        row = QHBoxLayout()
+        self.aspect = QComboBox()
+        for text, key in _ASPECTS:
+            self.aspect.addItem(text, key)
+        self.aspect.setToolTip("Hold the crop to an aspect ratio")
+        self.aspect.activated.connect(self._on_aspect_chosen)
+        self.swap_ratio = QPushButton("Swap")
+        self.swap_ratio.setToolTip("Turn the frame between landscape and portrait")
+        self.swap_ratio.clicked.connect(self._swap_ratio)
+        row.addWidget(self.aspect, 1)
+        row.addWidget(self.swap_ratio)
+        layout.addLayout(row)
+        self.lock_ratio = QCheckBox("Lock aspect ratio")
+        self.lock_ratio.setToolTip("Keep the crop's shape as you drag it")
+        self.lock_ratio.clicked.connect(self._on_lock)
+        layout.addWidget(self.lock_ratio)
         self.straighten = self._slider(
             layout,
             "Straighten",
@@ -456,6 +549,9 @@ class DevelopView(QWidget):
             unit="°",
             field="straighten",
         )
+        # The grid is there while the slider moves, and goes when it is let go
+        self.straighten.moved.connect(lambda _v: self.image.set_grid(True))
+        self.straighten.committed.connect(lambda _v: self.image.set_grid(False))
         row = QHBoxLayout()
         self.rotate_left = QPushButton("Rotate Left")
         self.rotate_left.clicked.connect(lambda: self._turn(-1))
@@ -484,6 +580,15 @@ class DevelopView(QWidget):
         self.delete_preset_button.clicked.connect(self.delete_preset)
         row.addWidget(save)
         row.addWidget(self.delete_preset_button)
+        layout.addLayout(row)
+        self._heading(layout, "SETTINGS")
+        row = QHBoxLayout()
+        self.copy_settings_button = QPushButton("Copy…")
+        self.copy_settings_button.setToolTip("Copy parts of this edit, to paste on other photos")
+        self.paste_settings_button = QPushButton("Paste")
+        self.paste_settings_button.setToolTip("Put the copied parts of an edit over this one")
+        row.addWidget(self.copy_settings_button)
+        row.addWidget(self.paste_settings_button)
         layout.addLayout(row)
         layout.addStretch(1)
         scroll.setWidget(panel)
@@ -582,6 +687,7 @@ class DevelopView(QWidget):
         self.straighten.set_value(params.straighten)
         self._show_curve()
         self.image.set_crop(params.crop)
+        self._sync_constraint()
 
     def _show_mixers(self, params=None):
         """The sliders of the band and the range chosen, and blending and balance."""
@@ -626,6 +732,8 @@ class DevelopView(QWidget):
     def show_loading(self, name):
         self.image.set_message(f"Opening {name}…")
         self.crop_button.setChecked(False)
+        self.before_button.setChecked(False)
+        self._held = False
 
     # Geometry
 
@@ -635,6 +743,100 @@ class DevelopView(QWidget):
 
     def _flip(self, horizontal):
         self.session.commit(self.session.params.flipped(horizontal))
+
+    # The crop's aspect ratio
+
+    def _current_ratio(self):
+        """The frame's width over its height in pixels that the crop is held to, or
+        None while it is free."""
+        base, aspect = self._ratio_base, self.session.photo_aspect()
+        if base is None or aspect is None:
+            return None
+        if base == "original":
+            base = max(aspect, 1 / aspect)
+        portrait = (aspect < 1) != self._flipped
+        return 1 / base if portrait else base
+
+    def _sync_constraint(self):
+        ratio = self._current_ratio()
+        self.image.set_constraint(ratio, self.session.photo_aspect())
+        self.swap_ratio.setEnabled(ratio is not None)
+        self.lock_ratio.setChecked(self._ratio_base is not None)
+
+    def _reshape(self):
+        """The crop in the shape asked for, about the same size and place."""
+        ratio, aspect = self._current_ratio(), self.session.photo_aspect()
+        self._sync_constraint()
+        if ratio is None:
+            return
+        params = self.session.params
+        crop = reshaped(params.crop, ratio, aspect)
+        if crop != params.crop:
+            self.session.commit(params.with_changes(crop=crop))
+
+    def _on_aspect_chosen(self, index):
+        key = self.aspect.itemData(index)
+        if key == "custom":
+            dialog = RatioDialog(parent=self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                self.aspect.setCurrentIndex(self._aspect_index)
+                return
+            width, height = dialog.ratio()
+            self._ratio_base = max(width, height) / min(width, height)
+            self._flipped = (height > width) != ((self.session.photo_aspect() or 1.0) < 1)
+        else:
+            self._ratio_base, self._flipped = key, False
+        self._aspect_index = index
+        if key is not None:
+            # The crop is for setting over the whole photo
+            self.set_cropping(True)
+        self._reshape()
+
+    def _swap_ratio(self):
+        if self._ratio_base is not None:
+            self._flipped = not self._flipped
+            self._reshape()
+
+    def _on_lock(self, locked):
+        aspect = self.session.photo_aspect()
+        if locked and aspect is not None:
+            if self._ratio_base is None:
+                # Keep the shape the frame has now
+                crop = self.session.params.crop
+                shape = (crop.right - crop.left) * aspect / (crop.bottom - crop.top)
+                self._ratio_base = max(shape, 1 / shape)
+                self._flipped = (shape < 1) != (aspect < 1)
+        else:
+            self._ratio_base = None
+            self._aspect_index = 0
+            self.aspect.setCurrentIndex(0)
+        self._sync_constraint()
+
+    # Showing the original
+
+    def _update_before(self):
+        self.session.set_before(self.before_button.isChecked() or self._held)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Backslash and not event.isAutoRepeat():
+            self._held = True
+            self._update_before()
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key.Key_Backslash and not event.isAutoRepeat():
+            self._held = False
+            self._update_before()
+            return
+        super().keyReleaseEvent(event)
+
+    def hideEvent(self, event):
+        # A key let go while another page showed would never be heard of
+        if self._held:
+            self._held = False
+            self._update_before()
+        super().hideEvent(event)
 
     def is_cropping(self):
         return self.crop_button.isChecked()

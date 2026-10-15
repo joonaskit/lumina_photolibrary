@@ -493,6 +493,15 @@ def preset(params, sections):
     return {"version": VERSION, **{name: whole[name] for name in sections}}
 
 
+def pasted(edit_json, document):
+    """A stored edit (`edit_json`, or None for none) with the sections a settings
+    `document` (made by `preset`) has put over it, as JSON, or None when what is left
+    changes nothing. Raises NewerParams for an edit or a document from a newer Lumina."""
+    current = from_json(edit_json) if edit_json else Params()
+    result = apply_preset(current, document)
+    return None if result.is_identity() else result.to_json()
+
+
 def apply_preset(params, document):
     """`params` with what a preset document has replacing those sections. Raises
     NewerParams for a preset from a newer Lumina."""

@@ -297,3 +297,51 @@ def test_a_preset_can_keep_the_effects():
     applied = params.apply_preset(Params(), params.preset(look, ["vignette", "grain"]))
 
     assert applied == Params(vignette=look.vignette, grain=look.grain)
+
+
+def test_pasting_puts_the_sections_of_a_document_over_a_stored_edit():
+    look = Params(exposure=1.0, temperature=20, basic=Basic(contrast=30), crop=Crop(left=0.2))
+    document = params.preset(look, ["white_balance", "basic"])
+    stored = Params(exposure=0.5, crop=Crop(right=0.8)).to_json()
+
+    result = params.from_json(params.pasted(stored, document))
+
+    # What the document has is replaced, the rest is left as it was
+    assert result == Params(
+        exposure=0.5, temperature=20, basic=Basic(contrast=30), crop=Crop(right=0.8)
+    )
+
+
+def test_pasting_onto_a_photo_without_an_edit_gives_it_the_sections():
+    document = params.preset(Params(exposure=1.5), ["exposure"])
+
+    assert params.from_json(params.pasted(None, document)) == Params(exposure=1.5)
+
+
+def test_pasting_what_leaves_no_edit_gives_none_not_an_empty_edit():
+    # The original's sections put over an edit of those sections only: nothing is left
+    document = params.preset(Params(), ["exposure", "basic"])
+    stored = Params(exposure=1.0, basic=Basic(contrast=10)).to_json()
+
+    assert params.pasted(stored, document) is None
+    assert params.pasted(None, document) is None
+
+
+def test_pasting_does_not_touch_what_it_is_pasted_from():
+    look = Params(exposure=1.0, hsl=Hsl(red=Band(hue=10)))
+    document = params.preset(look, ["hsl"])
+    before = json.dumps(document, sort_keys=True)
+
+    params.pasted(Params(exposure=2.0).to_json(), document)
+
+    assert json.dumps(document, sort_keys=True) == before
+
+
+def test_an_edit_or_a_document_from_a_newer_lumina_is_not_pasted_over():
+    newer = {"version": params.VERSION + 1, "exposure": 1.0}
+    older_document = params.preset(Params(exposure=1.0), ["exposure"])
+
+    with pytest.raises(NewerParams):
+        params.pasted(json.dumps(newer), older_document)
+    with pytest.raises(NewerParams):
+        params.pasted(None, newer)
