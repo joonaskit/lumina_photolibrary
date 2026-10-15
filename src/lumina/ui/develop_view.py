@@ -6,6 +6,8 @@ whole photo is shown and the crop is a frame over it, with handles at its corner
 and edges; dragging inside it moves it.
 """
 
+from dataclasses import replace
+
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QKeySequence, QPainterPath, QPen
 from PySide6.QtWidgets import (
@@ -253,11 +255,27 @@ class DevelopView(QWidget):
         self.exposure = self._slider(
             layout, "Exposure", *develop.EXPOSURE, unit=" EV", field="exposure"
         )
+        # Contrast, Highlights, Shadows, Whites, Blacks
+        self.basic = {
+            name: self._slider(
+                layout, name.capitalize(), *develop.BASIC, step=1, decimals=0, field=name
+            )
+            for name in develop.BASIC_FIELDS
+        }
         self._heading(layout, "WHITE BALANCE")
         self.temperature = self._slider(
             layout, "Temperature", *develop.WARMTH, step=1, decimals=0, field="temperature"
         )
         self.tint = self._slider(layout, "Tint", *develop.WARMTH, step=1, decimals=0, field="tint")
+
+        self._heading(layout, "COLOUR")
+        # Vibrance, Saturation
+        self.colour = {
+            name: self._slider(
+                layout, name.capitalize(), *develop.COLOUR, step=1, decimals=0, field=name
+            )
+            for name in develop.COLOUR_FIELDS
+        }
 
         self._heading(layout, "TONE CURVE")
         channels = QHBoxLayout()
@@ -373,14 +391,22 @@ class DevelopView(QWidget):
             }
             values[field] = value
             return params.with_changes(matte=Matte(**values))
+        if field in develop.BASIC_FIELDS:
+            return params.with_changes(basic=replace(params.basic, **{field: value}))
+        if field in develop.COLOUR_FIELDS:
+            return params.with_changes(colour=replace(params.colour, **{field: value}))
         return params.with_changes(**{field: value})
 
     # Showing the edit
 
     def _show_params(self, params):
         self.exposure.set_value(params.exposure)
+        for name, slider in self.basic.items():
+            slider.set_value(getattr(params.basic, name))
         self.temperature.set_value(params.temperature)
         self.tint.set_value(params.tint)
+        for name, slider in self.colour.items():
+            slider.set_value(getattr(params.colour, name))
         self.matte_black.set_value(params.matte.black)
         self.matte_white.set_value(params.matte.white)
         self.matte_desaturation.set_value(params.matte.shadow_desaturation)
@@ -484,11 +510,12 @@ class DevelopView(QWidget):
         name, ok = QInputDialog.getText(
             self,
             "Save Preset",
-            "Name of the preset. It keeps the white balance, tone curve and matte of this edit:",
+            "Name of the preset. It keeps the white balance, contrast, highlights, shadows,\n"
+            "whites, blacks, vibrance, saturation, tone curve and matte of this edit:",
         )
         name = name.strip()
         if ok and name:
-            self.session.save_preset(name, ["white_balance", "curves", "matte"])
+            self.session.save_preset(name, ["white_balance", "basic", "colour", "curves", "matte"])
 
     def delete_preset(self):
         names = self.session.presets()

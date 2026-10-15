@@ -9,25 +9,30 @@ in [0, 1]) and every step works on linear floats until the output encoding:
    enough to fill the frame, so no empty corners show; the crop is then taken of
    that, and only the pixels inside it are sampled.
 2. White balance and exposure: one gain per channel.
-3. Tone: the curves and the matte. Curves act on sRGB-encoded values, where they
-   feel as curves do in other editors; the whole step, encode, RGB curve, channel
-   curve, matte, decode, is a function of one value per channel, so it is a LUT.
-4. Colour: the matte's shadow desaturation.
+3. Tone: the Basic controls, the curves and the matte. They act on sRGB-encoded
+   values, where curves feel as they do in other editors; the whole step, encode,
+   Basic curve, RGB curve, channel curve, matte, decode, is a function of one value
+   per channel, so it is a LUT.
+4. Colour: the matte's shadow desaturation, then vibrance and saturation, on
+   sRGB-encoded values (see colour.py).
 5. Output: sRGB encoding to 8 or 16 bits.
 
-Highlights pushed past white by exposure or white balance are clipped at step 3.
+Highlights pushed past white by exposure or white balance are clipped at step 3:
+at white, or with the Basic controls in use, at basic.HEADROOM times white, where
+the Basic curve can bring them back.
 """
 
 from functools import lru_cache
 
 import numpy as np
 
-from lumina.core.edit import curves
+from lumina.core.edit import basic, colour, curves
 
 # Entries of the tone LUT over linear [0, 1]
 TONE_SIZE = 65536
+_CHANNELS = ("rgb", "red", "green", "blue")
 # Rec. 709 / sRGB luminance weights, for linear values
-LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+LUMA = colour.LUMA
 # Mireds a full step of the temperature control moves the white point
 _MIREDS_PER_STEP = 1.0
 _D65_KELVIN = 6504.0
@@ -103,11 +108,22 @@ def channel_gains(params):
 # Tone
 
 
+def tone_range(params):
+    """The linear light the tone LUT spans, from 0: white, or with the Basic controls
+    in use the headroom past it they can bring back."""
+    return 1.0 if params.basic.is_identity() else basic.HEADROOM
+
+
 @lru_cache(maxsize=16)
-def _tone_luts(rgb, red, green, blue, black, white):
-    """Per channel: linear value -> linear value through encode, the RGB curve, the
-    channel's curve, the matte's range and decode. 3 x TONE_SIZE float32."""
-    encoded = srgb_encode(np.linspace(0.0, 1.0, TONE_SIZE))
+def _tone_luts(rgb, red, green, blue, black, white, basic_controls):
+    """Per channel: linear value -> linear value through encode, the Basic curve, the
+    RGB curve, the channel's curve, the matte's range and decode. 3 x TONE_SIZE
+    float32, over linear [0, 1], or [0, HEADROOM] with the Basic controls in use."""
+    if basic_controls.is_identity():
+        encoded = srgb_encode(np.linspace(0.0, 1.0, TONE_SIZE))
+    else:
+        linear = np.linspace(0.0, basic.HEADROOM, TONE_SIZE)
+        encoded = basic.evaluate(basic_controls, basic.encode(linear))
     shared = encoded if curves.is_identity(rgb) else curves.evaluate(rgb, encoded)
     tables = []
     for points in (red, green, blue):
@@ -119,12 +135,15 @@ def _tone_luts(rgb, red, green, blue, black, white):
 
 def tone_luts(params):
     c = params.curves
-    return _tone_luts(c.rgb, c.red, c.green, c.blue, params.matte.black, params.matte.white)
+    return _tone_luts(
+        c.rgb, c.red, c.green, c.blue, params.matte.black, params.matte.white, params.basic
+    )
 
 
 def _is_tone_identity(params):
     return (
-        all(curves.is_identity(getattr(params.curves, n)) for n in ("rgb", "red", "green", "blue"))
+        params.basic.is_identity()
+        and all(curves.is_identity(getattr(params.curves, n)) for n in _CHANNELS)
         and params.matte.black == 0
         and params.matte.white == 0
     )
@@ -270,18 +289,21 @@ def render(image, params, bits=8, tile_rows=512):
     gains = channel_gains(params)
     if view.dtype == np.uint16:
         gains = gains / np.float32(65535.0)
+    # The tone LUT spans [0, tone_range] in linear light: scaled to [0, 1] with the gains
+    gains = gains / np.float32(tone_range(params))
     tone = None if _is_tone_identity(params) else tone_luts(params)
     desaturation = params.matte.shadow_desaturation
+    vividness = (params.colour.vibrance, params.colour.saturation)
     step = max(1, tile_rows or height)
     for start in range(0, height, step):
         tile = view[start : start + step].astype(np.float32) * gains
-        out[start : start + step] = _render_tile(tile, tone, desaturation, bits)
+        out[start : start + step] = _render_tile(tile, tone, desaturation, vividness, bits)
     return out
 
 
-def _render_tile(linear, tone, desaturation, bits):
+def _render_tile(linear, tone, desaturation, vividness, bits):
     np.clip(linear, 0.0, 1.0, out=linear)
-    if bits == 8 and desaturation == 0:
+    if bits == 8 and desaturation == 0 and not any(vividness):
         # One lookup per channel: tone and output together
         index = (linear * (TONE_SIZE - 1) + 0.5).astype(np.uint16)
         out = _output_lut(8)
@@ -300,13 +322,15 @@ def _render_tile(linear, tone, desaturation, bits):
                 linear[..., c] = _lookup(linear[..., c], tone[c])
     if desaturation:
         _desaturate_shadows(linear, desaturation)
-    if bits == 8:
+    if bits == 8 and not any(vividness):
         return _output_lut(8)[(linear * (TONE_SIZE - 1) + 0.5).astype(np.uint16)]
     np.clip(linear, 0.0, 1.0, out=linear)
     encoded = _lookup(linear, _encode_table())
-    encoded *= np.float32(65535.0)
+    if any(vividness):
+        colour.adjust(encoded, *vividness)
+    encoded *= np.float32(255.0 if bits == 8 else 65535.0)
     encoded += np.float32(0.5)
-    return encoded.astype(np.uint16)
+    return encoded.astype(np.uint8 if bits == 8 else np.uint16)
 
 
 def _desaturate_shadows(linear, amount):

@@ -16,20 +16,48 @@ from dataclasses import dataclass, field, replace
 
 from lumina.core.edit import curves
 
-VERSION = 2
+VERSION = 4
 
 # Ranges, in the units the pipeline uses
 EXPOSURE = (-5.0, 5.0)  # stops
 WARMTH = (-100.0, 100.0)  # see pipeline.white_balance_gains
+BASIC = (-100.0, 100.0)  # contrast, highlights, shadows, whites, blacks: see basic.py
+COLOUR = (-100.0, 100.0)  # vibrance, saturation: see colour.py
 MATTE_BLACK = (0.0, 0.5)  # how far black is raised, as a share of white
 MATTE_WHITE = (0.0, 0.5)  # how far white is lowered
 DESATURATION = (0.0, 1.0)
 STRAIGHTEN = (-45.0, 45.0)  # degrees, clockwise
 CHANNELS = ("rgb", "red", "green", "blue")
+BASIC_FIELDS = ("contrast", "highlights", "shadows", "whites", "blacks")
+COLOUR_FIELDS = ("vibrance", "saturation")
 
 
 class NewerParams(Exception):
     """The edit was made by a newer Lumina: this one can't render it as meant."""
+
+
+@dataclass(frozen=True)
+class Basic:
+    # Lightroom's Basic tone controls, -100 to 100 each
+    contrast: float = 0.0
+    highlights: float = 0.0
+    shadows: float = 0.0
+    whites: float = 0.0
+    blacks: float = 0.0
+
+    def is_identity(self):
+        return self == Basic()
+
+
+@dataclass(frozen=True)
+class Colour:
+    # How colourful the photo is, -100 to 100 each. Vibrance leaves colours that are
+    # already strong, and skin tones, more alone than saturation does
+    vibrance: float = 0.0
+    saturation: float = 0.0
+
+    def is_identity(self):
+        return self == Colour()
 
 
 @dataclass(frozen=True)
@@ -72,6 +100,8 @@ class Params:
     exposure: float = 0.0
     temperature: float = 0.0
     tint: float = 0.0
+    basic: Basic = field(default_factory=Basic)
+    colour: Colour = field(default_factory=Colour)
     curves: Curves = field(default_factory=Curves)
     matte: Matte = field(default_factory=Matte)
     # Quarter turns clockwise, 0 to 3; then mirrored left to right and top to bottom;
@@ -90,6 +120,8 @@ class Params:
             "version": VERSION,
             "exposure": float(self.exposure),
             "white_balance": {"temperature": float(self.temperature), "tint": float(self.tint)},
+            "basic": {name: float(getattr(self.basic, name)) for name in BASIC_FIELDS},
+            "colour": {name: float(getattr(self.colour, name)) for name in COLOUR_FIELDS},
             "curves": {name: [list(p) for p in getattr(self.curves, name)] for name in CHANNELS},
             "matte": {
                 "black": float(self.matte.black),
@@ -170,6 +202,8 @@ def from_dict(data):
         return Params()
     data = migrate(data)
     wb = _section(data, "white_balance")
+    basic = _section(data, "basic")
+    colour = _section(data, "colour")
     curve_data = _section(data, "curves")
     matte = _section(data, "matte")
     crop = _section(data, "crop")
@@ -186,6 +220,8 @@ def from_dict(data):
         exposure=_number(data.get("exposure"), 0.0, EXPOSURE),
         temperature=_number(wb.get("temperature"), 0.0, WARMTH),
         tint=_number(wb.get("tint"), 0.0, WARMTH),
+        basic=Basic(**{name: _number(basic.get(name), 0.0, BASIC) for name in BASIC_FIELDS}),
+        colour=Colour(**{name: _number(colour.get(name), 0.0, COLOUR) for name in COLOUR_FIELDS}),
         curves=Curves(**{name: curves.normalize(curve_data.get(name)) for name in CHANNELS}),
         matte=Matte(
             black=_number(matte.get("black"), 0.0, MATTE_BLACK),
@@ -208,7 +244,17 @@ def _to_2(data):
     return {"flip": {"horizontal": False, "vertical": False}, "straighten": 0.0, **data}
 
 
-_MIGRATIONS = {1: _to_2}
+def _to_3(data):
+    # Version 3 added the Basic tone controls: all at zero, which changes nothing
+    return {"basic": {name: 0.0 for name in BASIC_FIELDS}, **data}
+
+
+def _to_4(data):
+    # Version 4 added vibrance and saturation: both at zero, which changes nothing
+    return {"colour": {name: 0.0 for name in COLOUR_FIELDS}, **data}
+
+
+_MIGRATIONS = {1: _to_2, 2: _to_3, 3: _to_4}
 
 
 def migrate(data):
@@ -245,6 +291,8 @@ def _number(value, default, bounds):
 SECTIONS = (
     "exposure",
     "white_balance",
+    "basic",
+    "colour",
     "curves",
     "matte",
     "rotate",

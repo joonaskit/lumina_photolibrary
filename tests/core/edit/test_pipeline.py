@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from lumina.core.edit import pipeline
-from lumina.core.edit.params import Crop, Curves, Matte, Params
+from lumina.core.edit import basic, pipeline
+from lumina.core.edit.params import Basic, Crop, Curves, Matte, Params
 from lumina.core.edit.pipeline import render, srgb_decode, srgb_encode
 
 
@@ -128,6 +128,7 @@ def test_tiles_give_the_same_image_as_one_pass(bits):
         exposure=0.3,
         temperature=20,
         curves=Curves(rgb=((0, 0), (0.4, 0.5), (1, 1))),
+        basic=Basic(contrast=30, highlights=-50, blacks=-20),
         matte=Matte(black=0.05, shadow_desaturation=0.6),
         rotate=3,
     )
@@ -259,3 +260,108 @@ def test_output_size_follows_turns_and_crop_not_straightening():
 
     assert pipeline.output_size(60, 40, edit) == (20, 60)
     assert render(np.zeros((40, 60, 3), np.uint16), edit).shape[:2] == (60, 20)
+
+
+# The Basic controls
+
+CONTROLS = ("contrast", "highlights", "shadows", "whites", "blacks")
+
+
+def encoded_ramp(edit, image=None):
+    """`edit` on the grey ramp, as encoded values in [0, 1] from left to right."""
+    return render(ramp() if image is None else image, edit, bits=16)[0, :, 0] / 65535
+
+
+def at(values, encoded):
+    # The rendered value where the plain ramp is at `encoded`
+    plain = encoded_ramp(Params())
+    return values[np.argmin(np.abs(plain - encoded))]
+
+
+def test_the_basic_curve_at_zero_changes_nothing():
+    x = basic.encode(np.linspace(0, basic.HEADROOM, 1001))
+
+    assert np.allclose(basic.evaluate(Basic(), x), np.minimum(x, 1.0), atol=1e-12)
+
+
+@pytest.mark.parametrize("control", CONTROLS)
+@pytest.mark.parametrize("value", [-100, 100])
+def test_every_basic_control_keeps_the_ramp_rising_and_in_range(control, value):
+    out = encoded_ramp(Params(exposure=1.0, basic=Basic(**{control: value})))
+
+    assert np.all(np.diff(out) >= 0)
+    assert out.min() >= 0 and out.max() <= 1
+
+
+@pytest.mark.parametrize("control", CONTROLS)
+def test_a_basic_control_moved_a_little_changes_the_photo_a_little(control):
+    # Using the headroom past white must not show as a jump when a control leaves zero
+    for edit in (Params(), Params(exposure=1.5)):
+        before = encoded_ramp(edit)
+        after = encoded_ramp(edit.with_changes(basic=Basic(**{control: 1})))
+
+        assert np.abs(after - before).max() < 0.005
+
+
+def test_contrast_darkens_the_shadows_and_brightens_the_highlights():
+    plain, more = encoded_ramp(Params()), encoded_ramp(Params(basic=Basic(contrast=60)))
+
+    assert at(more, 0.25) < at(plain, 0.25) and at(more, 0.75) > at(plain, 0.75)
+    assert at(more, 0.46) == pytest.approx(at(plain, 0.46), abs=0.005)
+
+
+def test_shadows_brighten_the_dark_tones_more_than_the_bright_ones():
+    plain, lifted = encoded_ramp(Params()), encoded_ramp(Params(basic=Basic(shadows=80)))
+
+    assert at(lifted, 0.25) - at(plain, 0.25) > 0.05
+    assert at(lifted, 0.9) == pytest.approx(at(plain, 0.9), abs=0.005)
+
+
+def test_blacks_below_zero_crush_the_deepest_tones_and_white_stays():
+    crushed = encoded_ramp(Params(basic=Basic(blacks=-100)))
+
+    assert at(crushed, 0.02) == 0
+    assert crushed[-1] == 1
+
+
+def test_whites_above_zero_clip_more():
+    plain, whiter = encoded_ramp(Params()), encoded_ramp(Params(basic=Basic(whites=100)))
+
+    assert (whiter >= 1).sum() > (plain >= 1).sum()
+
+
+@pytest.mark.parametrize("edit", [Basic(highlights=-100), Basic(whites=-100)])
+def test_highlights_and_whites_below_zero_bring_back_light_pushed_past_white(edit):
+    # One stop up: the right half of the ramp is past white, clipped without them
+    clipped = encoded_ramp(Params(exposure=1.0))
+    recovered = encoded_ramp(Params(exposure=1.0, basic=edit))
+
+    half = len(recovered) // 2
+    assert (clipped[half:] == 1).all()
+    assert np.all(np.diff(recovered[half : half + 32]) > 0)
+
+
+def test_highlights_at_minus_100_bring_back_almost_two_stops():
+    # 1.8 stops past white: just short of the headroom's end
+    image = colour([2**1.8 / 4] * 3)
+
+    out = render(image, Params(exposure=2.0, basic=Basic(highlights=-100)), bits=16)
+
+    assert out.max() < 65535 * 0.995
+
+
+def test_light_past_the_headroom_is_clipped():
+    image = colour([1.0, 1.0, 1.0])
+
+    out = render(image, Params(exposure=3.0, basic=Basic(highlights=-100)), bits=16)
+
+    assert (out == 65535).all()
+
+
+def test_8_and_16_bits_agree_with_the_basic_controls():
+    edit = Params(exposure=0.7, basic=Basic(contrast=40, highlights=-80, shadows=50, blacks=-30))
+
+    eight = render(ramp(), edit).astype(np.float64)
+    sixteen = render(ramp(), edit, bits=16).astype(np.float64) / 257
+
+    assert np.abs(eight - sixteen).max() <= 1.0

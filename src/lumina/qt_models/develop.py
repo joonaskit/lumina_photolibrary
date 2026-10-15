@@ -27,6 +27,8 @@ from lumina.qt_models import workers
 
 # For the UI, which does not import core/
 Params = _params.Params
+Basic = _params.Basic
+Colour = _params.Colour
 Curves = _params.Curves
 Matte = _params.Matte
 Crop = _params.Crop
@@ -34,6 +36,10 @@ ExportOptions = _export.ExportOptions
 FORMATS = _export.FORMATS
 EXPOSURE = _params.EXPOSURE
 WARMTH = _params.WARMTH
+BASIC = _params.BASIC
+BASIC_FIELDS = _params.BASIC_FIELDS
+COLOUR = _params.COLOUR
+COLOUR_FIELDS = _params.COLOUR_FIELDS
 MATTE_BLACK = _params.MATTE_BLACK
 MATTE_WHITE = _params.MATTE_WHITE
 DESATURATION = _params.DESATURATION

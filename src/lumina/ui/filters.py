@@ -1,10 +1,11 @@
-"""Year, camera, lens and flag, above the grid, and the search field at the right."""
+"""Year, camera, lens, flag and edit state, above the grid, and the search field at the
+right."""
 
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QToolButton, QWidget
 
 from lumina.integration import style
-from lumina.qt_models.library_model import PICKED, REJECTED, UNFLAGGED
+from lumina.qt_models.library_model import EDITED, PICKED, REJECTED, UNEDITED, UNFLAGGED
 
 FLAG_CHOICES = (
     ("All flags", None),
@@ -13,12 +14,20 @@ FLAG_CHOICES = (
     ("Thumbs down", REJECTED),
 )
 
+EDIT_CHOICES = (
+    ("Edited and unedited", None),
+    ("Edited", EDITED),
+    ("Unedited", UNEDITED),
+)
+
 
 class FilterBar(QWidget):
     # Something was chosen: read `values()`
     changed = Signal()
     # A flag to show only, or None for all
     flag_changed = Signal(object)
+    # EDITED or UNEDITED to show only those, or None for all
+    edit_changed = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -28,18 +37,25 @@ class FilterBar(QWidget):
         self.year = self._combo("All years")
         self.camera = self._combo("All cameras")
         self.lens = self._combo("All lenses")
-        # Not one of the library's choices: the same four whatever the folder
-        self.flag = QComboBox()
-        self.flag.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-        self.flag.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        for text, value in FLAG_CHOICES:
-            self.flag.addItem(text, value)
-        self.flag.currentIndexChanged.connect(
-            lambda _index: self.flag_changed.emit(self.flag.currentData())
-        )
-        for combo in (self.year, self.camera, self.lens, self.flag):
+        # Not the library's choices: the same whatever the folder
+        self.flag = self._fixed_combo(FLAG_CHOICES, self.flag_changed)
+        self.edit = self._fixed_combo(EDIT_CHOICES, self.edit_changed)
+        for combo in (self.year, self.camera, self.lens, self.flag, self.edit):
             layout.addWidget(combo)
         layout.addStretch(1)
+
+    def _fixed_combo(self, choices, changed):
+        combo = QComboBox()
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        for text, value in choices:
+            combo.addItem(text, value)
+        combo.currentIndexChanged.connect(lambda _index: changed.emit(combo.currentData()))
+        return combo
+
+    def edit_value(self):
+        """EDITED or UNEDITED to show only those, or None for all."""
+        return self.edit.currentData()
 
     def flag_value(self):
         """The flag to show only, or None for all."""

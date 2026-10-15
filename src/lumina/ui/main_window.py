@@ -145,6 +145,7 @@ class MainWindow(QMainWindow):
         self.filters = FilterBar()
         self.filters.changed.connect(self._apply_filter)
         self.filters.flag_changed.connect(self.set_flag_filter)
+        self.filters.edit_changed.connect(self.set_edit_filter)
         self.flag_options = flags.FlagOptions()
         self.flag_options.set_values(settings.rejected_photos(), settings.advance_after_flag())
         self.flag_options.rejected_changed.connect(self.set_rejected)
@@ -675,6 +676,11 @@ class MainWindow(QMainWindow):
     def set_flag_filter(self, flag):
         """Show only photos with a thumbs up, with none, or with a thumbs down, or all."""
         self.model.set_flag_filter(flag)
+        self._update_status()
+
+    def set_edit_filter(self, which):
+        """Show only edited photos, only unedited ones, or all."""
+        self.model.set_edit_filter(which)
         self._update_status()
 
     def set_rejected(self, mode):
