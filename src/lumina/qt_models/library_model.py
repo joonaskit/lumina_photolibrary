@@ -44,6 +44,10 @@ _RESEARCH_EVERY = 3.0
 # Flag changes that can be undone
 _HISTORY = 200
 
+# The edit filter: only photos with an edit (of their own, not a virtual copy's), or
+# only those without
+EDITED, UNEDITED = "edited", "unedited"
+
 TEXT, SIMILAR = "text", "similar"
 
 
@@ -74,6 +78,8 @@ class LibraryModel(QAbstractListModel):
         self.search = None
         # A flag to show only, or None for any
         self.flag_filter = None
+        # EDITED or UNEDITED to show only those, or None for any
+        self.edit_filter = None
         self.rejected = DIM
         # Every row of the filter; `_ranked` the ids a search found, best first; `_rows`
         # what is shown
@@ -196,6 +202,8 @@ class LibraryModel(QAbstractListModel):
         if generation != self._generation:
             return
         self._querying = False
+        if not reset:
+            self._keep_edited_photos(rows)
         self._all = rows
         self._positions = {row.id: number for number, row in enumerate(rows)}
         if self.search is not None:
@@ -213,9 +221,26 @@ class LibraryModel(QAbstractListModel):
             base = [self._all[self._positions[i]] for i in self._ranked if i in self._positions]
         return [photo for photo in base if self._passes(photo)]
 
+    def _keep_edited_photos(self, rows):
+        # A photo edited (or its edit removed) while the edit filter is on stays until
+        # the user moves on, as one flagged out of the view does: it is the one in hand
+        if self.edit_filter is None:
+            return
+        for photo in rows:
+            shown = self._index.get(photo.id)
+            if shown is not None and self._rows[shown].edit != photo.edit:
+                self._kept.add(photo.id)
+
+    def _edit_passes(self, photo):
+        if self.edit_filter is None:
+            return True
+        return (photo.edit is not None) == (self.edit_filter == EDITED)
+
     def _passes(self, photo):
         if photo.id in self._kept:
             return True
+        if not self._edit_passes(photo):
+            return False
         if self.flag_filter is not None:
             return photo.flag == self.flag_filter
         return not (self.rejected == HIDE and photo.flag == REJECTED)
@@ -269,6 +294,13 @@ class LibraryModel(QAbstractListModel):
             self._kept.clear()
             self._show(self._compose(), reset=False)
 
+    def set_edit_filter(self, which):
+        """Show only photos with an edit (EDITED) or without one (UNEDITED), or any (None)."""
+        if which != self.edit_filter:
+            self.edit_filter = which
+            self._kept.clear()
+            self._show(self._compose(), reset=False)
+
     def set_rejected(self, mode):
         """SHOW, DIM or HIDE thumbs-down photos (with no flag filter)."""
         if mode != self.rejected:
@@ -280,11 +312,14 @@ class LibraryModel(QAbstractListModel):
         """How many photos of the filter or search the flags leave out."""
         if self.flag_filter is None and self.rejected != HIDE:
             return 0
+        # Of the photos the edit filter lets through, those the flags leave out
         if self._ranked is None:
-            base = len(self._all)
+            base = self._all
         else:
-            base = sum(1 for i in self._ranked if i in self._positions)
-        return base - len(self._rows)
+            base = [self._all[self._positions[i]] for i in self._ranked if i in self._positions]
+        return sum(1 for p in base if self._edit_passes(p)) - sum(
+            1 for p in self._rows if self._edit_passes(p)
+        )
 
     def flag(self, row):
         return self._rows[row].flag
