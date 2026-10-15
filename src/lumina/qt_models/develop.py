@@ -33,6 +33,8 @@ Colour = _params.Colour
 Band = _params.Band
 Hsl = _params.Hsl
 Wheel = _params.Wheel
+Vignette = _params.Vignette
+Grain = _params.Grain
 Grading = _params.Grading
 Curves = _params.Curves
 Matte = _params.Matte
@@ -51,6 +53,11 @@ WHEEL = _params.WHEEL
 GRADING = _params.GRADING
 BLENDING = _params.BLENDING
 DEFAULT_BLENDING = _params.DEFAULT_BLENDING
+VIGNETTE = _params.VIGNETTE
+PERCENT = _params.PERCENT
+DEFAULT_MIDPOINT = _params.DEFAULT_MIDPOINT
+DEFAULT_FEATHER = _params.DEFAULT_FEATHER
+DEFAULT_GRAIN_SIZE = _params.DEFAULT_GRAIN_SIZE
 BANDS = _params.BANDS
 # Where each band sits on the hue circle, in degrees: for showing its colour
 BAND_HUES = dict(zip(_params.BANDS, _hsl.CENTRES, strict=True))

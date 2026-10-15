@@ -23,6 +23,8 @@ _LIGHT_AND_COLOUR = (
     ("grading", "Colour grading"),
     ("curves", "Tone curve"),
     ("matte", "Matte"),
+    ("vignette", "Vignette"),
+    ("grain", "Grain"),
 )
 _GEOMETRY = (
     ("rotate", "Rotation"),
@@ -39,6 +41,8 @@ DEFAULT_SECTIONS = (
     "grading",
     "curves",
     "matte",
+    "vignette",
+    "grain",
 )
 
 

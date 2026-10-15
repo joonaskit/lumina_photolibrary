@@ -5,7 +5,18 @@ from conftest import TIMEOUT
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QMessageBox
 
-from lumina.qt_models.develop import Band, Basic, Colour, Crop, Grading, Hsl, Params, Wheel
+from lumina.qt_models.develop import (
+    Band,
+    Basic,
+    Colour,
+    Crop,
+    Grading,
+    Grain,
+    Hsl,
+    Params,
+    Vignette,
+    Wheel,
+)
 from lumina.ui import develop_view
 from lumina.ui.controls import ValueSlider
 from lumina.ui.curve_editor import CurveEditor
@@ -609,6 +620,8 @@ def test_the_preset_dialog_starts_with_the_look_and_not_the_framing(qtbot):
         "grading",
         "curves",
         "matte",
+        "vignette",
+        "grain",
     ]
 
 
@@ -624,3 +637,36 @@ def test_the_preset_dialog_needs_a_name_and_a_part_and_says_when_it_replaces(qtb
     assert dialog.save_button.text() == "Replace"
     dialog.set_sections([])
     assert not dialog.save_button.isEnabled()
+
+
+def test_the_effects_sliders_commit_their_control_and_show_the_edit(qtbot, window):
+    open_editor(qtbot, window)
+    assert window.develop.vignette["midpoint"].value() == 50
+    assert window.develop.grain["size"].value() == 25
+
+    drag(window.develop.vignette["amount"], -40)
+    drag(window.develop.vignette["feather"], 70)
+    drag(window.develop.grain["amount"], 35)
+    drag(window.develop.grain["size"], 60)
+
+    assert window.session.params == Params(
+        vignette=Vignette(amount=-40, feather=70), grain=Grain(amount=35, size=60)
+    )
+    assert window.develop.vignette["amount"].value_label.text() == "-40"
+    window.undo_action.trigger()
+    assert window.develop.grain["size"].value() == 25
+    assert window.develop.grain["amount"].value() == 35
+    settled(qtbot, window)
+
+
+def test_a_saved_preset_can_keep_the_effects(qtbot, window, monkeypatch):
+    open_editor(qtbot, window)
+    look = Params(vignette=Vignette(amount=-30), grain=Grain(amount=20, size=40))
+    window.session.commit(look.with_changes(exposure=1.0))
+    save_preset_as(monkeypatch, window, "Filmic", ["vignette", "grain"])
+    window.session.commit(Params())
+
+    window.session.apply_preset("Filmic")
+
+    assert window.session.params == look
+    settled(qtbot, window)

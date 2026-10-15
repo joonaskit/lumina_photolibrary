@@ -392,6 +392,45 @@ class DevelopView(QWidget):
             layout, "Desaturate shadows", *develop.DESATURATION, field="shadow_desaturation"
         )
 
+        self._heading(layout, "EFFECTS")
+        self.vignette = {
+            "amount": self._slider(
+                layout, "Vignette", *develop.VIGNETTE, step=1, decimals=0, field="vignette.amount"
+            ),
+            "midpoint": self._slider(
+                layout,
+                "Midpoint",
+                *develop.PERCENT,
+                step=1,
+                decimals=0,
+                field="vignette.midpoint",
+                default=develop.DEFAULT_MIDPOINT,
+            ),
+            "feather": self._slider(
+                layout,
+                "Feather",
+                *develop.PERCENT,
+                step=1,
+                decimals=0,
+                field="vignette.feather",
+                default=develop.DEFAULT_FEATHER,
+            ),
+        }
+        self.grain = {
+            "amount": self._slider(
+                layout, "Grain", *develop.PERCENT, step=1, decimals=0, field="grain.amount"
+            ),
+            "size": self._slider(
+                layout,
+                "Grain size",
+                *develop.PERCENT,
+                step=1,
+                decimals=0,
+                field="grain.size",
+                default=develop.DEFAULT_GRAIN_SIZE,
+            ),
+        }
+
         self._heading(layout, "CROP & ROTATE")
         row = QHBoxLayout()
         self.crop_button = QPushButton("Crop")
@@ -506,6 +545,10 @@ class DevelopView(QWidget):
             return params.with_changes(basic=replace(params.basic, **{field: value}))
         if field in develop.COLOUR_FIELDS:
             return params.with_changes(colour=replace(params.colour, **{field: value}))
+        if field.startswith("vignette."):
+            return params.with_changes(vignette=replace(params.vignette, **{field[9:]: value}))
+        if field.startswith("grain."):
+            return params.with_changes(grain=replace(params.grain, **{field[6:]: value}))
         if field.startswith("hsl."):
             band = self._chosen(self.band_group)
             changed = replace(getattr(params.hsl, band), **{field[4:]: value})
@@ -532,6 +575,10 @@ class DevelopView(QWidget):
         self.matte_black.set_value(params.matte.black)
         self.matte_white.set_value(params.matte.white)
         self.matte_desaturation.set_value(params.matte.shadow_desaturation)
+        for name, slider in self.vignette.items():
+            slider.set_value(getattr(params.vignette, name))
+        for name, slider in self.grain.items():
+            slider.set_value(getattr(params.grain, name))
         self.straighten.set_value(params.straighten)
         self._show_curve()
         self.image.set_crop(params.crop)

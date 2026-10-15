@@ -10,10 +10,12 @@ from lumina.core.edit.params import (
     Crop,
     Curves,
     Grading,
+    Grain,
     Hsl,
     Matte,
     NewerParams,
     Params,
+    Vignette,
     Wheel,
 )
 
@@ -26,6 +28,8 @@ def edited():
         basic=Basic(contrast=20, highlights=-60, shadows=35, whites=-10, blacks=5),
         colour=Colour(vibrance=30, saturation=-15),
         hsl=Hsl(red=Band(hue=-20, saturation=40), blue=Band(luminance=-60)),
+        vignette=Vignette(amount=-45, midpoint=35, feather=60),
+        grain=Grain(amount=25, size=70),
         grading=Grading(
             shadows=Wheel(hue=230, saturation=40, luminance=-10),
             highlights=Wheel(hue=40, saturation=25),
@@ -255,3 +259,41 @@ def test_a_preset_can_keep_the_hsl_bands_and_grading():
     applied = params.apply_preset(Params(), params.preset(look, ["hsl", "grading"]))
 
     assert applied == Params(hsl=look.hsl, grading=look.grading)
+
+
+def test_a_version_5_edit_gets_the_effects_off():
+    stored = {"version": 5, "exposure": 0.5, "hsl": {"red": {"hue": 10}}}
+
+    edit = params.from_dict(stored)
+
+    assert edit == Params(exposure=0.5, hsl=Hsl(red=Band(hue=10)))
+    assert edit.vignette.is_identity() and edit.grain.is_identity()
+    assert edit.vignette.midpoint == params.DEFAULT_MIDPOINT
+    assert edit.grain.size == params.DEFAULT_GRAIN_SIZE
+
+
+def test_the_effects_are_checked():
+    edit = params.from_dict(
+        {
+            "vignette": {"amount": -900, "midpoint": "far", "feather": 400},
+            "grain": {"amount": -5, "size": None},
+        }
+    )
+
+    assert edit.vignette == Vignette(amount=params.VIGNETTE[0], feather=params.PERCENT[1])
+    assert edit.grain == Grain(amount=0.0)
+
+
+def test_an_effect_with_no_amount_is_no_effect_whatever_the_rest():
+    assert Vignette(midpoint=10, feather=90).is_identity()
+    assert not Vignette(amount=-1).is_identity()
+    assert Grain(size=90).is_identity()
+    assert not Grain(amount=1).is_identity()
+
+
+def test_a_preset_can_keep_the_effects():
+    look = edited()
+
+    applied = params.apply_preset(Params(), params.preset(look, ["vignette", "grain"]))
+
+    assert applied == Params(vignette=look.vignette, grain=look.grain)

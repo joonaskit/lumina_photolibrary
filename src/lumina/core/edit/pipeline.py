@@ -16,7 +16,8 @@ in [0, 1]) and every step works on linear floats until the output encoding:
 4. Colour: the matte's shadow desaturation, then vibrance and saturation, the HSL
    bands and colour grading, on sRGB-encoded values (see colour.py, hsl.py and
    grading.py).
-5. Output: sRGB encoding to 8 or 16 bits.
+5. Effects: the vignette, then the grain, on the cropped photo (see effects.py).
+6. Output: sRGB encoding to 8 or 16 bits.
 
 Highlights pushed past white by exposure or white balance are clipped at step 3:
 at white, or with the Basic controls in use, at basic.HEADROOM times white, where
@@ -27,7 +28,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from lumina.core.edit import basic, colour, curves, grading, hsl
+from lumina.core.edit import basic, colour, curves, effects, grading, hsl
 
 # Entries of the tone LUT over linear [0, 1]
 TONE_SIZE = 65536
@@ -294,15 +295,15 @@ def render(image, params, bits=8, tile_rows=512):
     gains = gains / np.float32(tone_range(params))
     tone = None if _is_tone_identity(params) else tone_luts(params)
     desaturation = params.matte.shadow_desaturation
-    plan = _colour_plan(params)
+    plan = _colour_plan(params, (height, width))
     step = max(1, tile_rows or height)
     for start in range(0, height, step):
         tile = view[start : start + step].astype(np.float32) * gains
-        out[start : start + step] = _render_tile(tile, tone, desaturation, plan, bits)
+        out[start : start + step] = _render_tile(tile, tone, desaturation, plan, bits, start)
     return out
 
 
-def _render_tile(linear, tone, desaturation, plan, bits):
+def _render_tile(linear, tone, desaturation, plan, bits, first_row):
     np.clip(linear, 0.0, 1.0, out=linear)
     if bits == 8 and desaturation == 0 and plan is None:
         # One lookup per channel: tone and output together
@@ -328,34 +329,49 @@ def _render_tile(linear, tone, desaturation, plan, bits):
     np.clip(linear, 0.0, 1.0, out=linear)
     encoded = _lookup(linear, _encode_table())
     if plan is not None:
-        _adjust_colour(encoded, plan)
+        _adjust_colour(encoded, plan, first_row)
     encoded *= np.float32(255.0 if bits == 8 else 65535.0)
     encoded += np.float32(0.5)
     return encoded.astype(np.uint8 if bits == 8 else np.uint16)
 
 
-def _colour_plan(params):
-    """What the colour steps after the tone step will do, or None for nothing."""
+def _colour_plan(params, size):
+    """What the steps after the tone step will do to a photo `size` (height, width) as
+    rendered, or None for nothing."""
     vividness = (params.colour.vibrance, params.colour.saturation)
     bands = None if params.hsl.is_identity() else hsl.tables(params.hsl)
     graded = None if params.grading.is_identity() else grading.prepare(params.grading)
-    if not any(vividness) and bands is None and graded is None:
+    vignette = None if params.vignette.is_identity() else effects.prepare_vignette(params.vignette)
+    grain = None if params.grain.is_identity() else effects.prepare_grain(params.grain, size)
+    if (
+        not any(vividness)
+        and bands is None
+        and graded is None
+        and vignette is None
+        and grain is None
+    ):
         return None
-    return vividness, bands, graded
+    return vividness, bands, graded, vignette, grain, size
 
 
-def _adjust_colour(encoded, plan):
-    """The colour steps on `encoded` (sRGB-encoded floats), a few rows at a time so the
-    temporaries stay in the CPU cache."""
-    vividness, bands, graded = plan
+def _adjust_colour(encoded, plan, first_row):
+    """The colour steps and effects on `encoded` (sRGB-encoded floats, the rows of the
+    photo from `first_row`), a few rows at a time so the temporaries stay in the CPU
+    cache."""
+    vividness, bands, graded, vignette, grain, size = plan
     for start in range(0, len(encoded), colour.ROWS):
         rows = encoded[start : start + colour.ROWS]
+        row = first_row + start
         if any(vividness):
             colour.adjust_rows(rows, *vividness)
         if bands is not None:
             hsl.adjust_rows(rows, bands)
         if graded is not None:
             grading.adjust_rows(rows, graded)
+        if vignette is not None:
+            effects.vignette_rows(rows, row, size, vignette)
+        if grain is not None:
+            effects.grain_rows(rows, row, size, grain)
 
 
 def _desaturate_shadows(linear, amount):
