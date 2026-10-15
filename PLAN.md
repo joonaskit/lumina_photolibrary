@@ -189,6 +189,13 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 - **Next photo after flagging**: opt-in, from the same button, until there is a settings window (#13). In the viewer only; clearing a flag does not step on.
 - **Not yet:** flags in the Develop view, stars and colour labels, sidecars, a count per flag in the filter.
 
+**Viewer at 100 % (#15), for judging sharpness while culling.**
+
+- **Zoom** (`ui/image_view.py`, opt-in, so the Develop view's crop view is as before): a click switches between fitted and 100 % with the point clicked staying under the pointer (a single click, as Lightroom's loupe, rather than the double-click #15 first said); Z does the same at the middle. Ctrl and the wheel, or Ctrl+Plus and Minus, zoom in steps (25, 50, 100, 200, 400 %, as far as they are larger than fitted). A drag or the wheel moves the photo (Shift and the wheel sideways), stopping at its edges; a photo less wide or tall than the view stays in the middle that way. Escape goes back to fitted, then to the grid. 100 % is in screen pixels, drawn on whole pixels, so it is sharp; a test checks a one-pixel checkerboard.
+- **Comparing a burst**: the zoom and the place (as fractions of the photo) are kept when stepping, so the same detail of each frame shows. The grid opens a photo fitted.
+- **The full size**: the worker reports the photo's size in full with every image (`Pixels.full`), so 100 % is known before the full image is there. Zoomed past what the image shown has, the full one is fetched (newest wins): for a RAW file its embedded preview in full (a CR3's `PRVW`, 0.3 s on a 32 MP sample), for an edited photo the edit rendered from the full decode (1.3 s). Stepping while zoomed asks for the full size at once; the thumbnail shows meanwhile, and the status bar says "100 %, loading full size…". One full image is held at a time (about 130 MB at 32 MP); fitted, it is drawn from a copy made smaller once.
+- **Not yet:** zoom in the Develop view; fetching the next photo's full size ahead while zoomed. Noticed on the way: the viewer's 3840 px image of a CR3 takes longer (0.7 s) than its full preview (0.3 s), as the full JPEG is decoded and then made smaller; reading it at half scale (draft to 1/2, 3480 px) would be faster.
+
 ## Risks
 
 - Python render speed on 24–45 MP images: mitigated by proxy rendering and cached stages, GPU shader as fallback.

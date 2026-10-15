@@ -286,6 +286,17 @@ class MainWindow(QMainWindow):
         self.smaller_action = QAction("Smaller Thumbnails", self)
         self.smaller_action.setShortcuts([QKeySequence.StandardKey.ZoomOut])
         self.smaller_action.triggered.connect(lambda: self.step_grid_size(-1))
+        # The viewer's zoom: Z between fitted and 100 %, Ctrl+Plus and Minus in steps
+        self.zoom_action = QAction("Zoom to 100 %", self)
+        self.zoom_action.setShortcut(QKeySequence(Qt.Key.Key_Z))
+        self.zoom_action.triggered.connect(lambda: self.viewer.toggle_zoom())
+        self.zoom_in_action = QAction("Zoom In", self)
+        self.zoom_in_action.setShortcuts([QKeySequence.StandardKey.ZoomIn, QKeySequence("Ctrl+=")])
+        self.zoom_in_action.triggered.connect(lambda: self.viewer.zoom_in())
+        self.zoom_out_action = QAction("Zoom Out", self)
+        self.zoom_out_action.setShortcuts([QKeySequence.StandardKey.ZoomOut])
+        self.zoom_out_action.triggered.connect(lambda: self.viewer.zoom_out())
+        self.zoom_actions = (self.zoom_action, self.zoom_in_action, self.zoom_out_action)
         for action in (
             self.back_action,
             self.previous_action,
@@ -293,6 +304,7 @@ class MainWindow(QMainWindow):
             self.undo_action,
             self.redo_action,
             *self.flag_actions,
+            *self.zoom_actions,
         ):
             # Only while a photo is shown: in the grid the arrows move the selection.
             # The flags' keys are the grid's and the viewer's, not the search field's
@@ -417,10 +429,21 @@ class MainWindow(QMainWindow):
         return page
 
     def _make_viewer(self):
-        self.viewer = ImageView()
+        self.viewer = ImageView(zoomable=True)
         self.viewer.addActions(
-            [self.back_action, self.previous_action, self.next_action, *self.flag_actions]
+            [
+                self.back_action,
+                self.previous_action,
+                self.next_action,
+                *self.flag_actions,
+                *self.zoom_actions,
+            ]
         )
+        self.viewer.zoom_changed.connect(self._on_zoom_changed)
+        # The photo whose full size was asked for, so it is asked for once
+        self._full_requested = None
+        # What the status bar says of the zoom
+        self._zoom_shown = None
         return self.viewer
 
     def _draw_icons(self):
@@ -760,6 +783,7 @@ class MainWindow(QMainWindow):
 
     def show_grid(self):
         self.previews.cancel()
+        self.viewer.reset_zoom()
         if not self.service.folders():
             self._show_page(_EMPTY)
             return
@@ -776,6 +800,7 @@ class MainWindow(QMainWindow):
         if not 0 <= row < self.model.rowCount():
             return
         self._viewed_id = self.model.photo_id(row)
+        self._full_requested = None
         # Moved on: photos flagged out of the view leave it
         self.model.settle(self._viewed_id)
         row = self.model.row_of(self._viewed_id)
@@ -792,12 +817,35 @@ class MainWindow(QMainWindow):
         self.viewer.setFocus()
         self.title.setText(self.model.name(row))
         if path is not None:
-            # From the library, not the grid's rows: an edit just made may not be in them yet
-            edit = self.service.edit_json(self._viewed_id)
-            self.previews.request(path, self._viewer_side(), edit)
+            # Zoomed: the same place of this photo at full size, as the last one's
+            if self.viewer.is_zoomed():
+                self._request_full()
+            else:
+                self.previews.request(path, self._viewer_side(), self._viewed_edit())
         else:
             self.previews.cancel()
         self._update_status()
+
+    def _viewed_edit(self):
+        # From the library, not the grid's rows: an edit just made may not be in them yet
+        return self.service.edit_json(self._viewed_id)
+
+    def _request_full(self):
+        path = self._viewed_path()
+        if path is None or self._full_requested == self._viewed_id:
+            return
+        self._full_requested = self._viewed_id
+        self.previews.request(path, None, self._viewed_edit())
+
+    def _on_zoom_changed(self):
+        if self.pages.currentIndex() == _VIEWER and self.viewer.needs_full():
+            self._request_full()
+        # Not on every move of a drag: the status bar reads the library
+        if self._zoom_state() != self._zoom_shown:
+            self._update_status()
+
+    def _zoom_state(self):
+        return (self.viewer.is_zoomed(), self.viewer.zoom(), self.viewer.needs_full())
 
     def step(self, delta):
         row = self._viewed_row()
@@ -809,7 +857,11 @@ class MainWindow(QMainWindow):
             self.show_photo(row + delta)
 
     def go_back(self):
-        """Escape: cancel the crop, then out of the Develop view, then to the grid."""
+        """Escape: cancel the crop, then out of the Develop view; in the viewer back to
+        fitted, then to the grid."""
+        if self.pages.currentIndex() == _VIEWER and self.viewer.is_zoomed():
+            self.viewer.reset_zoom()
+            return
         if self.pages.currentIndex() == _DEVELOP:
             if self.develop.is_cropping():
                 self.develop.cancel_crop()
@@ -915,9 +967,10 @@ class MainWindow(QMainWindow):
         size = screen.size() * screen.devicePixelRatio()
         return min(VIEWER_MAX_SIDE, max(size.width(), size.height()))
 
-    def _on_preview_ready(self, path, image):
+    def _on_preview_ready(self, path, image, full):
         if self._viewed_path() == path:
-            self.viewer.set_image(image)
+            self.viewer.set_image(image, full)
+            self._on_zoom_changed()
 
     def _on_preview_failed(self, path, message):
         if self._viewed_path() == path:
@@ -952,6 +1005,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{name} — {APP_NAME}" if self.service.folders() else APP_NAME)
 
     def _update_status(self, *_args):
+        self._zoom_shown = self._zoom_state()
         count = self.model.rowCount()
         row = self._viewed_row()
         if not self.service.folders():
@@ -960,7 +1014,12 @@ class MainWindow(QMainWindow):
             details = describe_photo(self.service.photo_details(self._viewed_id))
             where = self.model.path(row) or f"{self.model.name(row)} (not connected)"
             flag = FLAG_NAMES.get(self.model.flag(row))
-            parts = (f"{row + 1} of {count}", flag, details, where)
+            zoom = None
+            if self.pages.currentIndex() == _VIEWER and self.viewer.is_zoomed():
+                zoom = f"{round(self.viewer.zoom() * 100)} %"
+                if self.viewer.needs_full():
+                    zoom += ", loading full size…"
+            parts = (f"{row + 1} of {count}", zoom, flag, details, where)
             text = "  ·  ".join(part for part in parts if part)
         else:
             text = f"{count} photo" + ("" if count == 1 else "s")

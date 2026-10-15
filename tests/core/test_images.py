@@ -105,3 +105,21 @@ def test_raw_and_image_names_are_recognised():
     assert images.is_photo("a.JPEG")
     assert raw.is_raw("x.cr3") and not raw.is_raw("x.jpg")
     assert not images.is_photo("notes.txt")
+
+
+def test_in_full_a_photo_keeps_its_size_and_says_it(tmp_path):
+    path = make_jpeg(tmp_path / "big.jpg", size=(1200, 600))
+
+    whole = images.load_pixels(path, None)
+    small = images.load_pixels(path, 300)
+
+    assert (whole.width, whole.height) == (1200, 600)
+    # What 100 % is, also when read smaller
+    assert whole.full == small.full == (1200, 600)
+
+
+def test_the_full_size_is_upright(tmp_path):
+    path = make_jpeg(tmp_path / "turned.jpg", size=(640, 320), orientation=6)
+
+    assert images.load_pixels(path, 100).full == (320, 640)
+    assert images.load_pixels(path, None).full == (320, 640)

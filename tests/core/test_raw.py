@@ -77,3 +77,15 @@ def test_reading_a_raw_file_leaves_it_as_it_was(tmp_path):
     raw.load_preview(make_dng(tmp_path / "plain.dng"))
 
     assert (hashlib.sha256(path.read_bytes()).hexdigest(), os.stat(path).st_mtime_ns) == before
+
+
+def test_a_raw_files_full_size_is_its_previews(tmp_path):
+    path = make_dng(tmp_path / "a.dng", preview="jpeg", preview_size=(480, 320))
+    turned = make_dng(tmp_path / "b.dng", preview="jpeg", preview_size=(480, 320), orientation=6)
+
+    small = images.load_pixels(path, 100)
+    whole = images.load_pixels(path, None)
+
+    assert (small.width, small.full) == (100, (480, 320))
+    assert (whole.width, whole.height, whole.full) == (480, 320, (480, 320))
+    assert images.load_pixels(turned, 100).full == (320, 480)

@@ -15,7 +15,7 @@ RAW_EXTENSIONS = frozenset(
     {".cr3", ".cr2", ".crw", ".nef", ".nrw", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef"}
 )
 
-_EXIF_ORIENTATION = 0x0112
+EXIF_ORIENTATION = 0x0112
 
 # LibRaw's `sizes.flip` as a turn of the image: 3 is half a turn, 5 a quarter turn
 # counter-clockwise and 6 a quarter turn clockwise. Pillow turns counter-clockwise.
@@ -42,6 +42,12 @@ def load_preview(path, max_side=None):
     The preview is JPEG on most cameras and a bitmap on some; a file with neither is
     decoded at half size. With `max_side`, a JPEG preview is decoded at the smallest
     scale that is still at least that large, which is much faster. Raises PhotoError."""
+    return load_preview_sized(path, max_side)[0]
+
+
+def load_preview_sized(path, max_side=None):
+    """`load_preview`, and the (width, height) of the preview upright at full size:
+    what the viewer shows at 100 %."""
     try:
         with rawpy.imread(str(path)) as raw:
             flip = raw.sizes.flip
@@ -51,9 +57,11 @@ def load_preview(path, max_side=None):
                 thumb = None
             if thumb is None:
                 # postprocess() turns the image by the file's flip itself
-                return Image.fromarray(raw.postprocess(half_size=True, use_camera_wb=True))
+                image = Image.fromarray(raw.postprocess(half_size=True, use_camera_wb=True))
+                return image, image.size
             if thumb.format == rawpy.ThumbFormat.BITMAP:
-                return apply_flip(Image.fromarray(thumb.data).convert("RGB"), flip)
+                image = apply_flip(Image.fromarray(thumb.data).convert("RGB"), flip)
+                return image, image.size
             return _jpeg_preview(thumb.data, flip, max_side)
     except (rawpy.LibRawError, OSError, ValueError) as error:
         raise PhotoError(path, f"cannot read RAW preview ({error})") from error
@@ -61,10 +69,19 @@ def load_preview(path, max_side=None):
 
 def _jpeg_preview(data, flip, max_side):
     image = Image.open(io.BytesIO(data))
+    # Before the draft, which makes it smaller
+    full = image.size
     if max_side:
         image.draft("RGB", (max_side, max_side))
     # Most cameras leave the orientation out of the preview and LibRaw has it; when the
     # preview has one of its own, that one is used, never both
-    if image.getexif().get(_EXIF_ORIENTATION, 1) != 1:
-        return ImageOps.exif_transpose(image).convert("RGB")
-    return apply_flip(image.convert("RGB"), flip)
+    orientation = image.getexif().get(EXIF_ORIENTATION, 1)
+    if orientation != 1:
+        return ImageOps.exif_transpose(image).convert("RGB"), upright_size(full, orientation)
+    turned = flip in (5, 6)
+    return apply_flip(image.convert("RGB"), flip), full[::-1] if turned else full
+
+
+def upright_size(size, orientation):
+    """(width, height) of an image of `size` turned by its EXIF `orientation`."""
+    return tuple(size[::-1]) if orientation in (5, 6, 7, 8) else tuple(size)
