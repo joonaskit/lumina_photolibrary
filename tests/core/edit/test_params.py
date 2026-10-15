@@ -3,7 +3,19 @@ import json
 import pytest
 
 from lumina.core.edit import params
-from lumina.core.edit.params import Basic, Colour, Crop, Curves, Matte, NewerParams, Params
+from lumina.core.edit.params import (
+    Band,
+    Basic,
+    Colour,
+    Crop,
+    Curves,
+    Grading,
+    Hsl,
+    Matte,
+    NewerParams,
+    Params,
+    Wheel,
+)
 
 
 def edited():
@@ -13,6 +25,13 @@ def edited():
         tint=-5.0,
         basic=Basic(contrast=20, highlights=-60, shadows=35, whites=-10, blacks=5),
         colour=Colour(vibrance=30, saturation=-15),
+        hsl=Hsl(red=Band(hue=-20, saturation=40), blue=Band(luminance=-60)),
+        grading=Grading(
+            shadows=Wheel(hue=230, saturation=40, luminance=-10),
+            highlights=Wheel(hue=40, saturation=25),
+            blending=70,
+            balance=-30,
+        ),
         curves=Curves(rgb=((0, 0), (0.5, 0.6), (1, 1)), blue=((0, 0.05), (1, 1))),
         matte=Matte(black=0.08, white=0.03, shadow_desaturation=0.4),
         rotate=1,
@@ -192,3 +211,47 @@ def test_a_preset_can_keep_the_colour_controls():
     applied = params.apply_preset(Params(), params.preset(look, ["colour"]))
 
     assert applied == Params(colour=look.colour)
+
+
+def test_a_version_4_edit_gets_the_hsl_bands_and_grading_at_their_defaults():
+    stored = {"version": 4, "exposure": 0.5, "colour": {"vibrance": 10}}
+
+    edit = params.from_dict(stored)
+
+    assert edit == Params(exposure=0.5, colour=Colour(vibrance=10))
+    assert edit.hsl.is_identity() and edit.grading.is_identity()
+    assert edit.grading.blending == params.DEFAULT_BLENDING
+
+
+def test_hsl_and_grading_are_checked():
+    edit = params.from_dict(
+        {
+            "hsl": {"red": {"hue": 900, "saturation": "lots"}, "blue": "no", "teal": {"hue": 5}},
+            "grading": {
+                "shadows": {"hue": -20, "saturation": 400, "luminance": -400},
+                "highlights": None,
+                "blending": 900,
+                "balance": "left",
+            },
+        }
+    )
+
+    assert edit.hsl == Hsl(red=Band(hue=params.HSL[1]))
+    assert edit.grading == Grading(
+        shadows=Wheel(hue=0.0, saturation=params.WHEEL[1], luminance=params.GRADING[0]),
+        blending=params.BLENDING[1],
+    )
+
+
+def test_a_grading_wheel_without_strength_is_no_grading_whatever_its_hue():
+    assert Grading(shadows=Wheel(hue=200)).is_identity()
+    assert not Grading(shadows=Wheel(saturation=1)).is_identity()
+    assert not Grading(midtones=Wheel(luminance=-1)).is_identity()
+
+
+def test_a_preset_can_keep_the_hsl_bands_and_grading():
+    look = edited()
+
+    applied = params.apply_preset(Params(), params.preset(look, ["hsl", "grading"]))
+
+    assert applied == Params(hsl=look.hsl, grading=look.grading)

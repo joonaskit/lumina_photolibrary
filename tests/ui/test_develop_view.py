@@ -5,12 +5,13 @@ from conftest import TIMEOUT
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QMessageBox
 
-from lumina.qt_models.develop import Basic, Colour, Crop, Params
+from lumina.qt_models.develop import Band, Basic, Colour, Crop, Grading, Hsl, Params, Wheel
 from lumina.ui import develop_view
 from lumina.ui.controls import ValueSlider
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.main_window import MainWindow
+from lumina.ui.preset_dialog import PresetDialog
 
 
 @pytest.fixture
@@ -426,8 +427,7 @@ def test_the_basic_sliders_commit_their_control_and_show_the_edit(qtbot, window)
 def test_a_saved_preset_keeps_the_basic_controls(qtbot, window, monkeypatch):
     open_editor(qtbot, window)
     window.session.commit(Params(exposure=1.0, basic=Basic(shadows=30, blacks=-20)))
-    monkeypatch.setattr(develop_view.QInputDialog, "getText", lambda *a, **k: ("Lifted", True))
-    window.develop.save_preset()
+    save_preset_as(monkeypatch, window, "Lifted")
     window.session.commit(Params())
 
     window.session.apply_preset("Lifted")
@@ -454,10 +454,173 @@ def test_the_colour_sliders_commit_their_control_and_show_the_edit(qtbot, window
 def test_a_saved_preset_keeps_the_colour_controls(qtbot, window, monkeypatch):
     open_editor(qtbot, window)
     window.session.commit(Params(exposure=1.0, colour=Colour(vibrance=40, saturation=-10)))
-    monkeypatch.setattr(develop_view.QInputDialog, "getText", lambda *a, **k: ("Vivid", True))
-    window.develop.save_preset()
+    save_preset_as(monkeypatch, window, "Vivid")
     window.session.commit(Params())
 
     window.session.apply_preset("Vivid")
 
     assert window.session.params == Params(colour=Colour(vibrance=40, saturation=-10))
+
+
+def drag(slider, value):
+    slider.slider.setSliderDown(True)
+    slider.slider.setValue(value)
+    slider.slider.setSliderDown(False)
+
+
+def save_preset_as(monkeypatch, window, name, sections=None):
+    """Save the edit as a preset with the dialog filled in (with `sections` ticked, or
+    as it opens) and Save pressed."""
+
+    def fill_in(dialog):
+        dialog.name_edit.setText(name)
+        if sections is not None:
+            dialog.set_sections(sections)
+        dialog.save_button.click()
+        return dialog.result()
+
+    monkeypatch.setattr(PresetDialog, "exec", fill_in)
+    window.develop.save_preset()
+
+
+def settled(qtbot, window):
+    # The saves of the edits have refreshed the grid: nothing is left to arrive when the
+    # window and its database are closed
+    qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
+
+
+def choose(group, name):
+    for button in group.buttons():
+        if button.property("choice") == name:
+            button.click()
+            return
+    raise AssertionError(name)
+
+
+def test_the_hsl_sliders_work_on_the_band_chosen(qtbot, window):
+    open_editor(qtbot, window)
+    drag(window.develop.hsl["saturation"], -30)
+    assert window.session.params.hsl == Hsl(red=Band(saturation=-30))
+
+    choose(window.develop.band_group, "blue")
+    # The sliders show the band now chosen, which has nothing yet
+    assert window.develop.hsl["saturation"].value() == 0
+    drag(window.develop.hsl["hue"], 40)
+    drag(window.develop.hsl["luminance"], -15)
+
+    assert window.session.params.hsl == Hsl(
+        red=Band(saturation=-30), blue=Band(hue=40, luminance=-15)
+    )
+    choose(window.develop.band_group, "red")
+    assert window.develop.hsl["saturation"].value() == -30
+    assert window.develop.hsl["hue"].value() == 0
+    window.undo_action.trigger()
+    window.undo_action.trigger()
+    assert window.develop.hsl["hue"].value() == 0
+    assert window.session.params.hsl == Hsl(red=Band(saturation=-30))
+    settled(qtbot, window)
+
+
+def test_the_grading_sliders_work_on_the_range_chosen_and_show_the_edit(qtbot, window):
+    open_editor(qtbot, window)
+    assert window.develop.blending.value() == 50
+    drag(window.develop.wheel["hue"], 220)
+    drag(window.develop.wheel["saturation"], 35)
+    choose(window.develop.range_group, "highlights")
+    drag(window.develop.wheel["luminance"], 20)
+    drag(window.develop.blending, 80)
+    drag(window.develop.balance, -25)
+
+    assert window.session.params.grading == Grading(
+        shadows=Wheel(hue=220, saturation=35),
+        highlights=Wheel(luminance=20),
+        blending=80,
+        balance=-25,
+    )
+    assert window.develop.wheel["hue"].value_label.text() == "0°"
+    choose(window.develop.range_group, "shadows")
+    assert window.develop.wheel["hue"].value() == 220
+    assert window.develop.wheel["hue"].value_label.text() == "220°"
+    assert window.develop.blending.value() == 80
+    settled(qtbot, window)
+
+
+def test_a_saved_preset_keeps_the_hsl_bands_and_grading(qtbot, window, monkeypatch):
+    open_editor(qtbot, window)
+    look = Params(
+        hsl=Hsl(green=Band(hue=-30)), grading=Grading(midtones=Wheel(hue=30, saturation=20))
+    )
+    window.session.commit(look.with_changes(exposure=1.0))
+    save_preset_as(monkeypatch, window, "Graded")
+    window.session.commit(Params())
+
+    window.session.apply_preset("Graded")
+
+    assert window.session.params == look
+
+
+def test_each_band_button_is_marked_with_its_colour(qtbot, window):
+    open_editor(qtbot, window)
+    buttons = window.develop.band_group.buttons()
+
+    hues = [round(button.colour.hueF() * 360) for button in buttons]
+
+    assert hues == [0, 30, 60, 120, 180, 240, 270, 300]
+    assert all(button.colour.isValid() for button in buttons)
+    # The grading ranges have no colour of their own
+    assert all(button.colour is None for button in window.develop.range_group.buttons())
+    window.develop.grab()
+
+
+def test_the_preset_dialog_keeps_what_is_ticked_and_the_choice_next_time(
+    qtbot, window, monkeypatch
+):
+    open_editor(qtbot, window)
+    look = Params(
+        exposure=1.0,
+        temperature=20,
+        colour=Colour(vibrance=30),
+        crop=Crop(left=0.1),
+        hsl=Hsl(red=Band(hue=10)),
+    )
+    window.session.commit(look)
+
+    save_preset_as(monkeypatch, window, "Exposure and crop", ["exposure", "crop"])
+    window.session.commit(Params())
+    window.session.apply_preset("Exposure and crop")
+
+    assert window.session.params == Params(exposure=1.0, crop=Crop(left=0.1))
+    # The next dialog starts with the same parts ticked
+    dialog = PresetDialog()
+    qtbot.addWidget(dialog)
+    assert dialog.sections() == ["exposure", "crop"]
+    settled(qtbot, window)
+
+
+def test_the_preset_dialog_starts_with_the_look_and_not_the_framing(qtbot):
+    dialog = PresetDialog()
+    qtbot.addWidget(dialog)
+
+    assert dialog.sections() == [
+        "white_balance",
+        "basic",
+        "colour",
+        "hsl",
+        "grading",
+        "curves",
+        "matte",
+    ]
+
+
+def test_the_preset_dialog_needs_a_name_and_a_part_and_says_when_it_replaces(qtbot):
+    dialog = PresetDialog(["Warm"])
+    qtbot.addWidget(dialog)
+    assert not dialog.save_button.isEnabled()
+
+    dialog.name_edit.setText("  Cool ")
+    assert dialog.save_button.isEnabled() and dialog.name() == "Cool"
+    assert dialog.save_button.text() == "Save"
+    dialog.name_edit.setText("warm")
+    assert dialog.save_button.text() == "Replace"
+    dialog.set_sections([])
+    assert not dialog.save_button.isEnabled()

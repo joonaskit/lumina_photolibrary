@@ -95,6 +95,19 @@ def make_service(tmp_path, mounts, qtbot):
             service.future.result(timeout=TIMEOUT / 1000)
 
 
+@pytest.fixture(autouse=True)
+def windows_closed_before_services(qtbot, make_service):
+    """Windows are closed, and the results workers have delivered handled, while the
+    services' databases are still open. Set up after `make_service`, so torn down
+    before it: a result arriving after the database is closed raises in the event loop."""
+    yield
+    from PySide6.QtWidgets import QApplication
+
+    for widget in QApplication.topLevelWidgets():
+        widget.close()
+    qtbot.wait(20)
+
+
 @pytest.fixture
 def service(make_service):
     return make_service()

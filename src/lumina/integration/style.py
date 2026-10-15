@@ -377,6 +377,9 @@ def _stylesheet():
         }}
         QToolButton#segment:hover {{ background: {hover}; }}
         QToolButton#segment:checked {{ background: {selected}; }}
+        /* A segment with a colour of its own shows it chosen by filling with it (drawn
+           by the button), not with the selection colour */
+        QToolButton#segment[tinted="true"]:checked {{ background: {raised}; }}
         /* A segment with a menu: its icon says so, no arrow on top of it */
         QToolButton#segment::menu-indicator {{ image: none; width: 0; }}
 

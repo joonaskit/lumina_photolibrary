@@ -16,13 +16,19 @@ from dataclasses import dataclass, field, replace
 
 from lumina.core.edit import curves
 
-VERSION = 4
+VERSION = 5
 
 # Ranges, in the units the pipeline uses
 EXPOSURE = (-5.0, 5.0)  # stops
 WARMTH = (-100.0, 100.0)  # see pipeline.white_balance_gains
 BASIC = (-100.0, 100.0)  # contrast, highlights, shadows, whites, blacks: see basic.py
 COLOUR = (-100.0, 100.0)  # vibrance, saturation: see colour.py
+HSL = (-100.0, 100.0)  # a band's hue, saturation, luminance: see hsl.py
+HUE = (0.0, 360.0)  # degrees: a grading wheel's hue
+WHEEL = (0.0, 100.0)  # a grading wheel's saturation
+GRADING = (-100.0, 100.0)  # a grading wheel's luminance, and the balance
+BLENDING = (0.0, 100.0)  # how softly the three ranges meet: see grading.py
+DEFAULT_BLENDING = 50.0
 MATTE_BLACK = (0.0, 0.5)  # how far black is raised, as a share of white
 MATTE_WHITE = (0.0, 0.5)  # how far white is lowered
 DESATURATION = (0.0, 1.0)
@@ -30,6 +36,11 @@ STRAIGHTEN = (-45.0, 45.0)  # degrees, clockwise
 CHANNELS = ("rgb", "red", "green", "blue")
 BASIC_FIELDS = ("contrast", "highlights", "shadows", "whites", "blacks")
 COLOUR_FIELDS = ("vibrance", "saturation")
+# From red round the hue circle: the HSL panel's eight bands
+BANDS = ("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta")
+BAND_FIELDS = ("hue", "saturation", "luminance")
+RANGES = ("shadows", "midtones", "highlights")
+WHEEL_FIELDS = ("hue", "saturation", "luminance")
 
 
 class NewerParams(Exception):
@@ -58,6 +69,60 @@ class Colour:
 
     def is_identity(self):
         return self == Colour()
+
+
+@dataclass(frozen=True)
+class Band:
+    # One colour band of the HSL panel, -100 to 100 each: hue moves the colour towards
+    # its neighbours on the hue circle, saturation and luminance as they say
+    hue: float = 0.0
+    saturation: float = 0.0
+    luminance: float = 0.0
+
+    def is_identity(self):
+        return self == Band()
+
+
+@dataclass(frozen=True)
+class Hsl:
+    red: Band = field(default_factory=Band)
+    orange: Band = field(default_factory=Band)
+    yellow: Band = field(default_factory=Band)
+    green: Band = field(default_factory=Band)
+    aqua: Band = field(default_factory=Band)
+    blue: Band = field(default_factory=Band)
+    purple: Band = field(default_factory=Band)
+    magenta: Band = field(default_factory=Band)
+
+    def is_identity(self):
+        return self == Hsl()
+
+
+@dataclass(frozen=True)
+class Wheel:
+    # A colour grading wheel: the tint's hue (degrees) and strength (0 to 100), and
+    # how much lighter or darker its range gets (-100 to 100)
+    hue: float = 0.0
+    saturation: float = 0.0
+    luminance: float = 0.0
+
+    def is_identity(self):
+        # With no strength there is no tint, whatever the hue
+        return self.saturation == 0 and self.luminance == 0
+
+
+@dataclass(frozen=True)
+class Grading:
+    shadows: Wheel = field(default_factory=Wheel)
+    midtones: Wheel = field(default_factory=Wheel)
+    highlights: Wheel = field(default_factory=Wheel)
+    # How softly the ranges meet, and where: positive gives more of the photo to the
+    # highlights, negative to the shadows
+    blending: float = DEFAULT_BLENDING
+    balance: float = 0.0
+
+    def is_identity(self):
+        return all(getattr(self, name).is_identity() for name in RANGES)
 
 
 @dataclass(frozen=True)
@@ -102,6 +167,8 @@ class Params:
     tint: float = 0.0
     basic: Basic = field(default_factory=Basic)
     colour: Colour = field(default_factory=Colour)
+    hsl: Hsl = field(default_factory=Hsl)
+    grading: Grading = field(default_factory=Grading)
     curves: Curves = field(default_factory=Curves)
     matte: Matte = field(default_factory=Matte)
     # Quarter turns clockwise, 0 to 3; then mirrored left to right and top to bottom;
@@ -122,6 +189,21 @@ class Params:
             "white_balance": {"temperature": float(self.temperature), "tint": float(self.tint)},
             "basic": {name: float(getattr(self.basic, name)) for name in BASIC_FIELDS},
             "colour": {name: float(getattr(self.colour, name)) for name in COLOUR_FIELDS},
+            "hsl": {
+                band: {name: float(getattr(getattr(self.hsl, band), name)) for name in BAND_FIELDS}
+                for band in BANDS
+            },
+            "grading": {
+                **{
+                    name: {
+                        field_: float(getattr(getattr(self.grading, name), field_))
+                        for field_ in WHEEL_FIELDS
+                    }
+                    for name in RANGES
+                },
+                "blending": float(self.grading.blending),
+                "balance": float(self.grading.balance),
+            },
             "curves": {name: [list(p) for p in getattr(self.curves, name)] for name in CHANNELS},
             "matte": {
                 "black": float(self.matte.black),
@@ -204,6 +286,8 @@ def from_dict(data):
     wb = _section(data, "white_balance")
     basic = _section(data, "basic")
     colour = _section(data, "colour")
+    hsl = _section(data, "hsl")
+    grading = _section(data, "grading")
     curve_data = _section(data, "curves")
     matte = _section(data, "matte")
     crop = _section(data, "crop")
@@ -222,6 +306,29 @@ def from_dict(data):
         tint=_number(wb.get("tint"), 0.0, WARMTH),
         basic=Basic(**{name: _number(basic.get(name), 0.0, BASIC) for name in BASIC_FIELDS}),
         colour=Colour(**{name: _number(colour.get(name), 0.0, COLOUR) for name in COLOUR_FIELDS}),
+        hsl=Hsl(
+            **{
+                band: Band(
+                    **{
+                        name: _number(_section(hsl, band).get(name), 0.0, HSL)
+                        for name in BAND_FIELDS
+                    }
+                )
+                for band in BANDS
+            }
+        ),
+        grading=Grading(
+            **{
+                name: Wheel(
+                    hue=_number(_section(grading, name).get("hue"), 0.0, HUE),
+                    saturation=_number(_section(grading, name).get("saturation"), 0.0, WHEEL),
+                    luminance=_number(_section(grading, name).get("luminance"), 0.0, GRADING),
+                )
+                for name in RANGES
+            },
+            blending=_number(grading.get("blending"), DEFAULT_BLENDING, BLENDING),
+            balance=_number(grading.get("balance"), 0.0, GRADING),
+        ),
         curves=Curves(**{name: curves.normalize(curve_data.get(name)) for name in CHANNELS}),
         matte=Matte(
             black=_number(matte.get("black"), 0.0, MATTE_BLACK),
@@ -254,7 +361,20 @@ def _to_4(data):
     return {"colour": {name: 0.0 for name in COLOUR_FIELDS}, **data}
 
 
-_MIGRATIONS = {1: _to_2, 2: _to_3, 3: _to_4}
+def _to_5(data):
+    # Version 5 added the HSL bands and colour grading: all at zero, which changes nothing
+    return {
+        "hsl": {band: {name: 0.0 for name in BAND_FIELDS} for band in BANDS},
+        "grading": {
+            **{name: {field_: 0.0 for field_ in WHEEL_FIELDS} for name in RANGES},
+            "blending": DEFAULT_BLENDING,
+            "balance": 0.0,
+        },
+        **data,
+    }
+
+
+_MIGRATIONS = {1: _to_2, 2: _to_3, 3: _to_4, 4: _to_5}
 
 
 def migrate(data):
@@ -293,6 +413,8 @@ SECTIONS = (
     "white_balance",
     "basic",
     "colour",
+    "hsl",
+    "grading",
     "curves",
     "matte",
     "rotate",

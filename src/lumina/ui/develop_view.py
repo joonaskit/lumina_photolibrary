@@ -9,10 +9,11 @@ and edges; dragging inside it moves it.
 from dataclasses import replace
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QKeySequence, QPainterPath, QPen
+from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -32,6 +33,7 @@ from lumina.qt_models.develop import Crop, Curves, Matte
 from lumina.ui.controls import ValueSlider
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.image_view import ImageView
+from lumina.ui.preset_dialog import PresetDialog
 
 PANEL_WIDTH = 320
 # The handles' size and how near the pointer must be to take one, unscaled
@@ -40,6 +42,45 @@ _GRAB = 12
 # The smallest crop, as a share of the photo
 _MIN_CROP = 0.02
 _CHANNELS = (("rgb", "RGB"), ("red", "R"), ("green", "G"), ("blue", "B"))
+_BANDS = tuple(zip(develop.BANDS, "ROYGABPM", strict=True))
+# The colour of a band's button border: its hue, as the band acts on it, in the middle
+# of the range of strengths. A hue is the band's meaning, not a theme colour
+_BAND_COLOUR = (0.65, 0.9)
+# How much of its colour fills the band button that is chosen
+_TINT = 0.45
+_RANGES = tuple((name, name.capitalize()) for name in develop.RANGES)
+
+
+class _Segment(QToolButton):
+    """A segment of a row of choices. With a `colour` its border is drawn in it, and
+    the button chosen is filled with it."""
+
+    def __init__(self, colour=None, parent=None):
+        super().__init__(parent)
+        self.colour = colour
+        self.setProperty("tinted", colour is not None)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.colour is None:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(self.colour)
+        pen.setWidthF(style.px(2))
+        painter.setPen(pen)
+        if self.isChecked():
+            fill = QColor(self.colour)
+            fill.setAlphaF(_TINT)
+            painter.setBrush(fill)
+        else:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+        # Inside the button, the line's width within its edge
+        inset = pen.widthF() / 2
+        radius = style.radius("small")
+        painter.drawRoundedRect(
+            QRectF(self.rect()).adjusted(inset, inset, -inset, -inset), radius, radius
+        )
 
 
 class CropImageView(ImageView):
@@ -277,6 +318,48 @@ class DevelopView(QWidget):
             for name in develop.COLOUR_FIELDS
         }
 
+        self._heading(layout, "HSL")
+        colours = {
+            name: QColor.fromHsvF(hue / 360.0, *_BAND_COLOUR)
+            for name, hue in develop.BAND_HUES.items()
+        }
+        self.band_group = self._segments(layout, _BANDS, self._show_mixers, colours)
+        # Hue, Saturation, Luminance of the band chosen above
+        self.hsl = {
+            name: self._slider(
+                layout, name.capitalize(), *develop.HSL, step=1, decimals=0, field=f"hsl.{name}"
+            )
+            for name in develop.BAND_FIELDS
+        }
+
+        self._heading(layout, "COLOUR GRADING")
+        self.range_group = self._segments(layout, _RANGES, self._show_mixers)
+        # Hue (a tint's direction), Saturation (its strength), Luminance of the range
+        self.wheel = {
+            name: self._slider(
+                layout,
+                name.capitalize(),
+                *{"hue": develop.HUE, "saturation": develop.WHEEL}.get(name, develop.GRADING),
+                step=1,
+                decimals=0,
+                unit="°" if name == "hue" else "",
+                field=f"grading.{name}",
+            )
+            for name in develop.WHEEL_FIELDS
+        }
+        self.blending = self._slider(
+            layout,
+            "Blending",
+            *develop.BLENDING,
+            step=1,
+            decimals=0,
+            field="grading.blending",
+            default=develop.DEFAULT_BLENDING,
+        )
+        self.balance = self._slider(
+            layout, "Balance", *develop.GRADING, step=1, decimals=0, field="grading.balance"
+        )
+
         self._heading(layout, "TONE CURVE")
         channels = QHBoxLayout()
         channels.setSpacing(style.px(4))
@@ -373,8 +456,36 @@ class DevelopView(QWidget):
         layout.addSpacing(style.px(4))
         layout.addWidget(heading)
 
-    def _slider(self, layout, title, low, high, step=0.01, decimals=2, unit="", field=None):
-        slider = ValueSlider(title, low, high, 0.0, step=step, decimals=decimals, unit=unit)
+    def _segments(self, layout, choices, slot, colours=None):
+        """A row of buttons, one chosen at a time: (name, label) each, marked with
+        `colours[name]` if given. The chosen name is `_chosen(group)`; `slot` is called
+        when the choice is clicked."""
+        row = QHBoxLayout()
+        row.setSpacing(style.px(4))
+        group = QButtonGroup(self)
+        for name, label in choices:
+            button = _Segment((colours or {}).get(name))
+            button.setObjectName("segment")
+            button.setText(label)
+            button.setToolTip(name.capitalize())
+            button.setCheckable(True)
+            button.setProperty("choice", name)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            group.addButton(button)
+            row.addWidget(button)
+        group.buttons()[0].setChecked(True)
+        group.buttonClicked.connect(lambda _button: slot())
+        layout.addLayout(row)
+        return group
+
+    @staticmethod
+    def _chosen(group):
+        return group.checkedButton().property("choice")
+
+    def _slider(
+        self, layout, title, low, high, step=0.01, decimals=2, unit="", field=None, default=0.0
+    ):
+        slider = ValueSlider(title, low, high, default, step=step, decimals=decimals, unit=unit)
         slider.moved.connect(lambda value: self.session.preview(self._with(field, value)))
         slider.committed.connect(lambda value: self.session.commit(self._with(field, value)))
         layout.addWidget(slider)
@@ -395,6 +506,16 @@ class DevelopView(QWidget):
             return params.with_changes(basic=replace(params.basic, **{field: value}))
         if field in develop.COLOUR_FIELDS:
             return params.with_changes(colour=replace(params.colour, **{field: value}))
+        if field.startswith("hsl."):
+            band = self._chosen(self.band_group)
+            changed = replace(getattr(params.hsl, band), **{field[4:]: value})
+            return params.with_changes(hsl=replace(params.hsl, **{band: changed}))
+        if field in ("grading.blending", "grading.balance"):
+            return params.with_changes(grading=replace(params.grading, **{field[8:]: value}))
+        if field.startswith("grading."):
+            name = self._chosen(self.range_group)
+            changed = replace(getattr(params.grading, name), **{field[8:]: value})
+            return params.with_changes(grading=replace(params.grading, **{name: changed}))
         return params.with_changes(**{field: value})
 
     # Showing the edit
@@ -407,12 +528,25 @@ class DevelopView(QWidget):
         self.tint.set_value(params.tint)
         for name, slider in self.colour.items():
             slider.set_value(getattr(params.colour, name))
+        self._show_mixers(params)
         self.matte_black.set_value(params.matte.black)
         self.matte_white.set_value(params.matte.white)
         self.matte_desaturation.set_value(params.matte.shadow_desaturation)
         self.straighten.set_value(params.straighten)
         self._show_curve()
         self.image.set_crop(params.crop)
+
+    def _show_mixers(self, params=None):
+        """The sliders of the band and the range chosen, and blending and balance."""
+        params = params if isinstance(params, develop.Params) else self.session.params
+        band = getattr(params.hsl, self._chosen(self.band_group))
+        for name, slider in self.hsl.items():
+            slider.set_value(getattr(band, name))
+        wheel = getattr(params.grading, self._chosen(self.range_group))
+        for name, slider in self.wheel.items():
+            slider.set_value(getattr(wheel, name))
+        self.blending.set_value(params.grading.blending)
+        self.balance.set_value(params.grading.balance)
 
     def _channel(self):
         checked = self.channel_group.checkedButton()
@@ -507,15 +641,9 @@ class DevelopView(QWidget):
         self.presets.setCurrentIndex(0)
 
     def save_preset(self):
-        name, ok = QInputDialog.getText(
-            self,
-            "Save Preset",
-            "Name of the preset. It keeps the white balance, contrast, highlights, shadows,\n"
-            "whites, blacks, vibrance, saturation, tone curve and matte of this edit:",
-        )
-        name = name.strip()
-        if ok and name:
-            self.session.save_preset(name, ["white_balance", "basic", "colour", "curves", "matte"])
+        dialog = PresetDialog(self.session.presets(), self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.session.save_preset(dialog.name(), dialog.sections())
 
     def delete_preset(self):
         names = self.session.presets()
