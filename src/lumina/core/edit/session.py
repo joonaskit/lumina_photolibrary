@@ -59,7 +59,7 @@ def render(path, params_json, kind=PROXY, screen_side=2560):
         image = source.proxy
     else:
         image = _screen_image(source, screen_side)
-    pixels = pipeline.render(image, edit)
+    pixels = pipeline.render(image, edit, full=source.size())
     return Rendered(pixels.shape[1], pixels.shape[0], pixels.tobytes(), histogram(pixels), kind)
 
 

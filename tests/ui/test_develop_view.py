@@ -13,7 +13,10 @@ from lumina.qt_models.develop import (
     Grading,
     Grain,
     Hsl,
+    NoiseReduction,
     Params,
+    Presence,
+    Sharpening,
     Vignette,
     Wheel,
 )
@@ -616,6 +619,9 @@ def test_the_preset_dialog_starts_with_the_look_and_not_the_framing(qtbot):
     assert dialog.sections() == [
         "white_balance",
         "basic",
+        "presence",
+        "sharpening",
+        "noise",
         "colour",
         "hsl",
         "grading",
@@ -871,4 +877,67 @@ def test_the_original_goes_with_the_photo(qtbot, window):
     window.session.close()
 
     assert not window.session.is_before() and not window.develop.image.before
+    settled(qtbot, window)
+
+
+def test_the_presence_sliders_commit_their_control_and_show_the_edit(qtbot, window):
+    open_editor(qtbot, window)
+
+    drag(window.develop.presence["clarity"], 35)
+    drag(window.develop.presence["dehaze"], -20)
+
+    assert window.session.params == Params(presence=Presence(clarity=35, dehaze=-20))
+    assert window.develop.presence["clarity"].value_label.text() == "+35"
+    window.undo_action.trigger()
+    assert window.develop.presence["dehaze"].value() == 0
+    assert window.develop.presence["clarity"].value() == 35
+    settled(qtbot, window)
+
+
+def test_a_saved_preset_can_keep_the_presence(qtbot, window, monkeypatch):
+    open_editor(qtbot, window)
+    look = Params(presence=Presence(texture=20, clarity=30, dehaze=10))
+    window.session.commit(look.with_changes(exposure=1.0))
+    save_preset_as(monkeypatch, window, "Crisp", ["presence"])
+    window.session.commit(Params())
+
+    window.session.apply_preset("Crisp")
+
+    assert window.session.params == look
+    settled(qtbot, window)
+
+
+def test_the_sharpening_and_noise_reduction_sliders_commit_their_control(qtbot, window):
+    open_editor(qtbot, window)
+    assert window.develop.sharpening["radius"].value() == pytest.approx(1.0)
+    assert window.develop.sharpening["detail"].value() == 25
+    assert window.develop.noise["detail"].value() == 50
+
+    drag(window.develop.sharpening["amount"], 70)
+    drag(window.develop.sharpening["radius"], 15)
+    drag(window.develop.sharpening["masking"], 40)
+    drag(window.develop.noise["luminance"], 30)
+    drag(window.develop.noise["colour"], 55)
+
+    assert window.session.params == Params(
+        sharpening=Sharpening(amount=70, radius=1.5, masking=40),
+        noise=NoiseReduction(luminance=30, colour=55),
+    )
+    assert window.develop.sharpening["radius"].value_label.text() == "1.5 px"
+    window.undo_action.trigger()
+    assert window.develop.noise["colour"].value() == 0
+    assert window.develop.noise["luminance"].value() == 30
+    settled(qtbot, window)
+
+
+def test_a_saved_preset_can_keep_sharpening_and_noise_reduction(qtbot, window, monkeypatch):
+    open_editor(qtbot, window)
+    look = Params(sharpening=Sharpening(amount=50, radius=0.8), noise=NoiseReduction(luminance=20))
+    window.session.commit(look.with_changes(exposure=1.0))
+    save_preset_as(monkeypatch, window, "Clean", ["sharpening", "noise"])
+    window.session.commit(Params())
+
+    window.session.apply_preset("Clean")
+
+    assert window.session.params == look
     settled(qtbot, window)

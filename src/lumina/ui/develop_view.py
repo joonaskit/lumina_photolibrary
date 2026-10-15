@@ -380,6 +380,70 @@ class DevelopView(QWidget):
             )
             for name in develop.BASIC_FIELDS
         }
+        self._heading(layout, "PRESENCE")
+        # Texture, Clarity, Dehaze
+        self.presence = {
+            name: self._slider(
+                layout, name.capitalize(), *develop.PRESENCE, step=1, decimals=0, field=name
+            )
+            for name in develop.PRESENCE_FIELDS
+        }
+        self._heading(layout, "SHARPENING")
+        self.sharpening = {
+            "amount": self._slider(
+                layout,
+                "Amount",
+                *develop.SHARPEN_AMOUNT,
+                step=1,
+                decimals=0,
+                field="sharpening.amount",
+            ),
+            "radius": self._slider(
+                layout,
+                "Radius",
+                *develop.SHARPEN_RADIUS,
+                step=0.1,
+                decimals=1,
+                unit=" px",
+                field="sharpening.radius",
+                default=develop.DEFAULT_SHARPEN_RADIUS,
+            ),
+            "detail": self._slider(
+                layout,
+                "Detail",
+                *develop.PERCENT,
+                step=1,
+                decimals=0,
+                field="sharpening.detail",
+                default=develop.DEFAULT_SHARPEN_DETAIL,
+            ),
+            "masking": self._slider(
+                layout, "Masking", *develop.PERCENT, step=1, decimals=0, field="sharpening.masking"
+            ),
+        }
+        self._heading(layout, "NOISE REDUCTION")
+        self.noise = {
+            "luminance": self._slider(
+                layout,
+                "Luminance",
+                *develop.PERCENT,
+                step=1,
+                decimals=0,
+                field="noise.luminance",
+            ),
+            "detail": self._slider(
+                layout,
+                "Detail",
+                *develop.PERCENT,
+                step=1,
+                decimals=0,
+                field="noise.detail",
+                default=develop.DEFAULT_NOISE_DETAIL,
+            ),
+            "colour": self._slider(
+                layout, "Colour", *develop.PERCENT, step=1, decimals=0, field="noise.colour"
+            ),
+        }
         self._heading(layout, "WHITE BALANCE")
         self.temperature = self._slider(
             layout, "Temperature", *develop.WARMTH, step=1, decimals=0, field="temperature"
@@ -648,6 +712,12 @@ class DevelopView(QWidget):
             return params.with_changes(matte=Matte(**values))
         if field in develop.BASIC_FIELDS:
             return params.with_changes(basic=replace(params.basic, **{field: value}))
+        if field.startswith("sharpening."):
+            return params.with_changes(sharpening=replace(params.sharpening, **{field[11:]: value}))
+        if field.startswith("noise."):
+            return params.with_changes(noise=replace(params.noise, **{field[6:]: value}))
+        if field in develop.PRESENCE_FIELDS:
+            return params.with_changes(presence=replace(params.presence, **{field: value}))
         if field in develop.COLOUR_FIELDS:
             return params.with_changes(colour=replace(params.colour, **{field: value}))
         if field.startswith("vignette."):
@@ -672,6 +742,12 @@ class DevelopView(QWidget):
         self.exposure.set_value(params.exposure)
         for name, slider in self.basic.items():
             slider.set_value(getattr(params.basic, name))
+        for name, slider in self.presence.items():
+            slider.set_value(getattr(params.presence, name))
+        for name, slider in self.sharpening.items():
+            slider.set_value(getattr(params.sharpening, name))
+        for name, slider in self.noise.items():
+            slider.set_value(getattr(params.noise, name))
         self.temperature.set_value(params.temperature)
         self.tint.set_value(params.tint)
         for name, slider in self.colour.items():

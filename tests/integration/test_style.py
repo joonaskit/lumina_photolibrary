@@ -102,3 +102,31 @@ def test_menus_and_combo_box_lists_have_round_corners_that_show(qapp, qtbot):
         assert corner.alpha() == 0, type(popup).__name__
     combo.hidePopup()
     menu.close()
+
+
+def test_slider_handles_and_tracks_follow_the_roundness_of_the_theme(qapp, tmp_path):
+    def rules(radii):
+        """The slider's handle and groove rules under a theme with these corner radii."""
+        path = tmp_path / "theme.json"
+        path.write_text(json.dumps({"version": 1, "radius": radii}))
+        style.apply(qapp, theme.load_theme(path))
+        sheet = qapp.styleSheet()
+
+        def block(selector):
+            start = sheet.index(selector + " {")
+            return sheet[start : sheet.index("}", start)]
+
+        return block("QSlider::handle:horizontal"), block("QSlider::groove:horizontal")
+
+    try:
+        # The shell's default corners: a circle (the handle is 14 px), and a pill (4 px)
+        handle, groove = rules({"small": 6, "medium": 10, "large": 14})
+        assert "border-radius: 7px" in handle and "border-radius: 2px" in groove
+        # Squarer corners: a squarer handle, and a squarer track
+        handle, groove = rules({"small": 1, "medium": 3, "large": 4})
+        assert "border-radius: 3px" in handle and "border-radius: 1px" in groove
+        # Rounder corners never make it more than a circle
+        handle, groove = rules({"small": 20, "medium": 40, "large": 60})
+        assert "border-radius: 7px" in handle and "border-radius: 2px" in groove
+    finally:
+        style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))

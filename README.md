@@ -36,7 +36,7 @@ lumina ~/Pictures
 
 ## Stack
 
-Python 3.12+, PySide6 (Qt Widgets), rawpy/LibRaw, exiftool, numpy, ONNX Runtime, SQLite.
+Python 3.12+, PySide6 (Qt Widgets), rawpy/LibRaw, exiftool, numpy, OpenCV, ONNX Runtime, SQLite.
 
 ## How it works
 
