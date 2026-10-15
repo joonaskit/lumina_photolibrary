@@ -25,7 +25,27 @@ LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
 # Rows done at a time: small enough that the temporaries stay in the CPU cache, which
 # is most of the speed of a step that does little arithmetic per value
-_ROWS = 32
+ROWS = 32
+
+
+def _plane():
+    """A quarter turn in the plane of colours with no luma (the `d` that is a colour
+    less its luma: LUMA @ d is 0), as a matrix to apply to rows. Turning by an angle is
+    cos * d + sin * (d @ QUARTER). The turn goes the way hue grows: red to yellow."""
+    w = LUMA.astype(np.float64)
+    first, _second, third = (np.eye(3)[i] - w[i] for i in range(3))
+    q1 = first / np.linalg.norm(first)
+    other = third - (third @ q1) * q1
+    q2 = other / np.linalg.norm(other)
+    quarter = np.outer(q2, q1) - np.outer(q1, q2)  # acts on column vectors
+    # Red moves towards yellow when its green rises
+    if (quarter @ first)[1] < 0:
+        quarter = -quarter
+    return quarter.T.astype(np.float32)
+
+
+QUARTER = _plane()
+
 # How much of vibrance a skin tone keeps at the middle of the skin hues
 _SKIN_KEEP = 0.4
 # Share of red over blue taken by green, for the hues counted as skin: from a red
@@ -33,7 +53,7 @@ _SKIN_KEEP = 0.4
 _SKIN_EDGES = (0.05, 0.17, 0.75, 0.9)
 
 
-def _smoothstep(low, high, x):
+def smoothstep(low, high, x):
     t = np.clip((x - low) / (high - low), 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
 
@@ -42,11 +62,20 @@ def _skin(r, g, b):
     """1 for the hues of skin, 0 for the others, soft between."""
     t = (g - b) / np.maximum(r - b, np.float32(1e-6))
     low, rise, fall, high = _SKIN_EDGES
-    weight = _smoothstep(low, rise, t) * (1.0 - _smoothstep(fall, high, t))
+    weight = smoothstep(low, rise, t) * (1.0 - smoothstep(fall, high, t))
     return np.where((r >= g) & (g >= b), weight, np.float32(0.0))
 
 
-def _adjust_rows(encoded, vibrance, saturation):
+def room(away, luma):
+    """The largest factor the colours `away` (their distances from grey, rows x W x 3)
+    can be scaled by about their `luma` and stay in [0, 1]."""
+    top = np.maximum(np.maximum(away[..., 0], away[..., 1]), away[..., 2])
+    bottom = -np.minimum(np.minimum(away[..., 0], away[..., 1]), away[..., 2])
+    eps = np.float32(1e-6)
+    return np.minimum((1.0 - luma) / np.maximum(top, eps), luma / np.maximum(bottom, eps))
+
+
+def adjust_rows(encoded, vibrance, saturation):
     r, g, b = encoded[..., 0], encoded[..., 1], encoded[..., 2]
     luma = encoded @ LUMA
     high = np.maximum(np.maximum(r, g), b)
@@ -65,13 +94,3 @@ def _adjust_rows(encoded, vibrance, saturation):
         factor = np.minimum(factor, np.maximum(room, 1.0))
     encoded *= factor[..., None] if np.ndim(factor) else factor
     encoded += (luma * (1.0 - factor))[..., None]
-
-
-def adjust(encoded, vibrance, saturation):
-    """`encoded` (H x W x 3 float32, sRGB-encoded in [0, 1]) with vibrance and
-    saturation (-100 to 100) applied, in place. Colours stay in range, give or take
-    float rounding, which the caller's rounding to integers absorbs."""
-    if not vibrance and not saturation:
-        return
-    for start in range(0, len(encoded), _ROWS):
-        _adjust_rows(encoded[start : start + _ROWS], vibrance, saturation)

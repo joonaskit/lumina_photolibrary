@@ -21,6 +21,7 @@ from PySide6.QtGui import QImage
 
 from lumina.core.edit import curves as _curves
 from lumina.core.edit import export as _export
+from lumina.core.edit import hsl as _hsl
 from lumina.core.edit import params as _params
 from lumina.core.edit import session as _session
 from lumina.qt_models import workers
@@ -29,6 +30,10 @@ from lumina.qt_models import workers
 Params = _params.Params
 Basic = _params.Basic
 Colour = _params.Colour
+Band = _params.Band
+Hsl = _params.Hsl
+Wheel = _params.Wheel
+Grading = _params.Grading
 Curves = _params.Curves
 Matte = _params.Matte
 Crop = _params.Crop
@@ -40,6 +45,18 @@ BASIC = _params.BASIC
 BASIC_FIELDS = _params.BASIC_FIELDS
 COLOUR = _params.COLOUR
 COLOUR_FIELDS = _params.COLOUR_FIELDS
+HSL = _params.HSL
+HUE = _params.HUE
+WHEEL = _params.WHEEL
+GRADING = _params.GRADING
+BLENDING = _params.BLENDING
+DEFAULT_BLENDING = _params.DEFAULT_BLENDING
+BANDS = _params.BANDS
+# Where each band sits on the hue circle, in degrees: for showing its colour
+BAND_HUES = dict(zip(_params.BANDS, _hsl.CENTRES, strict=True))
+BAND_FIELDS = _params.BAND_FIELDS
+RANGES = _params.RANGES
+WHEEL_FIELDS = _params.WHEEL_FIELDS
 MATTE_BLACK = _params.MATTE_BLACK
 MATTE_WHITE = _params.MATTE_WHITE
 DESATURATION = _params.DESATURATION

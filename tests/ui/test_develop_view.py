@@ -5,7 +5,7 @@ from conftest import TIMEOUT
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QMessageBox
 
-from lumina.qt_models.develop import Basic, Colour, Crop, Params
+from lumina.qt_models.develop import Band, Basic, Colour, Crop, Grading, Hsl, Params, Wheel
 from lumina.ui import develop_view
 from lumina.ui.controls import ValueSlider
 from lumina.ui.curve_editor import CurveEditor
@@ -461,3 +461,99 @@ def test_a_saved_preset_keeps_the_colour_controls(qtbot, window, monkeypatch):
     window.session.apply_preset("Vivid")
 
     assert window.session.params == Params(colour=Colour(vibrance=40, saturation=-10))
+
+
+def drag(slider, value):
+    slider.slider.setSliderDown(True)
+    slider.slider.setValue(value)
+    slider.slider.setSliderDown(False)
+
+
+def settled(qtbot, window):
+    # The saves of the edits have refreshed the grid: nothing is left to arrive when the
+    # window and its database are closed
+    qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
+
+
+def choose(group, name):
+    for button in group.buttons():
+        if button.property("choice") == name:
+            button.click()
+            return
+    raise AssertionError(name)
+
+
+def test_the_hsl_sliders_work_on_the_band_chosen(qtbot, window):
+    open_editor(qtbot, window)
+    drag(window.develop.hsl["saturation"], -30)
+    assert window.session.params.hsl == Hsl(red=Band(saturation=-30))
+
+    choose(window.develop.band_group, "blue")
+    # The sliders show the band now chosen, which has nothing yet
+    assert window.develop.hsl["saturation"].value() == 0
+    drag(window.develop.hsl["hue"], 40)
+    drag(window.develop.hsl["luminance"], -15)
+
+    assert window.session.params.hsl == Hsl(
+        red=Band(saturation=-30), blue=Band(hue=40, luminance=-15)
+    )
+    choose(window.develop.band_group, "red")
+    assert window.develop.hsl["saturation"].value() == -30
+    assert window.develop.hsl["hue"].value() == 0
+    window.undo_action.trigger()
+    window.undo_action.trigger()
+    assert window.develop.hsl["hue"].value() == 0
+    assert window.session.params.hsl == Hsl(red=Band(saturation=-30))
+    settled(qtbot, window)
+
+
+def test_the_grading_sliders_work_on_the_range_chosen_and_show_the_edit(qtbot, window):
+    open_editor(qtbot, window)
+    assert window.develop.blending.value() == 50
+    drag(window.develop.wheel["hue"], 220)
+    drag(window.develop.wheel["saturation"], 35)
+    choose(window.develop.range_group, "highlights")
+    drag(window.develop.wheel["luminance"], 20)
+    drag(window.develop.blending, 80)
+    drag(window.develop.balance, -25)
+
+    assert window.session.params.grading == Grading(
+        shadows=Wheel(hue=220, saturation=35),
+        highlights=Wheel(luminance=20),
+        blending=80,
+        balance=-25,
+    )
+    assert window.develop.wheel["hue"].value_label.text() == "0°"
+    choose(window.develop.range_group, "shadows")
+    assert window.develop.wheel["hue"].value() == 220
+    assert window.develop.wheel["hue"].value_label.text() == "220°"
+    assert window.develop.blending.value() == 80
+    settled(qtbot, window)
+
+
+def test_a_saved_preset_keeps_the_hsl_bands_and_grading(qtbot, window, monkeypatch):
+    open_editor(qtbot, window)
+    look = Params(
+        hsl=Hsl(green=Band(hue=-30)), grading=Grading(midtones=Wheel(hue=30, saturation=20))
+    )
+    window.session.commit(look.with_changes(exposure=1.0))
+    monkeypatch.setattr(develop_view.QInputDialog, "getText", lambda *a, **k: ("Graded", True))
+    window.develop.save_preset()
+    window.session.commit(Params())
+
+    window.session.apply_preset("Graded")
+
+    assert window.session.params == look
+
+
+def test_each_band_button_is_marked_with_its_colour(qtbot, window):
+    open_editor(qtbot, window)
+    buttons = window.develop.band_group.buttons()
+
+    hues = [round(button.colour.hueF() * 360) for button in buttons]
+
+    assert hues == [0, 30, 60, 120, 180, 240, 270, 300]
+    assert all(button.colour.isValid() for button in buttons)
+    # The grading ranges have no colour of their own
+    assert all(button.colour is None for button in window.develop.range_group.buttons())
+    window.develop.grab()
