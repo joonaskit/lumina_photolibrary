@@ -1,5 +1,6 @@
 import json
 
+from PySide6.QtCore import QPoint
 from PySide6.QtGui import QPalette
 
 from lumina.integration import style, theme
@@ -128,5 +129,68 @@ def test_slider_handles_and_tracks_follow_the_roundness_of_the_theme(qapp, tmp_p
         # Rounder corners never make it more than a circle
         handle, groove = rules({"small": 20, "medium": 40, "large": 60})
         assert "border-radius: 7px" in handle and "border-radius: 2px" in groove
+    finally:
+        style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
+
+
+def test_buttons_and_boxes_are_rounded_whatever_the_density_and_corners(qapp, qtbot, tmp_path):
+    # A radius more than half a control's height is drawn square: the push buttons were
+    # square in the compact density, and the boxes too with the shell's rounder corners
+    from PySide6.QtWidgets import QComboBox, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget
+
+    def corners_are_round(radii, density):
+        path = tmp_path / "theme.json"
+        path.write_text(json.dumps({"version": 1, "radius": radii}))
+        style.set_density(density)
+        style.apply(qapp, theme.load_theme(path))
+        card = QWidget()
+        qtbot.addWidget(card)
+        layout = QVBoxLayout(card)
+        combo = QComboBox()
+        combo.addItem("Free")
+        controls = [QPushButton("Crop"), combo, QLineEdit("A field"), QSpinBox()]
+        for control in controls:
+            layout.addWidget(control)
+        card.resize(300, 200)
+        card.show()
+        qtbot.waitExposed(card)
+        shot = card.grab().toImage()
+        round_ = []
+        for control in controls:
+            corner = control.geometry().topLeft()
+            # Its fill, at the middle of its left edge, inside the border
+            middle = corner + QPoint(2, control.height() // 2)
+            round_.append(shot.pixelColor(corner) != shot.pixelColor(middle))
+        card.close()
+        return round_
+
+    try:
+        for density in ("comfortable", "compact"):
+            for radii in (
+                {"small": 6, "medium": 10, "large": 14},
+                {"small": 12, "medium": 20, "large": 28},
+            ):
+                assert corners_are_round(radii, density) == [True] * 4, (density, radii)
+    finally:
+        style.set_density("comfortable")
+        style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
+
+
+def test_buttons_follow_the_shells_corners_as_its_rows_do(qapp, tmp_path):
+    # The medium radius, as the sidebar's rows: rounder with the shell's Round corners
+    # than with its Default ones, not a pill at both
+    def button_radius(scale):
+        path = tmp_path / "theme.json"
+        radii = {"small": 6 * scale, "medium": 10 * scale, "large": 14 * scale}
+        path.write_text(json.dumps({"version": 1, "radius": radii}))
+        style.apply(qapp, theme.load_theme(path))
+        sheet = qapp.styleSheet()
+        start = sheet.index("QPushButton {")
+        block = sheet[start : sheet.index("}", start)]
+        return int(block.split("border-radius: ")[1].split("px")[0])
+
+    try:
+        assert button_radius(0.6) < button_radius(1.0) < button_radius(1.5)
+        assert button_radius(1.0) == style.radius("medium")
     finally:
         style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
