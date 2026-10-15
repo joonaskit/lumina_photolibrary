@@ -288,7 +288,7 @@ def test_the_develop_view_flags_the_photo_being_edited(qtbot, service, drive):
     settings.set_advance_after_flag(True)
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
         window.show_develop(0)
-    assert window.flagging.isVisible()
+    assert window.marking.isVisible()
 
     press(qtbot, window.develop, Qt.Key.Key_P)
     assert window.model.flag(0) == PICKED and window.pick_action.isChecked()

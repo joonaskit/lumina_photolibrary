@@ -46,6 +46,9 @@ class SearchField(QWidget):
         self.edit.setClearButtonEnabled(True)
         self.edit.setMinimumWidth(style.px(160))
         self.edit.setMaximumWidth(style.px(360))
+        # As tall and as round as the toolbar's cards beside it
+        self.edit.setFixedHeight(style.px(style.ROW_HEIGHT))
+        self.edit.setObjectName("row")
         self.edit.setPlaceholderText("Search photos, in any language")
         self.edit.setToolTip("Describe what is in the photo: “sunset over the sea”, “majakka”")
         self._glass = QAction(self.edit)

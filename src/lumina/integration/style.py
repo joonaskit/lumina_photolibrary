@@ -25,10 +25,20 @@ from lumina import APP_ID
 from lumina.integration import theme as theme_reader
 
 BASE_FONT_PX = 13
-# Height of a button in the toolbar's groups, and the space between a group's edge and
-# its buttons: filehouse's "comfortable" density
+# Height of a control, and the space between a toolbar group's edge and its buttons:
+# filehouse's "comfortable" density
 CONTROL_HEIGHT = 36
 GROUP_PADDING = 4
+# Everything in the toolbar and the filter row is this tall from edge to edge: a group's
+# card, the search field, the combos and the buttons beside them
+ROW_HEIGHT = CONTROL_HEIGHT
+
+
+def row_inner_height():
+    """The height of a button inside a group's card of ROW_HEIGHT: less its padding and
+    its 1 pixel border on each side. Scaled."""
+    return px(ROW_HEIGHT) - 2 * px(GROUP_PADDING) - 2
+
 
 # The kinds of widget a platform theme may give a font of its own
 _CLASS_FONTS = (
@@ -197,9 +207,13 @@ _ICON_SIZES = (16, 20, 24, 32)
 
 
 def _theme_icon(names):
+    """The first of `names` the icon theme has, each tried first as its `-symbolic`
+    version, as filehouse asks for them: a full-colour icon made one colour can lose its
+    shape (a gear drawn as a flower)."""
     for name in names:
-        if QIcon.hasThemeIcon(name):
-            return QIcon.fromTheme(name)
+        for candidate in (f"{name}-symbolic", name):
+            if QIcon.hasThemeIcon(candidate):
+                return QIcon.fromTheme(candidate)
     return QIcon()
 
 
@@ -335,7 +349,7 @@ def _stylesheet():
     window, card, raised = (layer(name).name() for name in ("window", "card", "raised"))
     card_border = overlay(_CARD_BORDER)
     small_font = theme_reader.font_scaled(_theme, 11)
-    control, group = CONTROL_HEIGHT, GROUP_PADDING
+    group = GROUP_PADDING
     return f"""
         QToolBar {{
             border: none; spacing: {px(8)}px; padding: {px(8)}px;
@@ -346,9 +360,10 @@ def _stylesheet():
         #group, #card {{
             background: {card}; border: 1px solid {card_border}; border-radius: {large}px;
         }}
-        #group {{ border-radius: {radius_within("large", control + 2 * group)}px; }}
+        #group {{ border-radius: {radius_within("large", ROW_HEIGHT)}px; }}
         #group QToolButton {{
-            border-radius: {radius_within("medium", control)}px; padding: {px(7)}px;
+            border-radius: {radius_within("medium", ROW_HEIGHT - 2 * group)}px;
+            padding: {px(3)}px;
         }}
 
         QToolButton {{
@@ -365,6 +380,11 @@ def _stylesheet():
         }}
         QPushButton:hover {{ background: {hover}; }}
         QPushButton:pressed {{ background: {pressed}; }}
+        /* A button in the toolbar or the filter row: ROW_HEIGHT tall, so a radius made
+           for a taller button would not fit and the corners would be drawn square */
+        QPushButton#row {{
+            border-radius: {radius_within("large", ROW_HEIGHT)}px; padding: 0 {px(16)}px;
+        }}
 
         QPushButton:checked {{ background: {selected}; }}
         QPushButton:disabled {{ color: {colors["textTertiary"]}; }}
@@ -422,6 +442,8 @@ def _stylesheet():
             padding: {px(4)}px {px(8)}px; background: {raised};
         }}
         QLineEdit:focus {{ border-color: {colors["accent"]}; }}
+        /* The search field in the toolbar: rounded as the cards beside it */
+        QLineEdit#row {{ border-radius: {radius_within("large", ROW_HEIGHT)}px; }}
 
         QListView {{ border: none; outline: none; background: transparent; }}
         QListView::item {{ border-radius: {medium}px; padding: {px(4)}px; }}
@@ -464,6 +486,8 @@ def _stylesheet():
             margin-right: {px(6)}px;
         }}
         QComboBox::down-arrow {{ {_arrow_image()} width: {px(_ARROW)}px; height: {px(_ARROW)}px; }}
+        /* The filters above the grid: rounded as the toolbar's cards */
+        QComboBox#row {{ border-radius: {radius_within("large", ROW_HEIGHT)}px; }}
         QComboBox:hover {{ border-color: {overlay(0.2)}; }}
         QComboBox:focus {{ border-color: {colors["accent"]}; }}
         /* The list's window: transparent, the list inside it is the rounded card */
@@ -485,6 +509,7 @@ def _stylesheet():
 
         #title {{ font-size: {theme_reader.font_scaled(_theme, 15)}px; font-weight: 600; }}
         #secondary {{ color: {colors["textSecondary"]}; font-size: {small_font}px; }}
+        #divider {{ background: {divider}; border: none; }}
         #placeholder {{ color: {colors["textSecondary"]}; }}
 
         QMenu {{

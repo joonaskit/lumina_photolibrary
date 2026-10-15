@@ -1,8 +1,8 @@
-"""Year, camera, lens, flag, rating and edit state, above the grid, and the search field at the
-right."""
+"""Year, camera, lens, flag, rating and edit state, above the grid: what is shown, and
+nothing else. Clear at the right end shows everything again."""
 
-from PySide6.QtCore import QTimer, Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QToolButton, QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QPushButton, QSizePolicy, QWidget
 
 from lumina.integration import style
 from lumina.qt_models.library_model import (
@@ -60,9 +60,56 @@ class FilterBar(QWidget):
         self.flag = self._fixed_combo(FLAG_CHOICES, self.flag_changed)
         self.rating = self._fixed_combo(RATING_CHOICES, self.rating_changed)
         self.edit = self._fixed_combo(EDIT_CHOICES, self.edit_changed)
-        for combo in (self.year, self.camera, self.lens, self.flag, self.rating, self.edit):
+        for combo in (self.year, self.camera, self.lens):
             layout.addWidget(combo)
+        # What the photos are, then what was done with them
+        divider = QFrame()
+        divider.setObjectName("divider")
+        divider.setFixedWidth(1)
+        layout.addWidget(divider)
+        for combo in (self.flag, self.rating, self.edit):
+            layout.addWidget(combo)
+            combo.currentIndexChanged.connect(self._update_clear)
+        for combo in (self.year, self.camera, self.lens):
+            combo.currentIndexChanged.connect(self._update_clear)
         layout.addStretch(1)
+        self.clear_button = QPushButton("Clear")
+        # Rounded for its height in the row, not a dialog's button's
+        self.clear_button.setObjectName("row")
+        self.clear_button.setToolTip("Show every photo again")
+        self.clear_button.clicked.connect(self.clear)
+        layout.addWidget(self.clear_button)
+        # As tall and as round as the toolbar's cards and search field, whatever the font
+        for widget in (*self._combos(), self.clear_button):
+            widget.setFixedHeight(style.px(style.ROW_HEIGHT))
+        for combo in self._combos():
+            combo.setObjectName("row")
+        self._update_clear()
+
+    def _combos(self):
+        return (self.year, self.camera, self.lens, self.flag, self.rating, self.edit)
+
+    def _update_clear(self):
+        self.clear_button.setEnabled(any(combo.currentIndex() for combo in self._combos()))
+
+    def clear(self):
+        """Every filter back to all, each signal once for what changed."""
+        before = self.values()
+        changed = [combo for combo in (self.flag, self.rating, self.edit) if combo.currentIndex()]
+        for combo in self._combos():
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+        self._update_clear()
+        if self.values() != before:
+            self.changed.emit()
+        signals = {
+            self.flag: self.flag_changed,
+            self.rating: self.rating_changed,
+            self.edit: self.edit_changed,
+        }
+        for combo in changed:
+            signals[combo].emit(None)
 
     def _fixed_combo(self, choices, changed):
         combo = QComboBox()
@@ -85,32 +132,13 @@ class FilterBar(QWidget):
         """The flag to show only, or None for all."""
         return self.flag.currentData()
 
-    def add_trailing(self, widget):
-        """A widget at the right end of the row: the buttons, the search field. Square
-        buttons in it are as tall as the combos beside them."""
-        self.layout().addWidget(widget)
-        self._fit_buttons()
-
-    def _fit_buttons(self):
-        # The combos' height comes from the font, which the desktop chooses
-        side = self.year.sizeHint().height()
-        for button in self.findChildren(QToolButton):
-            if button.objectName() == "segment":
-                button.setFixedSize(side, side)
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() in (event.Type.FontChange, event.Type.StyleChange):
-            # Once the combos have their new size
-            QTimer.singleShot(0, self, self._fit_buttons)
-
     def _combo(self, everything):
         combo = QComboBox()
         combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         combo.setMinimumWidth(style.px(120))
         # A long lens name is cut short rather than making the row wider than the window
         combo.setMaximumWidth(style.px(280))
-        # Never narrower than its text: the search field beside them gives way first
+        # Never narrower than its text
         combo.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         combo.addItem(everything, None)
         combo.currentIndexChanged.connect(lambda _index: self.changed.emit())
@@ -134,5 +162,6 @@ class FilterBar(QWidget):
             index = combo.findData(current) if current is not None else 0
             combo.setCurrentIndex(max(index, 0))
             combo.blockSignals(False)
+        self._update_clear()
         if self.values() != before:
             self.changed.emit()

@@ -175,3 +175,17 @@ def test_flags_narrow_a_search_and_keep_its_order(qtbot, open_window):
     assert window.status.text() == "2 photos match “green”  ·  1 hidden by flags"
     window.undo_flags()
     assert names(window) == ranked
+
+
+def test_a_search_typed_above_a_photo_shows_the_results_in_the_grid(qtbot, open_window):
+    window = open_window()
+    window.show_photo(0)
+    assert window.search_field.isVisible()
+
+    type_search(qtbot, window, "green")
+
+    assert window.pages.currentIndex() == 1
+    assert names(window)[0] == "b.jpg"
+    # Still typing: the field keeps the focus and its text
+    assert window.search_field.edit.hasFocus() or not window.isActiveWindow()
+    assert window.search_field.text() == "green"
