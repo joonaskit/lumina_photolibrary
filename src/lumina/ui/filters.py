@@ -1,17 +1,34 @@
-"""Year, camera, lens, flag and edit state, above the grid, and the search field at the
+"""Year, camera, lens, flag, rating and edit state, above the grid, and the search field at the
 right."""
 
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QSizePolicy, QToolButton, QWidget
 
 from lumina.integration import style
-from lumina.qt_models.library_model import EDITED, PICKED, REJECTED, UNEDITED, UNFLAGGED
+from lumina.qt_models.library_model import (
+    EDITED,
+    NOT_RATED,
+    PICKED,
+    REJECTED,
+    UNEDITED,
+    UNFLAGGED,
+)
 
 FLAG_CHOICES = (
     ("All flags", None),
     ("Thumbs up", PICKED),
     ("Not flagged", UNFLAGGED),
     ("Thumbs down", REJECTED),
+)
+
+RATING_CHOICES = (
+    ("Any rating", None),
+    ("★ 1 or more", 1),
+    ("★★ 2 or more", 2),
+    ("★★★ 3 or more", 3),
+    ("★★★★ 4 or more", 4),
+    ("★★★★★ 5", 5),
+    ("Not rated", NOT_RATED),
 )
 
 EDIT_CHOICES = (
@@ -26,6 +43,8 @@ class FilterBar(QWidget):
     changed = Signal()
     # A flag to show only, or None for all
     flag_changed = Signal(object)
+    # NOT_RATED, or a number of stars to show those with that many or more, or None for all
+    rating_changed = Signal(object)
     # EDITED or UNEDITED to show only those, or None for all
     edit_changed = Signal(object)
 
@@ -39,8 +58,9 @@ class FilterBar(QWidget):
         self.lens = self._combo("All lenses")
         # Not the library's choices: the same whatever the folder
         self.flag = self._fixed_combo(FLAG_CHOICES, self.flag_changed)
+        self.rating = self._fixed_combo(RATING_CHOICES, self.rating_changed)
         self.edit = self._fixed_combo(EDIT_CHOICES, self.edit_changed)
-        for combo in (self.year, self.camera, self.lens, self.flag, self.edit):
+        for combo in (self.year, self.camera, self.lens, self.flag, self.rating, self.edit):
             layout.addWidget(combo)
         layout.addStretch(1)
 
@@ -56,6 +76,10 @@ class FilterBar(QWidget):
     def edit_value(self):
         """EDITED or UNEDITED to show only those, or None for all."""
         return self.edit.currentData()
+
+    def rating_value(self):
+        """NOT_RATED, a number of stars, or None for all."""
+        return self.rating.currentData()
 
     def flag_value(self):
         """The flag to show only, or None for all."""

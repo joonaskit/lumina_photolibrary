@@ -105,7 +105,7 @@ def paint_badge(painter, photo_rect, flag):
 
 class FlagOptions(QToolButton):
     """A button with a menu: show, dim or hide thumbs-down photos, and whether the
-    viewer steps on after flagging (until there is a settings window, #13)."""
+    viewer steps on after flagging or rating (until there is a settings window, #13)."""
 
     rejected_changed = Signal(str)
     advance_changed = Signal(bool)
@@ -128,9 +128,11 @@ class FlagOptions(QToolButton):
             menu.addAction(action)
             self.rejected_actions[mode] = action
         menu.addSeparator()
-        self.advance_action = QAction("Next Photo After Flagging", self)
+        self.advance_action = QAction("Next Photo After Flagging or Rating", self)
         self.advance_action.setCheckable(True)
-        self.advance_action.setToolTip("In the viewer, step on after a thumbs up or down")
+        self.advance_action.setToolTip(
+            "In the viewer, step on after a thumbs up or down or a rating"
+        )
         self.advance_action.toggled.connect(self.advance_changed)
         menu.addAction(self.advance_action)
         self.setMenu(menu)

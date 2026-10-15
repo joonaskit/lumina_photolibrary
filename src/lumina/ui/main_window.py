@@ -32,6 +32,7 @@ from lumina.qt_models.library_model import (
     DIMMED_ROLE,
     FLAG_ROLE,
     PICKED,
+    RATING_ROLE,
     REJECTED,
     SIMILAR,
     UNFLAGGED,
@@ -39,7 +40,7 @@ from lumina.qt_models.library_model import (
     LibraryModel,
 )
 from lumina.qt_models.previews import PreviewLoader
-from lumina.ui import flags, settings
+from lumina.ui import flags, settings, stars
 from lumina.ui.develop_view import DevelopView
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.filters import FilterBar
@@ -86,15 +87,15 @@ class _CellDelegate(QStyledItemDelegate):
         return self._size
 
     def paint(self, painter, option, index):
-        """The cell, greyed out for a dimmed thumbs-down photo, and its flag's badge on
-        the photo's corner."""
+        """The cell, greyed out for a dimmed thumbs-down photo, its flag's badge on the
+        photo's bottom right corner and its stars on the bottom left."""
         painter.save()
         if index.data(DIMMED_ROLE):
             painter.setOpacity(DIMMED_OPACITY)
         super().paint(painter, option, index)
         painter.restore()
-        flag = index.data(FLAG_ROLE)
-        if flag not in flags.COLOURS:
+        flag, rating = index.data(FLAG_ROLE), index.data(RATING_ROLE)
+        if flag not in flags.COLOURS and not rating:
             return
         item = QStyleOptionViewItem(option)
         self.initStyleOption(item, index)
@@ -105,7 +106,9 @@ class _CellDelegate(QStyledItemDelegate):
         # The photo within its square: the icon keeps the photo's shape
         photo = QRect(QPoint(0, 0), item.icon.actualSize(item.decorationSize))
         photo.moveCenter(area.center())
-        flags.paint_badge(painter, photo, flag)
+        if flag in flags.COLOURS:
+            flags.paint_badge(painter, photo, flag)
+        stars.paint_stars(painter, photo, rating or 0)
 
 
 class MainWindow(QMainWindow):
@@ -147,6 +150,7 @@ class MainWindow(QMainWindow):
         self.filters = FilterBar()
         self.filters.changed.connect(self._apply_filter)
         self.filters.flag_changed.connect(self.set_flag_filter)
+        self.filters.rating_changed.connect(self.set_rating_filter)
         self.filters.edit_changed.connect(self.set_edit_filter)
         self.flag_options = flags.FlagOptions()
         self.flag_options.set_values(settings.rejected_photos(), settings.advance_after_flag())
@@ -177,6 +181,12 @@ class MainWindow(QMainWindow):
                 self.next_action,
                 self.undo_action,
                 self.redo_action,
+                # The flags and the stars of the photo being edited; their Undo is the grid's
+                # and the viewer's, the Develop view's is the edit's
+                self.pick_action,
+                self.reject_action,
+                self.unflag_action,
+                *self.rate_actions,
                 *self.zoom_actions,
                 *self.settings_actions,
             ]
@@ -278,16 +288,27 @@ class MainWindow(QMainWindow):
         self.unflag_action.setShortcut(QKeySequence(Qt.Key.Key_U))
         self.unflag_action.triggered.connect(lambda: self.flag_photos(UNFLAGGED))
         # In the grid and the viewer; the Develop view's Undo is its edit's
-        self.undo_flag_action = QAction("Undo Flag", self)
+        self.undo_flag_action = QAction("Undo Flag or Rating", self)
         self.undo_flag_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_flag_action.triggered.connect(self.undo_flags)
-        self.redo_flag_action = QAction("Redo Flag", self)
+        self.redo_flag_action = QAction("Redo Flag or Rating", self)
         self.redo_flag_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_flag_action.triggered.connect(self.redo_flags)
+        # 1 to 5 stars, 0 for none; the same key again clears it
+        self.rate_actions = []
+        for number in range(6):
+            action = QAction(
+                "No Stars" if number == 0 else f"{number} Star{'s' * (number > 1)}", self
+            )
+            action.setShortcut(QKeySequence(Qt.Key(Qt.Key.Key_0 + number)))
+            action.setToolTip(f"Rate {number} (key {number})" if number else "Clear the rating (0)")
+            action.triggered.connect(lambda _on=False, stars=number: self.rate_photos(stars))
+            self.rate_actions.append(action)
         self.flag_actions = (
             self.pick_action,
             self.reject_action,
             self.unflag_action,
+            *self.rate_actions,
             self.undo_flag_action,
             self.redo_flag_action,
         )
@@ -360,7 +381,20 @@ class MainWindow(QMainWindow):
             self._group(self.undo_action, self.redo_action, self.reset_action, self.export_action)
         )
         self.flagging = toolbar.addWidget(self._group(self.pick_action, self.reject_action))
+        self.rating_bar = stars.StarRating()
+        self.rating_bar.chosen.connect(self.rate_photos)
+        self.rating_stars = toolbar.addWidget(self._framed_widget(self.rating_bar))
         self.browsing = toolbar.addWidget(self._group(self.edit_action))
+
+    def _framed_widget(self, widget):
+        """A widget in a rounded card like the buttons' groups."""
+        frame = QFrame()
+        frame.setObjectName("group")
+        layout = QHBoxLayout(frame)
+        padding = style.px(style.GROUP_PADDING)
+        layout.setContentsMargins(padding, padding, padding, padding)
+        layout.addWidget(widget)
+        return frame
 
     def _group(self, *actions):
         """Buttons in one rounded card, as filehouse's toolbar has them."""
@@ -673,6 +707,11 @@ class MainWindow(QMainWindow):
         menu.addAction(self.pick_action)
         menu.addAction(self.reject_action)
         menu.addAction(self.unflag_action)
+        rating = menu.addMenu("Rating")
+        for action in self.rate_actions[1:]:
+            rating.addAction(action)
+        rating.addSeparator()
+        rating.addAction(self.rate_actions[0])
         menu.addSeparator()
         menu.addAction(self.copy_settings_action)
         menu.addAction(self.paste_settings_action)
@@ -692,21 +731,38 @@ class MainWindow(QMainWindow):
         self._update_flag_actions()
         self._update_status()
 
+    def rate_photos(self, stars):
+        """`stars` (0 for none) for the photo shown, open or the ones chosen in the grid;
+        when they have that many already, clear it."""
+        page = self.pages.currentIndex()
+        rows = self._flag_rows()
+        given = self.model.toggle_rating(rows, stars) if rows else None
+        if given and page == _VIEWER and settings.advance_after_flag():
+            self.step(1)
+        self._update_flag_actions()
+        self._update_status()
+
     def undo_flags(self):
+        what = "Rating" if self.model.last_change() == "rating" else "Flag"
         if self.model.undo_flags():
-            self.statusBar().showMessage("Flag change undone", 3000)
+            self.statusBar().showMessage(f"{what} change undone", 3000)
         self._update_flag_actions()
         self._update_status()
 
     def redo_flags(self):
         if self.model.redo_flags():
-            self.statusBar().showMessage("Flag change redone", 3000)
+            self.statusBar().showMessage("Change redone", 3000)
         self._update_flag_actions()
         self._update_status()
 
     def set_flag_filter(self, flag):
         """Show only photos with a thumbs up, with none, or with a thumbs down, or all."""
         self.model.set_flag_filter(flag)
+        self._update_status()
+
+    def set_rating_filter(self, stars):
+        """Show only photos with `stars` or more, only those without, or all."""
+        self.model.set_rating_filter(stars)
         self._update_status()
 
     def set_edit_filter(self, which):
@@ -723,7 +779,7 @@ class MainWindow(QMainWindow):
 
     def _flag_rows(self):
         page = self.pages.currentIndex()
-        if page == _VIEWER:
+        if page in (_VIEWER, _DEVELOP):
             row = self._viewed_row()
             return [row] if row is not None else []
         if page == _GRID:
@@ -740,6 +796,15 @@ class MainWindow(QMainWindow):
             action.setEnabled(bool(rows))
             action.setChecked(given == {flag})
         self.unflag_action.setEnabled(bool(rows))
+        given_stars = {self.model.rating(row) for row in rows}
+        for action in self.rate_actions:
+            action.setEnabled(bool(rows))
+        for number, action in enumerate(self.rate_actions[1:], 1):
+            action.setCheckable(True)
+            action.setChecked(given_stars == {number})
+        # Photos that differ show no stars, as neither flag button shows as set
+        self.rating_bar.setEnabled(bool(rows))
+        self.rating_bar.set_rating(next(iter(given_stars)) if len(given_stars) == 1 else 0)
         page = self.pages.currentIndex()
         browsing = page in (_GRID, _VIEWER)
         self.undo_flag_action.setEnabled(browsing and self.model.can_undo_flags())
@@ -1163,7 +1228,8 @@ class MainWindow(QMainWindow):
         self.navigation.setVisible(viewing)
         self.editing.setVisible(developing)
         self.browsing.setVisible(not developing)
-        self.flagging.setVisible(page in (_GRID, _VIEWER))
+        self.flagging.setVisible(page in (_GRID, _VIEWER, _DEVELOP))
+        self.rating_stars.setVisible(page in (_GRID, _VIEWER, _DEVELOP))
         for action in (self.back_action, self.previous_action, self.next_action):
             action.setEnabled(viewing)
         for action in (self.reset_action, self.export_action):
@@ -1194,13 +1260,14 @@ class MainWindow(QMainWindow):
             details = describe_photo(self.service.photo_details(self._viewed_id))
             where = self.model.path(row) or f"{self.model.name(row)} (not connected)"
             flag = FLAG_NAMES.get(self.model.flag(row))
+            rated = stars.text(self.model.rating(row))
             zoom = None
             view = self._zoom_view()
             if view.is_zoomed():
                 zoom = f"{round(view.zoom() * 100)} %"
                 if self._zoom_loading(view):
                     zoom += ", loading full size…" if view is self.viewer else ", rendering…"
-            parts = (f"{row + 1} of {count}", zoom, flag, details, where)
+            parts = (f"{row + 1} of {count}", zoom, flag, rated, details, where)
             text = "  ·  ".join(part for part in parts if part)
         else:
             text = f"{count} photo" + ("" if count == 1 else "s")

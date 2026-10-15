@@ -203,7 +203,7 @@ class LibraryService(QObject):
         """Everything the library knows of one photo, as a dict, or None."""
         return self.db.photo(photo_id)
 
-    # Flags
+    # Flags and ratings
 
     def set_flags(self, flags):
         """{photo id: flag}. The grid's model keeps its rows up to date itself."""
@@ -211,6 +211,13 @@ class LibraryService(QObject):
 
     def flags(self, ids):
         return self.db.flags(ids)
+
+    def set_ratings(self, ratings):
+        """{photo id: stars, 0 for none}."""
+        self.db.set_ratings(ratings)
+
+    def ratings(self, ids):
+        return self.db.ratings(ids)
 
     # Edits and presets
 

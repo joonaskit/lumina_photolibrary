@@ -281,3 +281,40 @@ def test_a_flagged_cell_has_a_badge_and_a_dimmed_one_is_paler(qtbot, service, dr
         )
 
     assert alpha_sum(dimmed) < alpha_sum(plain)
+
+
+def test_the_develop_view_flags_the_photo_being_edited(qtbot, service, drive):
+    window = open_window(qtbot, service, drive / "Photos")
+    first, second, _third = names(window)
+    settings.set_advance_after_flag(True)
+    with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
+        window.show_develop(0)
+    assert window.flagging.isVisible()
+
+    press(qtbot, window.develop, Qt.Key.Key_P)
+    assert window.model.flag(0) == PICKED and window.pick_action.isChecked()
+    assert "Thumbs up" in window.status.text()
+    press(qtbot, window.develop, Qt.Key.Key_X)
+    assert window.model.flag(0) == REJECTED and window.reject_action.isChecked()
+    press(qtbot, window.develop, Qt.Key.Key_X)
+    assert window.model.flag(0) == UNFLAGGED
+    press(qtbot, window.develop, Qt.Key.Key_P)
+    press(qtbot, window.develop, Qt.Key.Key_U)
+    assert window.model.flag(0) == UNFLAGGED
+    window.reject_action.trigger()
+    assert window.model.flag(0) == REJECTED
+
+    # Still on the same photo, however the option is set: stepping decodes the next one
+    assert window.title.text() == first and second not in window.title.text()
+    assert stored(service)[first] == REJECTED
+
+
+def test_the_develop_views_own_keys_still_work(qtbot, service, drive):
+    window = open_window(qtbot, service, drive / "Photos")
+    with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
+        window.show_develop(0)
+
+    press(qtbot, window.develop, Qt.Key.Key_C)
+
+    assert window.develop.is_cropping()
+    assert window.model.flag(0) == UNFLAGGED
