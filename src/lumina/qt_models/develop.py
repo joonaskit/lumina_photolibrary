@@ -22,6 +22,8 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QImage
 
+from lumina.core import colour_checker as _colour_checker
+from lumina.core import dcp as _dcp
 from lumina.core.edit import curves as _curves
 from lumina.core.edit import export as _export
 from lumina.core.edit import hsl as _hsl
@@ -48,6 +50,10 @@ Matte = _params.Matte
 Crop = _params.Crop
 Lens = _params.Lens
 LENS = _params.LENS
+ColourProfile = _params.ColourProfile
+patch_centres = _colour_checker.patch_centres
+CHECKER_SAMPLE_SHARE = _colour_checker.SAMPLE_SHARE
+PROFILE_FOLDERS = _dcp.default_folders
 ExportOptions = _export.ExportOptions
 FORMATS = _export.FORMATS
 EXPOSURE = _params.EXPOSURE
@@ -122,6 +128,13 @@ class DevelopSession(QObject):
     lens_changed = Signal()
     # The names of the lenses that fit the camera, asked for by `request_lenses`
     lenses_ready = Signal(object)
+    # The profiles the photo can be rendered with, asked for by `request_profiles`: a list
+    # of (name, key), key "libraw", "standard" or a profile file's path
+    profiles_ready = Signal(object)
+    # Lumina made a profile and the edit uses it: what to tell the user
+    profile_made = Signal(str)
+    # Making a profile started or ended
+    profile_busy_changed = Signal(bool)
     # A part of the photo rendered at the zoom came back: QImage, its (left, top) and the
     # size of the whole, in pixels of the image it is a part of
     region_ready = Signal(object, object, object)
@@ -153,6 +166,11 @@ class DevelopSession(QObject):
         self._lens = None
         self._lens_known = False
         self._lens_data = True
+        # Whether the open photo is a RAW file, which has a camera profile; and the folders
+        # the user keeps profiles in, asked for when they are needed (the UI's settings)
+        self._raw = False
+        self.profile_folders = list
+        self._making_profile = False
         self._undo = []
         self._redo = []
         self._busy = False
@@ -182,6 +200,7 @@ class DevelopSession(QObject):
         self._baseline = Params()
         self._shot = self.service.lens_shot(photo_id)
         self._lens, self._lens_known, self._lens_data = None, False, True
+        self._raw = False
         stored = self.service.edit_json(photo_id)
         try:
             self.params = _params.from_json(stored) if stored else self._baseline
@@ -198,6 +217,7 @@ class DevelopSession(QObject):
             _session.open_photo,
             path,
             self._shot,
+            list(self.profile_folders()),
             on_done=lambda opened: self._on_opened(token, opened),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
@@ -232,10 +252,15 @@ class DevelopSession(QObject):
             return
         self.size = (int(opened.size[0]), int(opened.size[1]))
         self._lens, self._lens_known, self._lens_data = opened.lens, True, opened.lens_data
-        if opened.lens is not None and opened.raw:
-            # A RAW file has none of its lens's faults corrected: new edits start with the
-            # corrections on. A photo with an edit keeps what the edit says
-            self._baseline = Params(lens=_params.Lens(enabled=True, profile=opened.lens))
+        self._raw = opened.profile is not None
+        if self._raw:
+            # A RAW file has none of its lens's faults corrected and none of the camera's
+            # look: new edits start with the corrections on and the camera's profile (or
+            # Lumina's look). A photo with an edit keeps what the edit says
+            lens = _params.Lens()
+            if opened.lens is not None and opened.raw:
+                lens = _params.Lens(enabled=True, profile=opened.lens)
+            self._baseline = Params(lens=lens, profile=ColourProfile(*opened.profile))
             if self.params == Params() and self.service.edit_json(self.photo_id) is None:
                 self.params = self._baseline
                 self.params_changed.emit(self.params)
@@ -360,6 +385,132 @@ class DevelopSession(QObject):
     def reset(self):
         """Back to where a new edit starts, as one step that can be undone."""
         self.commit(self._baseline)
+
+    # The camera profile
+
+    def is_raw(self):
+        """Whether the open photo is a RAW file (known once it is decoded): only those have
+        a camera profile."""
+        return self._raw
+
+    def profile_name(self):
+        """The name of the profile the edit renders with."""
+        profile = self.params.profile
+        return profile.name or {"libraw": "Neutral (LibRaw)", "standard": "Lumina Standard"}.get(
+            profile.id, "Camera profile"
+        )
+
+    def request_profiles(self):
+        """Ask for the profiles the photo can be rendered with: `profiles_ready` gives them."""
+        if not self.is_open() or not self._raw:
+            self.profiles_ready.emit([])
+            return
+        token = self._token
+        workers.submit(
+            _session.profile_choices,
+            self._shot,
+            list(self.profile_folders()),
+            on_done=lambda choices: self._on_profiles(token, choices),
+            on_error=lambda _error: self._on_profiles(token, []),
+            owner=self,
+            process=workers.DEVELOP,
+        )
+
+    def _on_profiles(self, token, choices):
+        if token == self._token:
+            self.profiles_ready.emit(choices)
+
+    def choose_profile(self, key, name=None):
+        """Render with the profile `key`: "libraw", "standard", or a profile file's path
+        (copied into the store first)."""
+        if not self.is_open() or not self._raw:
+            return
+        if key in ("libraw", "standard"):
+            self.commit(self.params.with_changes(profile=ColourProfile(key, name or "")))
+            return
+        token = self._token
+        workers.submit(
+            _session.use_profile,
+            os.fspath(key),
+            on_done=lambda found: self._on_profile_stored(token, found),
+            on_error=lambda error: self._on_failed(token, error),
+            owner=self,
+            process=workers.DEVELOP,
+        )
+
+    def _on_profile_stored(self, token, found):
+        if token == self._token:
+            self.commit(self.params.with_changes(profile=ColourProfile(*found)))
+
+    def is_making_profile(self):
+        return self._making_profile
+
+    def _set_making(self, on):
+        self._making_profile = on
+        self.profile_busy_changed.emit(on)
+
+    def fit_camera_look(self, limit=12):
+        """Make a profile of the camera's own look from up to `limit` of its RAW files in
+        the library and the JPEGs inside them, and render with it. Ends with
+        `profile_made` or `failed`."""
+        if not self.is_open() or not self._raw or self._making_profile or self._shot is None:
+            return
+        model = self._shot.model
+        paths = self.service.raw_files_of(model, limit)
+        if not paths:
+            self.failed.emit(f"No RAW files of the {model} are connected to learn from")
+            return
+        token = self._token
+        self._set_making(True)
+        workers.submit(
+            _session.fit_camera_look,
+            paths,
+            model,
+            on_done=lambda made: self._on_profile_made(token, made, "look", len(paths)),
+            on_error=lambda error: self._on_making_failed(token, error),
+            owner=self,
+        )
+
+    def make_checker_profile(self, corners, linear=False):
+        """Make a profile from the open photo of a colour target, `corners` the middles of
+        its four corner patches as fractions of the photo as shown (dark skin, bluish
+        green, black, white), and render with it. Ends with `profile_made` or `failed`."""
+        if not self.is_open() or not self._raw or self._making_profile or self._shot is None:
+            return
+        token = self._token
+        self._set_making(True)
+        workers.submit(
+            _session.checker_profile,
+            self.path,
+            self.params.to_json(),
+            [tuple(map(float, c)) for c in corners],
+            self._shot.model,
+            linear,
+            on_done=lambda made: self._on_profile_made(token, made, "target", 1),
+            on_error=lambda error: self._on_making_failed(token, error),
+            owner=self,
+            process=workers.DEVELOP,
+        )
+
+    def _on_profile_made(self, token, made, kind, count):
+        self._set_making(False)
+        if kind == "look":
+            told = (
+                f"Made “{made.name}” from {count} photos: {made.after:.1f} levels from their "
+                f"JPEGs on average, against {made.before:.1f} with neutral colours."
+            )
+        else:
+            told = (
+                f"Made “{made.name}”: its colours are {made.before:.1f} ΔE00 from the target "
+                f"on average, {made.after:.1f} at most."
+            )
+        if token == self._token:
+            self.commit(self.params.with_changes(profile=ColourProfile(made.ident, made.name)))
+        self.profile_made.emit(f"{told} Saved as {made.path}")
+
+    def _on_making_failed(self, token, error):
+        self._set_making(False)
+        self.failed.emit(getattr(error, "message", None) or str(error))
 
     # The lens
 

@@ -241,6 +241,16 @@ def set_panorama_choices(projection, crop):
     _settings().setValue("panorama/crop", bool(crop))
 
 
+def profile_folders():
+    """The folders the user keeps camera profiles (DCP) in, besides those Lumina looks in
+    anyway."""
+    return [name for name in _settings().value("develop/profile_folders", "").split("\n") if name]
+
+
+def set_profile_folders(folders):
+    _settings().setValue("develop/profile_folders", "\n".join(folders))
+
+
 def backup_folder():
     """A second folder the library is backed up to (another drive), or None."""
     value = _settings().value("backup/folder")
