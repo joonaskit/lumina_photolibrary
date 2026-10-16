@@ -97,6 +97,7 @@ class SettingsDialog(QDialog):
 
         layout = page("Develop")
         self.sections = QListWidget()
+        self.sections.setObjectName("settingsList")
         self.sections.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         self.sections.setDefaultDropAction(Qt.DropAction.MoveAction)
         self._fill_sections()
