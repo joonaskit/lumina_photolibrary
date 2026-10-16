@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pytest
 from fakes import FakeExifTool
-from photos import make_jpeg
+from photos import make_jpeg, make_jpeg_with_exif
 from rawfiles import make_dng
 
 from lumina.core import db as dbm
@@ -111,6 +111,24 @@ def test_reading_a_card_finds_its_photos_with_the_times_they_were_taken(library,
     assert names["IMG_0002.JPG"].taken == datetime(2026, 10, 15, 9, 30, 5)
     assert all(c.content_id and c.size > 0 and not c.imported for c in reading.candidates)
     assert reading.failures == ()
+
+
+def test_a_photo_that_tells_its_time_in_its_first_bytes_is_not_read_by_exiftool(library, tmp_path):
+    """exiftool reads a CR3 to its end, a second a photo from a card: only photos whose
+    first bytes don't tell their time go to it."""
+    shots = tmp_path / "card" / "DCIM" / "100CANON"
+    shots.mkdir(parents=True)
+    make_jpeg_with_exif(shots / "IMG_0001.JPG")
+    make_jpeg(shots / "IMG_0002.JPG")
+
+    reading = read(library, tmp_path / "card")
+
+    taken = {os.path.basename(c.path): c.taken for c in reading.candidates}
+    assert taken == {
+        "IMG_0001.JPG": datetime(2024, 6, 1, 18, 30, 5, 250000),
+        "IMG_0002.JPG": datetime(2026, 10, 15, 9, 30, 5),
+    }
+    assert FakeExifTool.calls == [[str(shots / "IMG_0002.JPG")]]
 
 
 def test_without_exiftool_the_files_times_are_used(library, card):

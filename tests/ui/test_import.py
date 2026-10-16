@@ -39,7 +39,12 @@ class Mounts:
         self.card_in = True
 
     def __call__(self):
-        found = volumes.read_mounts()
+        # This machine's mounts without its cards: a test never reads a real card
+        found = [
+            mount
+            for mount in volumes.read_mounts()
+            if not os.path.isdir(os.path.join(mount.mount_point, "DCIM"))
+        ]
         if self.plugged:
             found.append(
                 volumes.Mount(DRIVE, str(self.drive), "/", "exfat", "/dev/sdz1", "Photos drive")

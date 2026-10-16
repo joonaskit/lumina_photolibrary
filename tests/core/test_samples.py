@@ -160,3 +160,14 @@ def test_the_metadata_of_a_heic_is_read(path, exiftool):
 
     assert data.captured is not None, path.name
     assert data.make and data.model, path.name
+
+
+@needs_samples
+@pytest.mark.parametrize("path", FILES, ids=lambda p: p.name)
+def test_the_capture_time_read_from_the_first_bytes_is_exiftools(path, exiftool):
+    from lumina.core import capture_time
+
+    taken = capture_time.read(path)
+    if taken is None:
+        pytest.skip(f"{path.name}: not a kind read from its first bytes")
+    assert taken == exiftool.read(path).captured.replace(tzinfo=None)

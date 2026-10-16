@@ -20,11 +20,11 @@ The rules it keeps:
 import hashlib
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
+from lumina.core import capture_time, derived, metadata, scanner, volumes
 from lumina.core import db as dbm
-from lumina.core import derived, metadata, scanner, volumes
 from lumina.core.errors import PhotoError
 from lumina.core.fingerprint import content_id
 from lumina.core.library import NotConnected, _Job
@@ -87,8 +87,9 @@ def read_source(
     exiftool=metadata.ExifTool,
 ):
     """Read the photos under `root` (a card or a folder) for an import: a Reading, or
-    None when stopped. Only reads. Times come from exiftool, or without it from the
-    files."""
+    None when stopped. Only reads. The time a photo was taken is read from its first
+    bytes (capture_time), from exiftool for a photo they don't tell it of, and from the
+    file without exiftool."""
     failures = []
     found = list(
         scanner.find_photos(
@@ -98,46 +99,71 @@ def read_source(
     if should_stop():
         return None
     report(0, len(found))
+    read, undated = [], []
+    for number, path in enumerate(found, 1):
+        if should_stop():
+            return None
+        try:
+            info = os.stat(path)
+            cid = content_id(path)
+        except PhotoError as error:
+            failures.append((path, error.message))
+            continue
+        except OSError as error:
+            failures.append((path, error.strerror or str(error)))
+            continue
+        candidate = Candidate(path, info.st_size, cid, capture_time.read(path))
+        (read if candidate.taken is not None else undated).append(candidate)
+        report(number, len(found))
+    dated = _ask_exiftool(undated, exiftool, should_stop)
+    if dated is None:
+        return None
+    read.extend(dated)
+    read.sort(key=lambda c: (c.taken, c.path))
+    known = library.imported(candidate.content_id for candidate in read)
+    candidates = tuple(replace(c, imported=c.content_id in known) for c in read)
+    return Reading(candidates, tuple(failures))
+
+
+def _ask_exiftool(undated, exiftool, should_stop):
+    """The Candidates `undated` with the time exiftool reads, or the file's time without
+    it. None when stopped."""
+    if not undated:
+        return []
     try:
         tool = exiftool()
     except metadata.MetadataUnavailable:
         tool = None
-    read = []
+    dated = []
     try:
-        for start in range(0, len(found), _DETAILS_BATCH):
+        for start in range(0, len(undated), _DETAILS_BATCH):
             if should_stop():
                 return None
-            batch = []
-            for path in found[start : start + _DETAILS_BATCH]:
-                try:
-                    info = os.stat(path)
-                    batch.append((path, info, content_id(path)))
-                except PhotoError as error:
-                    failures.append((path, error.message))
-                except OSError as error:
-                    failures.append((path, error.strerror or str(error)))
+            batch = undated[start : start + _DETAILS_BATCH]
             details = {}
-            if tool is not None and batch:
+            if tool is not None:
                 try:
-                    details = tool.read_many([path for path, _info, _cid in batch])
+                    details = tool.read_many([c.path for c in batch])
                 except metadata.MetadataUnavailable:
                     tool.close()
                     tool = None
-            for path, info, cid in batch:
-                data = details.get(path)
+            for candidate in batch:
+                data = details.get(candidate.path)
                 taken = data.captured if isinstance(data, metadata.Metadata) else None
                 if taken is None:
-                    taken = datetime.fromtimestamp(info.st_mtime)
-                read.append(Candidate(path, info.st_size, cid, taken.replace(tzinfo=None)))
-            report(min(start + _DETAILS_BATCH, len(found)), len(found))
+                    taken = _file_time(candidate.path)
+                dated.append(replace(candidate, taken=taken.replace(tzinfo=None)))
     finally:
         if tool is not None:
             tool.close()
-    known = library.imported(candidate.content_id for candidate in read)
-    candidates = tuple(
-        Candidate(c.path, c.size, c.content_id, c.taken, c.content_id in known) for c in read
-    )
-    return Reading(candidates, tuple(failures))
+    return dated
+
+
+def _file_time(path):
+    try:
+        return datetime.fromtimestamp(os.stat(path).st_mtime)
+    except OSError:
+        return datetime.now()
 
 
 def subfolder(taken, layout):
