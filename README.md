@@ -22,6 +22,7 @@ For development, the tests and the linter:
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
 sudo dnf install perl-Image-ExifTool lensfun   # for metadata, and lens corrections
+sudo dnf install rawtherapee   # optional: its camera profiles (DCP), used by new edits
 lumina ~/Pictures
 ```
 

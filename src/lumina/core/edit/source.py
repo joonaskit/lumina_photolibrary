@@ -1,9 +1,11 @@
 """The original, decoded for editing: linear light, 16 bits, upright.
 
-A RAW file is decoded once in full (rawpy: camera white balance, linear output in
-sRGB primaries, no automatic brightening), which takes a second or two; the
-editor keeps it while the photo is open and renders from it. Other files are
-decoded from sRGB to linear. While a control moves, renders use a proxy of about
+A RAW file is decoded once in full (rawpy: camera white balance, linear output in the
+camera's own colours, no automatic brightening), which takes a second or two; the editor
+keeps it while the photo is open and renders from it. With it comes its `CameraColour`,
+which the edit's profile turns into linear sRGB (colour_profile.py): LibRaw's matrix gives
+what LibRaw's sRGB decode gave, to the last bit of rounding. Other files are decoded from
+sRGB to linear, with no `CameraColour`. While a control moves, renders use a proxy of about
 2 MP, made once from the full decode.
 
 Memory: a 32 MP photo is about 190 MB as 16 bits, 380 MB as floats. Only the 16-bit
@@ -15,6 +17,7 @@ import rawpy
 from PIL import Image
 
 from lumina.core import images, linear_tiff, raw
+from lumina.core.edit.colour_profile import CameraColour, libraw_rgb_cam
 from lumina.core.edit.pipeline import srgb_decode
 from lumina.core.errors import PhotoError
 
@@ -62,6 +65,64 @@ def raw_linear(path, half=False, white_balance=None):
             )
     except (rawpy.LibRawError, OSError, ValueError) as error:
         raise PhotoError(path, f"cannot decode RAW ({error})") from error
+
+
+def load_for_edit(path, half=False):
+    """(the photo at `path` as `load_linear` has it, its `CameraColour`): for a RAW file
+    the decode is in the camera's colours, for other files linear sRGB and None. Raises
+    PhotoError naming it."""
+    if raw.is_raw(path):
+        return raw_camera(path, half)
+    return load_linear(path, half), None
+
+
+def raw_camera(path, half=False):
+    """A RAW file decoded to uint16 linear light in the camera's colours, white-balanced as
+    shot, upright, and its `CameraColour`."""
+    try:
+        with rawpy.imread(str(path)) as file:
+            if _damaged(file):
+                raise PhotoError(
+                    path,
+                    "the raw data is damaged. The camera's JPEG preview is fine; "
+                    "copy the file from the card again",
+                )
+            colour = _camera_colour(file)
+            image = file.postprocess(
+                gamma=(1, 1),
+                no_auto_bright=True,
+                output_bps=16,
+                output_color=rawpy.ColorSpace.raw,
+                half_size=half,
+                use_camera_wb=True,
+            )
+            return image, colour
+    except (rawpy.LibRawError, OSError, ValueError) as error:
+        raise PhotoError(path, f"cannot decode RAW ({error})") from error
+
+
+def _camera_colour(file):
+    """What LibRaw knows of an open file's colours (see CameraColour): Adobe's matrix for
+    the camera if it has one (as for CR3), else the file's own (a DNG's)."""
+    cam_xyz = np.array(file.rgb_xyz_matrix, dtype=np.float64)[:3]
+    if np.abs(cam_xyz).sum() > 0:
+        rgb_cam = libraw_rgb_cam(cam_xyz)
+    else:
+        cam_xyz = None
+        own = np.array(file.color_matrix, dtype=np.float64)[:, :3]
+        rgb_cam = own if np.abs(own).sum() > 0 else np.eye(3)
+    multipliers = np.array(file.camera_whitebalance[:3], dtype=np.float64)
+    if (multipliers <= 0).any():
+        multipliers = np.array(file.daylight_whitebalance[:3], dtype=np.float64)
+    if (multipliers <= 0).any():
+        multipliers = np.ones(3)
+    # The camera's colours of white: what the multipliers make equal
+    neutral = (1.0 / multipliers) / (1.0 / multipliers).max()
+    return CameraColour(
+        tuple(map(tuple, rgb_cam)),
+        None if cam_xyz is None else tuple(map(tuple, cam_xyz)),
+        tuple(neutral),
+    )
 
 
 def camera_white_balance(path):
@@ -160,12 +221,19 @@ class EditSource:
         self.path = path
         self._full = None
         self._proxy = None
+        self._camera = None
 
     @property
     def full(self):
         if self._full is None:
-            self._full = load_linear(self.path)
+            self._full, self._camera = load_for_edit(self.path)
         return self._full
+
+    @property
+    def camera(self):
+        """The RAW file's `CameraColour`, or None for a photo in sRGB."""
+        _decoded = self.full
+        return self._camera
 
     @property
     def proxy(self):

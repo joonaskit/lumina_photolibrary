@@ -18,7 +18,7 @@ def edited_pixels(path, max_side, edit_json):
     the photo, or NewerParams."""
     edit = edit_params.from_json(edit_json)
     half = max_side is not None
-    linear = source.load_linear(path, half=half)
+    linear, camera = source.load_for_edit(path, half=half)
     height, width = linear.shape[:2]
     if half and linear_tiff.is_linear(path):
         width, height = linear_tiff.size(path)
@@ -28,5 +28,5 @@ def edited_pixels(path, max_side, edit_json):
     full = pipeline.output_size(width, height, edit)
     if max_side is not None:
         linear = source.fitted(linear, edit, max_side)
-    image = pipeline.render(linear, edit, full=(width, height))
+    image = pipeline.render(linear, edit, full=(width, height), camera=camera)
     return Pixels(image.shape[1], image.shape[0], image.tobytes(), full)

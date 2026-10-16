@@ -172,7 +172,9 @@ def test_an_unknown_lens_is_left_alone(library, qtbot):
     session = opened(library, qtbot, photo)
 
     assert session.lens_state() == "unknown"
-    assert session.params == Params()
+    assert session.params.lens == develop.Lens()
+    # Nothing to do with the lens: a RAW file starts with a camera look all the same
+    assert session.params.profile.id == "standard"
     session.close()
 
 
@@ -183,7 +185,9 @@ def test_without_a_lens_database_it_says_so(library, qtbot, monkeypatch):
     session = opened(library, qtbot, photo)
 
     assert session.lens_state() == "no data"
-    assert session.params == Params()
+    assert session.params.lens == develop.Lens()
+    # Nothing to do with the lens: a RAW file starts with a camera look all the same
+    assert session.params.profile.id == "standard"
     session.close()
 
 

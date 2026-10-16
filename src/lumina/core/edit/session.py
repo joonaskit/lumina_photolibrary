@@ -14,9 +14,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from lumina.core import lensdb, raw
+from lumina.core import colour_checker, dcp, lensdb, profile_fit, raw
+from lumina.core.edit import colour_profile, pipeline
 from lumina.core.edit import params as edit_params
-from lumina.core.edit import pipeline
 from lumina.core.edit.source import EditSource, fitted
 
 PROXY, SCREEN, REGION = "proxy", "screen", "region"
@@ -63,17 +63,117 @@ class Opened:
     lens: object
     raw: bool
     lens_data: bool
+    # The camera profile a new edit of a RAW file starts with: (id, name), see
+    # `default_profile`; None for a photo in sRGB
+    profile: tuple | None = None
 
 
-def open_photo(path, shot=None):
-    """Decode the photo and make its proxy; find its lens in the lens database (`shot`: what
-    the photo says of how it was taken, see lensdb.Shot). Returns `Opened`."""
+def open_photo(path, shot=None, folders=()):
+    """Decode the photo and make its proxy; find its lens in the lens database and its
+    camera's profile (`shot`: what the photo says of how it was taken, see lensdb.Shot;
+    `folders`: where the user keeps profiles, besides dcp.default_folders()). Returns
+    `Opened`."""
     source = _source(path)
     # Made now, while the view opens, not at the first move of a control
     source.make_ready()
     database = lensdb.load()
-    profile = lensdb.match(shot, database=database) if shot is not None else None
-    return Opened(source.size(), profile, raw.is_raw(path), bool(len(database)))
+    lens = lensdb.match(shot, database=database) if shot is not None else None
+    is_raw = source.camera is not None
+    profile = default_profile(shot, folders) if is_raw else None
+    return Opened(source.size(), lens, raw.is_raw(path), bool(len(database)), profile)
+
+
+def _folders(folders):
+    return [*folders, *dcp.default_folders()]
+
+
+def default_profile(shot, folders=()):
+    """(id, name) of the profile a new edit of a RAW file from the camera of `shot` starts
+    with: the first profile for the camera (the user's folders, then Lumina's own, then
+    RawTherapee's), not one made from a colour target (that is for one light), stored; else
+    Lumina's standard look."""
+    if shot is not None and shot.model:
+        # Looked at again (20 ms): a profile may have been made by another process
+        dcp.forget_scans()
+        for found in dcp.profiles_for(shot.make, shot.model, _folders(folders)):
+            if "ColorChecker" in found.name:
+                continue
+            try:
+                ident, profile = dcp.store(found.path)
+            except dcp.ProfileError:
+                continue
+            return ident, profile.name
+    return colour_profile.STANDARD, "Lumina Standard"
+
+
+def profile_choices(shot, folders=()):
+    """What a RAW file of the camera of `shot` can be rendered with: (name, key) pairs, key
+    "libraw", "standard" or a profile file's path."""
+    choices = [
+        ("Lumina Standard", colour_profile.STANDARD),
+        ("Neutral (LibRaw)", colour_profile.LIBRAW),
+    ]
+    if shot is not None and shot.model:
+        dcp.forget_scans()
+        seen = set()
+        for found in dcp.profiles_for(shot.make, shot.model, _folders(folders)):
+            if found.name not in seen:
+                seen.add(found.name)
+                choices.append((found.name, found.path))
+    return choices
+
+
+def use_profile(path):
+    """Store the profile at `path` for edits to use: (id, name). Raises ProfileError."""
+    ident, profile = dcp.store(path)
+    return ident, profile.name
+
+
+@dataclass(frozen=True)
+class Made:
+    """A profile Lumina made and stored: its id and name, where it was written, and how
+    near it came: for a camera look the mean difference from the JPEGs (8-bit levels)
+    before and after, for a colour target the mean and largest CIEDE2000."""
+
+    ident: str
+    name: str
+    path: str
+    before: float
+    after: float
+
+
+def fit_camera_look(paths, model):
+    """Fit the look of the camera called `model` from the RAW files at `paths` and the
+    JPEGs inside them; write it to Lumina's profile folder (a new file) and store it."""
+    fitted = profile_fit.fit(profile_fit.gather(paths), model)
+    folder = dcp.user_dir()
+    written = dcp.write_new(dcp.free_name(folder, fitted.profile.name), fitted.profile)
+    dcp.forget_scans()
+    ident, profile = dcp.store(written)
+    return Made(ident, profile.name, str(written), fitted.before, fitted.after)
+
+
+def checker_profile(path, params_json, corners, model, linear=False):
+    """A profile for the camera called `model` from the open photo, a shot of a colour
+    target: `corners` are the middles of its four corner patches (dark skin, bluish green,
+    black, white) as fractions of the photo as `params_json` renders it. Written to
+    Lumina's profile folder and stored. Raises ValueError for a photo in sRGB or a target
+    off the photo."""
+    source = _source(path)
+    if source.camera is None:
+        raise ValueError("a colour target profile needs a RAW file")
+    edit = edit_params.from_json(params_json)
+    # The camera's colours in the frame the photo is shown in
+    view = np.asarray(pipeline.geometry(source.proxy, edit), dtype=np.float64)
+    height, width = view.shape[:2]
+    points = [(x * (width - 1), y * (height - 1)) for x, y in corners]
+    fitted = colour_checker.fit(
+        colour_checker.sample(view, points), source.camera, model, linear=linear
+    )
+    written = dcp.write_new(dcp.free_name(dcp.user_dir(), fitted.profile.name), fitted.profile)
+    dcp.forget_scans()
+    ident, profile = dcp.store(written)
+    return Made(ident, profile.name, str(written), fitted.mean_error, fitted.max_error)
 
 
 def lens_names(shot):
@@ -94,7 +194,7 @@ def render(path, params_json, kind=PROXY, screen_side=2560):
         image = source.proxy
     else:
         image = _screen_image(source, screen_side)
-    pixels = pipeline.render(image, edit, full=source.size())
+    pixels = pipeline.render(image, edit, full=source.size(), camera=source.camera)
     return Rendered(
         pixels.shape[1],
         pixels.shape[0],
@@ -130,6 +230,7 @@ def render_region(path, params_json, zoom, centre, view):
         full=source.size(),
         region=(left, top, left + wide, top + high),
         haze=_haze_of(source, params_json, edit),
+        camera=source.camera,
     )
     return Rendered(
         wide,
@@ -161,7 +262,7 @@ def _haze_of(source, params_json, edit):
     key = (source.path, params_json)
     if key not in _haze:
         _haze.clear()
-        _haze[key] = pipeline.haze_analysis(source.proxy, edit)
+        _haze[key] = pipeline.haze_analysis(source.proxy, edit, source.camera)
     return _haze[key]
 
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, replace
 from lumina.core.edit import curves
 from lumina.core.edit.lenscorrect import Correction, LensProfile
 
-VERSION = 9
+VERSION = 10
 
 # Ranges, in the units the pipeline uses
 EXPOSURE = (-5.0, 5.0)  # stops
@@ -226,6 +226,15 @@ class Matte:
 
 
 @dataclass(frozen=True)
+class ColourProfile:
+    # How a RAW file's camera colours become the photo's (colour_profile.py): "libraw"
+    # (LibRaw's matrix, as before profiles), "standard" (Lumina's look) or a stored camera
+    # profile's id (dcp.store); `name` is for showing it. A photo in sRGB has no use for it
+    id: str = "libraw"
+    name: str = ""
+
+
+@dataclass(frozen=True)
 class Lens:
     # The lens's corrections (lenscorrect.py): off, or on with the lens's `profile` (the
     # numbers for this focal length and aperture, kept here so the edit renders the same
@@ -281,6 +290,7 @@ class Params:
     vignette: Vignette = field(default_factory=Vignette)
     grain: Grain = field(default_factory=Grain)
     lens: Lens = field(default_factory=Lens)
+    profile: ColourProfile = field(default_factory=ColourProfile)
     # Quarter turns clockwise, 0 to 3; then mirrored left to right and top to bottom;
     # then turned by `straighten` degrees clockwise, scaled to fill the frame; then cropped
     rotate: int = 0
@@ -345,6 +355,7 @@ class Params:
                 "aberration": float(self.lens.aberration),
                 "profile": None if self.lens.profile is None else self.lens.profile.to_dict(),
             },
+            "profile": {"id": self.profile.id, "name": self.profile.name},
             "rotate": self.rotate,
             "flip": {"horizontal": self.flip_horizontal, "vertical": self.flip_vertical},
             "straighten": float(self.straighten),
@@ -429,6 +440,7 @@ def from_dict(data):
     vignette = _section(data, "vignette")
     grain = _section(data, "grain")
     lens = _section(data, "lens")
+    profile = _section(data, "profile")
     curve_data = _section(data, "curves")
     matte = _section(data, "matte")
     crop = _section(data, "crop")
@@ -505,6 +517,10 @@ def from_dict(data):
             vignetting=_number(lens.get("vignetting"), 100.0, LENS),
             aberration=_number(lens.get("aberration"), 100.0, LENS),
             profile=LensProfile.from_dict(lens.get("profile")),
+        ),
+        profile=ColourProfile(
+            id=_profile_id(profile.get("id")),
+            name=profile.get("name") if isinstance(profile.get("name"), str) else "",
         ),
         rotate=rotate % 4 if isinstance(rotate, int) and not isinstance(rotate, bool) else 0,
         flip_horizontal=flip.get("horizontal") is True,
@@ -587,6 +603,11 @@ def _to_9(data):
     }
 
 
+def _to_10(data):
+    # Version 10 added camera profiles: LibRaw's colours, which every edit before had
+    return {"profile": {"id": "libraw", "name": ""}, **data}
+
+
 _MIGRATIONS = {
     1: _to_2,
     2: _to_3,
@@ -596,6 +617,7 @@ _MIGRATIONS = {
     6: _to_7,
     7: _to_8,
     8: _to_9,
+    9: _to_10,
 }
 
 
@@ -612,6 +634,15 @@ def migrate(data):
         version += 1
         data["version"] = version
     return data
+
+
+def _profile_id(value):
+    # A built-in name or a store id; anything else is LibRaw's, which always renders
+    if value in ("libraw", "standard"):
+        return value
+    if isinstance(value, str) and len(value) == 16 and all(c in "0123456789abcdef" for c in value):
+        return value
+    return "libraw"
 
 
 def _section(data, name):

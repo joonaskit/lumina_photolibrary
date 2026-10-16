@@ -156,6 +156,7 @@ class MainWindow(QMainWindow):
         # Where the Develop view was opened from, to go back to
         self._develop_from = _GRID
         self.session = DevelopSession(service, self)
+        self.session.profile_folders = settings.profile_folders
         self.session.history_changed.connect(self._update_history)
         self.session.exported.connect(self._on_exported)
         self.session.export_exists.connect(self._on_export_exists)
@@ -1465,6 +1466,9 @@ class MainWindow(QMainWindow):
         if self.pages.currentIndex() == _DEVELOP:
             if self.develop.is_cropping():
                 self.develop.cancel_crop()
+                return
+            if self.develop.is_picking():
+                self.develop.cancel_picking()
                 return
             if self.develop.image.is_zoomed():
                 self.develop.image.reset_zoom()

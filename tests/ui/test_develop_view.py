@@ -966,7 +966,7 @@ def test_the_panel_follows_the_stored_order_and_hidden_sections(qtbot, window):
     order = panel_order(view)
     # Unknown names go, the ones left out come back at their place in the default order
     # A section left out follows the one before it in the default order
-    assert order[:3] == ["presets", "matte", "effects"]
+    assert order[:4] == ["presets", "profile", "matte", "effects"]
     assert order.index("curve") == order.index("light") + 1
     assert order.index("presence") == order.index("curve") + 1
     assert "bogus" not in order and len(order) == len(develop_view.SECTION_NAMES)
