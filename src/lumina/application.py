@@ -13,13 +13,16 @@ from lumina import APP_ID
 from lumina.integration import style, theme
 from lumina.integration.single_instance import SingleInstance
 from lumina.integration.theme_watcher import ThemeWatcher
+from lumina.qt_models import backups as backing
 from lumina.qt_models import workers
+from lumina.qt_models.backups import BackupService
 from lumina.qt_models.importing import ImportService
-from lumina.qt_models.library import LibraryService, NewerDatabase
+from lumina.qt_models.library import LibraryService, NewerDatabase, NoBackup
 from lumina.qt_models.merge import MergeService
 from lumina.qt_models.search import SearchService
 from lumina.ui import settings
 from lumina.ui.main_window import MainWindow
+from lumina.ui.settings_dialog import when_text
 
 # How often the garbage is collected, in milliseconds
 _COLLECT_MS = 5000
@@ -34,8 +37,10 @@ def use_desktop_dialogs(environ=os.environ, platform=sys.platform):
         environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
 
 
-def run(paths=()):
-    """`paths`: folders to add and photos to open, from the command line or the file manager."""
+def run(paths=(), restore=None):
+    """`paths`: folders to add and photos to open, from the command line or the file
+    manager. `restore`: a backup to put in place of the library first, which the user
+    chose before the app started itself again."""
     use_desktop_dialogs()
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP_ID)
@@ -65,11 +70,28 @@ def run(paths=()):
     style.apply(app, theme.load_theme())
     ThemeWatcher(app, parent=app)
 
+    # Before anything opens the database
+    told = None
+    if restore is not None:
+        told = _restore(restore)
+    elif not _check_database():
+        return 1
+
     try:
         service = LibraryService(parent=app)
     except NewerDatabase as error:
         QMessageBox.critical(None, "Lumina", f"{error}\n\nIt was left as it is.")
         return 1
+    except NoBackup as error:
+        QMessageBox.critical(None, "Lumina", str(error))
+        return 1
+    backups = BackupService(service.path, parent=app)
+    backups.extra_folder = settings.backup_folder()
+    backups.keep_daily, backups.keep_weekly = settings.backups_kept(
+        backing.KEEP_DAILY, backing.KEEP_WEEKLY
+    )
+    # Restoring a backup: quit, and start again on it
+    backups.restore_requested.connect(app.quit)
     service.thumbnail_limit = settings.thumbnail_limit()
     service.gentle_scans = settings.gentle_scans()
     service.watcher.set_enabled(settings.watch_folders())
@@ -81,17 +103,89 @@ def run(paths=()):
     app.aboutToQuit.connect(search.close)
     app.aboutToQuit.connect(merge.close)
     app.aboutToQuit.connect(importer.close)
+    app.aboutToQuit.connect(backups.close)
     app.aboutToQuit.connect(service.close)
     app.aboutToQuit.connect(workers.shutdown)
 
-    window = MainWindow(service, search, merge, importer)
+    window = MainWindow(service, search, merge, importer, backups=backups)
+    backups.failed.connect(lambda text: window.statusBar().showMessage(text, 15000))
     instance.opened.connect(lambda wanted: _open(window, wanted))
     service.start()
     search.start()
     merge.start()
     importer.start()
+    backups.start()
     _open(window, paths)
-    return app.exec()
+    if told:
+        window.statusBar().showMessage(told, 15000)
+    code = app.exec()
+    if backups.restore_from is not None:
+        instance.close()
+        _start_again(backups.restore_from)
+    return code
+
+
+def _start_again(restore):
+    """Lumina again, in this process, with the backup `restore` to put in place first.
+    Every thread and its connection to the database ends here."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable, "-m", "lumina.app", "--restore", restore])
+
+
+def _restore(path):
+    """Put the backup `path` in place of the library. What to tell the user when it is
+    done; when it could not be, they are told now, and the library is as it was."""
+    problem = backing.restore(path)
+    if problem is not None:
+        QMessageBox.critical(
+            None,
+            "Lumina",
+            f"The backup could not be restored.\n\n{problem}\n\nThe library is as it was.",
+        )
+        return None
+    return f"Restored the library from {os.path.basename(path)}"
+
+
+def _check_database():
+    """Whether to go on: the library database is sound, or was damaged and the user had
+    a backup restored, or chose to open it as it is."""
+    problem = backing.check()
+    if problem is None:
+        return True
+    path = backing.default_path()
+    folders = [backing.default_folder(path), settings.backup_folder()]
+    found = [
+        made
+        for made in backing.backups(path, [folder for folder in folders if folder])
+        if made.kind != backing.DAMAGED
+    ]
+    box = QMessageBox(QMessageBox.Icon.Critical, "Lumina", "The library database is damaged.")
+    quit_button = box.addButton("Quit", QMessageBox.ButtonRole.RejectRole)
+    if not found:
+        box.setInformativeText(
+            f"{problem}\n\nThere is no backup of it. Lumina can open it as it is, but "
+            "what is damaged may be missing or wrong, and may get worse."
+        )
+        go_on = box.addButton("Open Anyway", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(quit_button)
+        box.exec()
+        return box.clickedButton() is go_on
+    newest = found[0]
+    held = backing.contents(newest.path)
+    photos = ""
+    if held is not None:
+        photos = f", with {held.photos:,} photo{'s' * (held.photos != 1)}"
+    box.setInformativeText(
+        f"{problem}\n\nThe newest backup is from {when_text(newest.taken, ' at ')}"
+        f"{photos}. Restore it? The damaged database is kept beside the backups."
+    )
+    restore = box.addButton("Restore Backup", QMessageBox.ButtonRole.AcceptRole)
+    box.setDefaultButton(restore)
+    box.exec()
+    if box.clickedButton() is not restore:
+        return False
+    return _restore(newest.path) is not None
 
 
 def _open(window, paths):

@@ -17,7 +17,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
-from lumina.core import metadata
+from lumina.core import backup, metadata
 
 # Steps of `metadata_state`
 PENDING, READ, FAILED = 0, 1, 2
@@ -38,6 +38,10 @@ def default_path():
 
 class NewerDatabase(Exception):
     """The file was written by a newer Lumina: it is left alone."""
+
+
+class NoBackup(Exception):
+    """The file needs a migration and could not be backed up first: it is left alone."""
 
 
 def _migrate_1(db):
@@ -411,6 +415,22 @@ class Library:
 
     def _migrate(self):
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if 0 < version < SCHEMA_VERSION:
+            # A copy as it was, kept apart from the daily ones: a migration that goes
+            # wrong loses nothing. Without it, it is not changed
+            try:
+                backup.back_up(
+                    self.path,
+                    backup.default_folder(self.path),
+                    backup.BEFORE_MIGRATION,
+                    schema=version,
+                )
+            except backup.BackupError as error:
+                self.db.close()
+                raise NoBackup(
+                    f"{self.path} needs updating for this Lumina, and could not be backed up "
+                    f"first, so it was left as it is. {error}"
+                ) from error
         for number in range(version, SCHEMA_VERSION):
             with self.db:
                 _MIGRATIONS[number](self.db)
