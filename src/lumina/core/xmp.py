@@ -49,6 +49,8 @@ class SidecarState:
     keywords: tuple[str, ...] = ()
     # ((copy number, parameters JSON), ...): 0 is the photo's own edit
     edits: tuple[tuple[int, str], ...] = ()
+    # (stack key, position in the stack, the top the lowest), or None for no stack
+    stack: tuple[str, int] | None = None
 
 
 def sidecar_path(photo_path):
@@ -69,6 +71,9 @@ def build(state):
     description.set(_q(NAMESPACE, "Version"), str(VERSION))
     description.set(_q(NAMESPACE, "Updated"), repr(float(state.updated)))
     description.set(_q(NAMESPACE, "Flag"), str(state.flag))
+    if state.stack is not None:
+        description.set(_q(NAMESPACE, "Stack"), state.stack[0])
+        description.set(_q(NAMESPACE, "StackPosition"), str(state.stack[1]))
     if state.keywords:
         # Every name on the way, once, for programs that know no levels
         names = {}
@@ -145,7 +150,9 @@ def _state(description, path):
             except ValueError:
                 raise SidecarError(path, "An edit has no copy number") from None
             edits.append((copy, item.get(_q(NAMESPACE, "Params"), "")))
+    stack_key = description.get(_q(NAMESPACE, "Stack"))
     return SidecarState(
+        stack=(stack_key, number("StackPosition", int, 0)) if stack_key else None,
         updated=number("Updated", float, 0.0),
         flag=number("Flag", int, 0),
         rating=_rating(description),

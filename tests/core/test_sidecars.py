@@ -496,7 +496,10 @@ def test_a_schema_9_library_notes_what_was_marked_before(tmp_path):
     raw.executescript(
         "UPDATE photos SET changed_at = NULL;"
         "ALTER TABLE photos DROP COLUMN changed_at; ALTER TABLE photos DROP COLUMN sidecar_at; "
-        "ALTER TABLE photos DROP COLUMN sidecar_mtime_ns; PRAGMA user_version = 9;"
+        "ALTER TABLE photos DROP COLUMN sidecar_mtime_ns; "
+        "DROP INDEX photos_stack; ALTER TABLE photos DROP COLUMN stack_id; "
+        "ALTER TABLE photos DROP COLUMN stack_position; DROP TABLE stacks; "
+        "PRAGMA user_version = 9;"
     )
     raw.close()
 

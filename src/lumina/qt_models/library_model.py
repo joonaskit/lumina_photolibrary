@@ -47,6 +47,10 @@ RATING_ROLE = Qt.ItemDataRole.UserRole + 5
 DAMAGE_ROLE = Qt.ItemDataRole.UserRole + 6
 # The paths of the photo's keywords, as a list
 KEYWORDS_ROLE = Qt.ItemDataRole.UserRole + 7
+# How many virtual copies the photo has
+COPIES_ROLE = Qt.ItemDataRole.UserRole + 8
+# (place, size, collapsed) of a photo in a stack of two or more, else None
+STACK_ROLE = Qt.ItemDataRole.UserRole + 9
 
 # What a drag of photos from the grid carries: the photo ids as JSON
 PHOTOS_MIME = "application/x-lumina-photos"
@@ -110,6 +114,8 @@ class LibraryModel(QAbstractListModel):
         # Every row of the filter; `_ranked` the ids a search found, best first; `_rows`
         # what is shown
         self._all = []
+        # Stack id: its photos (of `_all`), the top first, for the stacks of two or more
+        self._stacks = {}
         # Photo id: its position in `_all`
         self._positions = {}
         self._ranked = None
@@ -234,6 +240,7 @@ class LibraryModel(QAbstractListModel):
             self._keep_edited_photos(rows)
         self._all = rows
         self._positions = {row.id: number for number, row in enumerate(rows)}
+        self._stacks = _stacks_of(rows)
         if self.search is not None:
             self._run_search(reset)
             return
@@ -247,7 +254,25 @@ class LibraryModel(QAbstractListModel):
             base = self._all
         else:
             base = [self._all[self._positions[i]] for i in self._ranked if i in self._positions]
-        return [photo for photo in base if self._passes(photo)]
+        return self._fold([photo for photo in base if self._passes(photo)])
+
+    def _fold(self, shown):
+        """The stacks within `shown`: a stack is there when its top passes, as one cell
+        while collapsed (the top), else the top and the members that pass after it."""
+        if not self._stacks:
+            return shown
+        # By id: the rows of `_stacks` may be older than those of `shown` (a flag just set)
+        passing = {photo.id: photo for photo in shown}
+        folded = []
+        for photo in shown:
+            members = self._stacks.get(photo.stack)
+            if members is None:
+                folded.append(photo)
+            elif photo.id == members[0].id:
+                folded.append(photo)
+                if not photo.stack_collapsed:
+                    folded.extend(passing[m.id] for m in members[1:] if m.id in passing)
+        return folded
 
     def _keep_edited_photos(self, rows):
         # A photo edited (or its edit removed) while the edit filter is on stays until
@@ -398,13 +423,29 @@ class LibraryModel(QAbstractListModel):
 
         wanted = self._kept_passes
 
-        return sum(1 for p in base if wanted(p)) - sum(1 for p in self._rows if wanted(p))
+        # Photos a collapsed stack folds away are not hidden by the flags
+        return sum(1 for p in base if wanted(p)) - sum(
+            1 for p in base if self._passes(p) and wanted(p)
+        )
 
     def flag(self, row):
         return self._rows[row].flag
 
     def rating(self, row):
         return self._rows[row].rating
+
+    def copies(self, row):
+        """How many virtual copies `row`'s photo has."""
+        return self._rows[row].copies
+
+    def stack(self, row):
+        """The id of the stack of two or more `row`'s photo is in, or None."""
+        photo = self._rows[row]
+        return photo.stack if photo.stack in self._stacks else None
+
+    def is_stack_top(self, row):
+        stack = self.stack(row)
+        return stack is not None and self._stacks[stack][0].id == self._rows[row].id
 
     def keywords(self, row):
         """The paths of the keywords of `row`'s photo, by path."""
@@ -587,6 +628,14 @@ class LibraryModel(QAbstractListModel):
             return self.keywords(index.row())
         if role == DAMAGE_ROLE:
             return damage_text(photo.damage_warning)
+        if role == COPIES_ROLE:
+            return photo.copies
+        if role == STACK_ROLE:
+            members = self._stacks.get(photo.stack)
+            if members is None:
+                return None
+            place = next(n for n, m in enumerate(members, 1) if m.id == photo.id)
+            return (place, len(members), photo.stack_collapsed)
         if role == DIMMED_ROLE:
             return photo.flag == REJECTED and self.rejected != SHOW and self.flag_filter != REJECTED
         path = self.path(index.row())
@@ -662,6 +711,20 @@ def _runs(numbers):
         else:
             runs.append((number, number))
     return runs
+
+
+def _stacks_of(rows):
+    """{stack id: its photos, the top first} for the stacks with two or more. Of the photos
+    in `rows`: a folder showing some of a stack's photos has the first of them as its top."""
+    found = {}
+    for photo in rows:
+        if photo.stack is not None:
+            found.setdefault(photo.stack, []).append(photo)
+    return {
+        stack: sorted(members, key=lambda m: (m.stack_position, m.id))
+        for stack, members in found.items()
+        if len(members) > 1
+    }
 
 
 def _query(path, shown):

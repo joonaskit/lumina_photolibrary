@@ -336,6 +336,25 @@ def _migrate_10(db):
     )
 
 
+def _migrate_11(db):
+    db.executescript(
+        """
+        -- A stack of photos (core/db.py `make_stack`): shown as one cell while collapsed.
+        -- `key` is how the XMP sidecars name it (a sidecar holds one photo, so a stack
+        -- is put together again from the members' keys). The top is the member with the
+        -- lowest position. Per library like flags; kept while a file or drive is missing
+        CREATE TABLE stacks (
+            id INTEGER PRIMARY KEY,
+            key TEXT NOT NULL UNIQUE,
+            collapsed INTEGER NOT NULL DEFAULT 1
+        );
+        ALTER TABLE photos ADD COLUMN stack_id INTEGER REFERENCES stacks(id) ON DELETE SET NULL;
+        ALTER TABLE photos ADD COLUMN stack_position INTEGER NOT NULL DEFAULT 0;
+        CREATE INDEX photos_stack ON photos (stack_id);
+        """
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
 _MIGRATIONS = [
     _migrate_1,
@@ -348,6 +367,7 @@ _MIGRATIONS = [
     _migrate_8,
     _migrate_9,
     _migrate_10,
+    _migrate_11,
 ]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -403,6 +423,13 @@ class PhotoRow:
     damage_warning: str | None = None
     # The ids of the keywords the photo was given (not of those above them)
     keywords: tuple[int, ...] = ()
+    # How many virtual copies the photo has (edits other than its own)
+    copies: int = 0
+    # The stack the photo is in (its id), its place there (the top is the lowest) and
+    # whether the stack is collapsed; None for no stack
+    stack: int | None = None
+    stack_position: int = 0
+    stack_collapsed: bool = True
 
 
 @dataclass(frozen=True)
@@ -584,6 +611,7 @@ class Library:
             self.db.execute("DELETE FROM jobs WHERE folder_id = ?", (folder_id,))
             self.db.execute("DELETE FROM photos WHERE folder_id = ?", (folder_id,))
             self.db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+            self._tidy_stacks()
             # Vectors of photos no longer in the library, copies elsewhere kept
             self.db.execute(
                 "DELETE FROM embeddings WHERE content_id NOT IN "
@@ -704,8 +732,11 @@ class Library:
             "SELECT p.id, v.key, p.path, p.content_id, p.available, "
             "COALESCE(p.captured, p.file_time) AS taken, e.params, p.flag, p.rating, "
             "p.damage_warning, "
-            "(SELECT GROUP_CONCAT(k.keyword_id) FROM photo_keywords k WHERE k.photo_id = p.id) "
+            "(SELECT GROUP_CONCAT(k.keyword_id) FROM photo_keywords k WHERE k.photo_id = p.id), "
+            "(SELECT COUNT(*) FROM edits c WHERE c.photo_id = p.id AND c.copy > 0), "
+            "p.stack_id, p.stack_position, COALESCE(s.collapsed, 1) "
             f"FROM photos p JOIN volumes v ON v.id = p.volume_id "
+            "LEFT JOIN stacks s ON s.id = p.stack_id "
             "LEFT JOIN edits e ON e.photo_id = p.id AND e.copy = 0 "
             f"{where} ORDER BY taken, p.path",
             args,
@@ -723,6 +754,10 @@ class Library:
                 r[8],
                 r[9],
                 tuple(int(i) for i in r[10].split(",")) if r[10] else (),
+                r[11],
+                r[12],
+                r[13],
+                bool(r[14]),
             )
             for r in rows
         ]
@@ -1088,6 +1123,7 @@ class Library:
             rating=row[1],
             keywords=tuple(sorted((paths[k] for k in found if k in paths), key=str.casefold)),
             edits=tuple((r[0], r[1]) for r in edits),
+            stack=self._stack_of(photo_id),
         )
 
     def sidecar_written(self, photo_id, changed_at, mtime_ns):
@@ -1160,6 +1196,178 @@ class Library:
             "INSERT OR REPLACE INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?)",
             [(photo_id, copy, params, state.updated) for copy, params in state.edits],
         )
+        if state.stack is None:
+            self.db.execute(
+                "UPDATE photos SET stack_id = NULL, stack_position = 0 WHERE id = ?", (photo_id,)
+            )
+        else:
+            key, position = state.stack
+            self.db.execute("INSERT OR IGNORE INTO stacks (key) VALUES (?)", (key,))
+            self.db.execute(
+                "UPDATE photos SET stack_id = (SELECT id FROM stacks WHERE key = ?), "
+                "stack_position = ? WHERE id = ?",
+                (key, position, photo_id),
+            )
+        # Not tidied: the stack's other photos' sidecars are read one by one, and a stack
+        # of one photo meanwhile is a stack to be (the grid shows it as no stack)
+
+    # Stacks
+
+    def _stack_of(self, photo_id):
+        row = self.db.execute(
+            "SELECT s.key, p.stack_position FROM photos p JOIN stacks s ON s.id = p.stack_id "
+            "WHERE p.id = ?",
+            (photo_id,),
+        ).fetchone()
+        return (row[0], row[1]) if row is not None else None
+
+    def _tidy_stacks(self):
+        """A stack with one photo, or none, is no stack. In the caller's transaction."""
+        lone = [
+            row[0]
+            for row in self.db.execute(
+                "SELECT s.id FROM stacks s "
+                "WHERE (SELECT COUNT(*) FROM photos p WHERE p.stack_id = s.id) < 2"
+            )
+        ]
+        if not lone:
+            return
+        marks = ", ".join("?" * len(lone))
+        # Their one photo's sidecar still names the stack: it is out of date
+        left = [
+            row[0]
+            for row in self.db.execute(f"SELECT id FROM photos WHERE stack_id IN ({marks})", lone)
+        ]
+        self.db.execute(
+            f"UPDATE photos SET stack_id = NULL, stack_position = 0 WHERE stack_id IN ({marks})",
+            lone,
+        )
+        self.db.execute(f"DELETE FROM stacks WHERE id IN ({marks})", lone)
+        self._touch(left)
+
+    def _stack_members(self, stack_ids):
+        stack_ids = list(stack_ids)
+        marks = ", ".join("?" * len(stack_ids))
+        rows = self.db.execute(
+            f"SELECT id FROM photos WHERE stack_id IN ({marks})", stack_ids
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def _stacks_of(self, photo_ids):
+        ids = list(photo_ids)
+        found = set()
+        for start in range(0, len(ids), 500):
+            part = ids[start : start + 500]
+            marks = ", ".join("?" * len(part))
+            rows = self.db.execute(
+                f"SELECT DISTINCT stack_id FROM photos WHERE id IN ({marks}) "
+                "AND stack_id IS NOT NULL",
+                part,
+            )
+            found.update(row[0] for row in rows)
+        return found
+
+    def make_stack(self, photo_ids):
+        """Stack these photos, the first on top and in the order given, collapsed. A photo
+        that was in a stack leaves it (what is left of that one is a stack still, or none
+        when fewer than two remain). Fewer than two photos make none. Returns the stack's
+        id, or None."""
+        ids = list(dict.fromkeys(photo_ids))
+        if len(ids) < 2:
+            return None
+        with self.db:
+            old = self._stacks_of(ids)
+            affected = set(ids) | (set(self._stack_members(old)) if old else set())
+            cursor = self.db.execute(
+                "INSERT INTO stacks (key, collapsed) VALUES (?, 1)", (os.urandom(8).hex(),)
+            )
+            stack = cursor.lastrowid
+            self.db.executemany(
+                "UPDATE photos SET stack_id = ?, stack_position = ? WHERE id = ?",
+                [(stack, place, photo) for place, photo in enumerate(ids)],
+            )
+            self._tidy_stacks()
+            self._touch(affected)
+        return stack
+
+    def unstack(self, photo_ids):
+        """Dissolve the stacks these photos are in: every member is on its own again."""
+        with self.db:
+            stacks = self._stacks_of(photo_ids)
+            if not stacks:
+                return
+            members = self._stack_members(stacks)
+            marks = ", ".join("?" * len(stacks))
+            self.db.execute(
+                f"UPDATE photos SET stack_id = NULL, stack_position = 0 "
+                f"WHERE stack_id IN ({marks})",
+                list(stacks),
+            )
+            self.db.execute(f"DELETE FROM stacks WHERE id IN ({marks})", list(stacks))
+            self._touch(members)
+
+    def leave_stack(self, photo_ids):
+        """Take these photos out of their stacks. The others stay stacked, in their order
+        (the next one is the top when the top left), unless fewer than two are left."""
+        ids = list(dict.fromkeys(photo_ids))
+        with self.db:
+            leaving = [
+                row[0]
+                for start in range(0, len(ids), 500)
+                for row in self.db.execute(
+                    "SELECT id FROM photos WHERE stack_id IS NOT NULL AND id IN "
+                    f"({', '.join('?' * len(ids[start : start + 500]))})",
+                    ids[start : start + 500],
+                )
+            ]
+            self.db.executemany(
+                "UPDATE photos SET stack_id = NULL, stack_position = 0 WHERE id = ?",
+                [(photo,) for photo in leaving],
+            )
+            self._tidy_stacks()
+            self._touch(leaving)
+
+    def set_stack_top(self, photo_id):
+        """Make this photo the top of its stack; the others keep their order."""
+        with self.db:
+            row = self.db.execute(
+                "SELECT stack_id FROM photos WHERE id = ?", (photo_id,)
+            ).fetchone()
+            if row is None or row[0] is None:
+                return
+            order = [
+                r[0]
+                for r in self.db.execute(
+                    "SELECT id FROM photos WHERE stack_id = ? AND id != ? "
+                    "ORDER BY stack_position, id",
+                    (row[0], photo_id),
+                )
+            ]
+            self.db.executemany(
+                "UPDATE photos SET stack_position = ? WHERE id = ?",
+                [(place, photo) for place, photo in enumerate([photo_id, *order])],
+            )
+            self._touch([photo_id, *order])
+
+    def set_stacks_collapsed(self, stack_ids, collapsed):
+        """Collapse or expand stacks. How the library is shown, not something to keep with
+        the photos: their sidecars are not rewritten."""
+        stack_ids = list(stack_ids)
+        if not stack_ids:
+            return
+        marks = ", ".join("?" * len(stack_ids))
+        with self.db:
+            self.db.execute(
+                f"UPDATE stacks SET collapsed = ? WHERE id IN ({marks})",
+                [int(collapsed), *stack_ids],
+            )
+
+    def stack_members(self, stack_id):
+        """The ids of a stack's photos, the top first."""
+        rows = self.db.execute(
+            "SELECT id FROM photos WHERE stack_id = ? ORDER BY stack_position, id", (stack_id,)
+        )
+        return [row[0] for row in rows]
 
     # Edits
 

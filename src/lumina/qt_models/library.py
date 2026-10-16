@@ -420,9 +420,42 @@ class LibraryService(QObject):
 
     # Edits and presets
 
-    def edit_json(self, photo_id):
-        """The photo's edit as parameters JSON, or None."""
-        return self.db.edit(photo_id)
+    def edit_json(self, photo_id, copy=0):
+        """The photo's edit (its own, or virtual copy `copy`) as parameters JSON, or None."""
+        return self.db.edit(photo_id, copy)
+
+    def copies(self, photo_id):
+        """The numbers of the photo's virtual copies, in order (its own edit is 0)."""
+        return [copy for copy in self.db.copies(photo_id) if copy > 0]
+
+    def make_copy(self, photo_id, copy=0, params_json=None):
+        """A new virtual copy of the photo, with the edit of `copy` (or `params_json`, when
+        the caller has an edit not stored yet). The original file is not touched, and nor
+        is any edit already stored. Returns the new copy's number."""
+        if params_json is None:
+            params_json = self.db.edit(photo_id, copy)
+        if params_json is None:
+            params_json = _params.Params().to_json()
+        number = self.db.new_copy(photo_id, params_json)
+        self.sidecars_due()
+        self.photos_changed.emit()
+        return number
+
+    def make_copies(self, photo_ids):
+        """A virtual copy of each photo, from its own edit, in one go."""
+        for photo_id in photo_ids:
+            params_json = self.db.edit(photo_id) or _params.Params().to_json()
+            self.db.new_copy(photo_id, params_json)
+        self.sidecars_due()
+        self.photos_changed.emit()
+
+    def delete_copy(self, photo_id, copy):
+        """Remove virtual copy `copy`. The photo's own edit (0) can't be removed this way."""
+        if copy <= 0:
+            raise ValueError("The photo's own edit is not a virtual copy")
+        self.db.delete_edit(photo_id, copy)
+        self.sidecars_due()
+        self.photos_changed.emit()
 
     def lens_shot(self, photo_id):
         """How the photo was taken, as the lens database wants it (lensdb.Shot), or None."""
@@ -452,12 +485,44 @@ class LibraryService(QObject):
             found = [found[int(i * step)] for i in range(limit)]
         return found
 
-    def save_edit(self, photo_id, params_json):
-        """Store an edit (None: none, the original). The grid hears of it."""
+    # Stacks
+
+    def make_stack(self, photo_ids):
+        """Stack these photos, the first on top. Fewer than two make none."""
+        if self.db.make_stack(photo_ids) is not None:
+            self._stacks_changed()
+
+    def unstack(self, photo_ids):
+        """Take apart the stacks these photos are in."""
+        self.db.unstack(photo_ids)
+        self._stacks_changed()
+
+    def leave_stack(self, photo_ids):
+        """Take these photos out of their stacks."""
+        self.db.leave_stack(photo_ids)
+        self._stacks_changed()
+
+    def set_stack_top(self, photo_id):
+        self.db.set_stack_top(photo_id)
+        self._stacks_changed()
+
+    def set_stacks_collapsed(self, stack_ids, collapsed):
+        self.db.set_stacks_collapsed(stack_ids, collapsed)
+        self.photos_changed.emit()
+
+    def _stacks_changed(self):
+        self.sidecars_due()
+        self.photos_changed.emit()
+
+    def save_edit(self, photo_id, params_json, copy=0):
+        """Store an edit (None: none, the original; for a virtual copy always an edit).
+        The grid hears of it."""
+        if params_json is None and copy > 0:
+            raise ValueError("A virtual copy always has an edit")
         if params_json is None:
             self.db.delete_edit(photo_id)
         else:
-            self.db.save_edit(photo_id, params_json)
+            self.db.save_edit(photo_id, params_json, copy)
         self.sidecars_due()
         self.photos_changed.emit()
 
