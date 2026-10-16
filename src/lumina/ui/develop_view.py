@@ -865,6 +865,24 @@ class DevelopView(QWidget):
         # The grid is there while the slider moves, and goes when it is let go
         self.straighten.moved.connect(lambda _v: self.image.set_grid(True))
         self.straighten.committed.connect(lambda _v: self.image.set_grid(False))
+        self.perspective = {
+            name: self._slider(
+                layout,
+                title,
+                *develop.PERSPECTIVE,
+                step=1.0,
+                decimals=0,
+                field=f"perspective.{name}",
+            )
+            for name, title in (
+                ("vertical", "Vertical perspective"),
+                ("horizontal", "Horizontal perspective"),
+            )
+        }
+        # The grid helps to see what is made straight, as with the straightening
+        for slider in self.perspective.values():
+            slider.moved.connect(lambda _v: self.image.set_grid(True))
+            slider.committed.connect(lambda _v: self.image.set_grid(False))
         row = QHBoxLayout()
         self.rotate_left = QPushButton("Rotate Left")
         self.rotate_left.clicked.connect(lambda: self._turn(-1))
@@ -1000,6 +1018,10 @@ class DevelopView(QWidget):
             return params.with_changes(vignette=replace(params.vignette, **{field[9:]: value}))
         if field.startswith("grain."):
             return params.with_changes(grain=replace(params.grain, **{field[6:]: value}))
+        if field.startswith("perspective."):
+            return params.with_changes(
+                perspective=replace(params.perspective, **{field[12:]: value})
+            )
         if field.startswith("lens."):
             return params.with_changes(lens=replace(params.lens, **{field[5:]: value}))
         if field.startswith("hsl."):
@@ -1041,6 +1063,8 @@ class DevelopView(QWidget):
         self._show_lens(params)
         self._show_profile(params)
         self.straighten.set_value(params.straighten)
+        for name, slider in self.perspective.items():
+            slider.set_value(getattr(params.perspective, name))
         self._show_curve()
         self.image.set_crop(params.crop)
         self._sync_constraint()

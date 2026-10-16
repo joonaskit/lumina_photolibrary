@@ -16,8 +16,10 @@ from dataclasses import dataclass, field, replace
 
 from lumina.core.edit import curves
 from lumina.core.edit.lenscorrect import Correction, LensProfile
+from lumina.core.edit.perspective import AMOUNT as PERSPECTIVE
+from lumina.core.edit.perspective import Perspective
 
-VERSION = 10
+VERSION = 11
 
 # Ranges, in the units the pipeline uses
 EXPOSURE = (-5.0, 5.0)  # stops
@@ -292,10 +294,12 @@ class Params:
     lens: Lens = field(default_factory=Lens)
     profile: ColourProfile = field(default_factory=ColourProfile)
     # Quarter turns clockwise, 0 to 3; then mirrored left to right and top to bottom;
-    # then turned by `straighten` degrees clockwise, scaled to fill the frame; then cropped
+    # then corrected for perspective (see perspective.py) and turned by `straighten` degrees
+    # clockwise, scaled to fill the frame; then cropped
     rotate: int = 0
     flip_horizontal: bool = False
     flip_vertical: bool = False
+    perspective: Perspective = field(default_factory=Perspective)
     straighten: float = 0.0
     crop: Crop = field(default_factory=Crop)
 
@@ -358,6 +362,10 @@ class Params:
             "profile": {"id": self.profile.id, "name": self.profile.name},
             "rotate": self.rotate,
             "flip": {"horizontal": self.flip_horizontal, "vertical": self.flip_vertical},
+            "perspective": {
+                "vertical": float(self.perspective.vertical),
+                "horizontal": float(self.perspective.horizontal),
+            },
             "straighten": float(self.straighten),
             "crop": {
                 "left": float(self.crop.left),
@@ -392,6 +400,7 @@ class Params:
                 # Mirroring then turning is turning then mirroring the other way
                 flip_horizontal=params.flip_vertical,
                 flip_vertical=params.flip_horizontal,
+                perspective=params.perspective.turned(),
                 crop=Crop(1 - c.bottom, c.left, 1 - c.top, c.right),
             )
         return params
@@ -405,12 +414,14 @@ class Params:
                 self,
                 flip_horizontal=not self.flip_horizontal,
                 straighten=-self.straighten,
+                perspective=self.perspective.flipped(True),
                 crop=Crop(1 - c.right, c.top, 1 - c.left, c.bottom),
             )
         return replace(
             self,
             flip_vertical=not self.flip_vertical,
             straighten=-self.straighten,
+            perspective=self.perspective.flipped(False),
             crop=Crop(c.left, 1 - c.bottom, c.right, 1 - c.top),
         )
 
@@ -453,6 +464,7 @@ def from_dict(data):
         left, top, right, bottom = 0.0, 0.0, 1.0, 1.0
     rotate = data.get("rotate", 0)
     flip = _section(data, "flip")
+    perspective = _section(data, "perspective")
     return Params(
         exposure=_number(data.get("exposure"), 0.0, EXPOSURE),
         temperature=_number(wb.get("temperature"), 0.0, WARMTH),
@@ -525,6 +537,10 @@ def from_dict(data):
         rotate=rotate % 4 if isinstance(rotate, int) and not isinstance(rotate, bool) else 0,
         flip_horizontal=flip.get("horizontal") is True,
         flip_vertical=flip.get("vertical") is True,
+        perspective=Perspective(
+            vertical=_number(perspective.get("vertical"), 0.0, PERSPECTIVE),
+            horizontal=_number(perspective.get("horizontal"), 0.0, PERSPECTIVE),
+        ),
         straighten=_number(data.get("straighten"), 0.0, STRAIGHTEN),
         crop=Crop(left, top, right, bottom),
     )
@@ -608,6 +624,11 @@ def _to_10(data):
     return {"profile": {"id": "libraw", "name": ""}, **data}
 
 
+def _to_11(data):
+    # Version 11 added perspective correction: none, so it looks as it did
+    return {"perspective": {"vertical": 0.0, "horizontal": 0.0}, **data}
+
+
 _MIGRATIONS = {
     1: _to_2,
     2: _to_3,
@@ -618,6 +639,7 @@ _MIGRATIONS = {
     7: _to_8,
     8: _to_9,
     9: _to_10,
+    10: _to_11,
 }
 
 
@@ -677,6 +699,7 @@ SECTIONS = (
     "grain",
     "rotate",
     "flip",
+    "perspective",
     "straighten",
     "crop",
 )

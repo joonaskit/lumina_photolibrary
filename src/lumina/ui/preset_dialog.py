@@ -32,6 +32,7 @@ _LIGHT_AND_COLOUR = (
 _GEOMETRY = (
     ("rotate", "Rotation"),
     ("flip", "Mirroring"),
+    ("perspective", "Perspective"),
     ("straighten", "Straightening"),
     ("crop", "Crop"),
 )

@@ -255,7 +255,8 @@ def resample(image, corr, box, turn=None):
     """The `box` (top, bottom, left, right) of `image` (H x W x 3: uint16, or floats)
     with the corrections made, as uint16 or float32 (16 bits keep their meaning, divided
     by `headroom`). `turn` is (degrees clockwise, scale) to turn the corrected photo
-    about its centre, as the geometry step's straightening does."""
+    about its centre, as the geometry step's straightening does, or a 3 x 3 matrix
+    (perspective.source_matrix) taking the places of the result to the corrected photo's."""
     height, width = image.shape[:2]
     top, bottom, left, right = box
     zoom = autoscale(corr, width, height)
@@ -269,7 +270,8 @@ def resample(image, corr, box, turn=None):
     columns = _Axis(right - left)
     xs = columns.coarse + np.float32(left)
     cx, cy = np.float32((width - 1) / 2), np.float32((height - 1) / 2)
-    if turn is not None:
+    matrix = turn if isinstance(turn, np.ndarray) else None
+    if turn is not None and matrix is None:
         angle = math.radians(turn[0])
         cos, sin = np.float32(math.cos(angle) / turn[1]), np.float32(math.sin(angle) / turn[1])
     for start in range(top, bottom, ROWS):
@@ -278,7 +280,9 @@ def resample(image, corr, box, turn=None):
         ys = rows.coarse + np.float32(start)
         shape = (len(ys), len(xs))
         x, y = np.broadcast_to(xs[None, :], shape), np.broadcast_to(ys[:, None], shape)
-        if turn is not None:
+        if matrix is not None:
+            x, y = _projected(matrix, xs, ys)
+        elif turn is not None:
             # The turn undone (y points down, so this turns the photo clockwise)
             x, y = (
                 cos * (xs[None, :] - cx) + sin * (ys[:, None] - cy) + cx,
@@ -300,6 +304,16 @@ def resample(image, corr, box, turn=None):
             block = _vignetted(block, gain)
         out[start - top : stop - top] = block
     return out
+
+
+def _projected(matrix, xs, ys):
+    """Where the places (`xs`, `ys`: a row and a column of positions) of a block go by the
+    3 x 3 `matrix`, as float32 grids."""
+    gx, gy = np.meshgrid(xs.astype(np.float64), ys.astype(np.float64))
+    w = matrix[2, 0] * gx + matrix[2, 1] * gy + matrix[2, 2]
+    x = (matrix[0, 0] * gx + matrix[0, 1] * gy + matrix[0, 2]) / w
+    y = (matrix[1, 0] * gx + matrix[1, 1] * gy + matrix[1, 2]) / w
+    return x.astype(np.float32), y.astype(np.float32)
 
 
 def _remap(plane, mx, my):
