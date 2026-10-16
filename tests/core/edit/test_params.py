@@ -415,3 +415,76 @@ def test_a_preset_can_keep_sharpening_and_noise_reduction():
     applied = params.apply_preset(Params(), params.preset(look, ["sharpening", "noise"]))
 
     assert applied == Params(sharpening=look.sharpening, noise=look.noise)
+
+
+# Lens corrections
+
+
+def with_lens():
+    from lumina.core.edit.lenscorrect import LensProfile
+
+    profile = LensProfile(
+        "Canon EF-S 18-135mm f/3.5-5.6 IS USM",
+        0.995,
+        ("ptlens", 0.027, -0.07, 0.048),
+        (1.0004, 1.0001, 0.0, 0.0, -8e-5, 7e-5),
+        (-0.2, 0.01, 0.0),
+    )
+    return Params(lens=params.Lens(True, 80.0, 60.0, 40.0, profile))
+
+
+def test_the_lens_survives_json():
+    edit = with_lens()
+
+    assert params.from_json(edit.to_json()) == edit
+    assert not edit.is_identity()
+
+
+def test_an_edit_from_before_lens_corrections_has_them_off():
+    old = {"version": 8, "exposure": 0.5}
+
+    edit = params.from_dict(old)
+
+    assert edit.lens == params.Lens() and not edit.lens.enabled
+    assert edit.lens.correction() is None
+    assert edit.exposure == 0.5
+
+
+def test_the_lens_needs_a_profile_and_an_amount():
+    edit = with_lens()
+
+    assert edit.lens.correction() is not None
+    assert edit.lens.correction().distortion == pytest.approx(0.8)
+    assert replace_lens(edit, enabled=False).lens.correction() is None
+    assert replace_lens(edit, profile=None).lens.correction() is None
+    assert (
+        replace_lens(edit, distortion=0.0, vignetting=0.0, aberration=0.0).lens.correction() is None
+    )
+
+
+def replace_lens(edit, **changes):
+    from dataclasses import replace
+
+    return edit.with_changes(lens=replace(edit.lens, **changes))
+
+
+def test_lens_amounts_are_held_to_their_range():
+    data = with_lens().to_dict()
+    data["lens"]["distortion"] = 900.0
+    data["lens"]["vignetting"] = -5.0
+    data["lens"]["enabled"] = "yes"
+
+    edit = params.from_dict(data)
+
+    assert edit.lens.distortion == 100.0 and edit.lens.vignetting == 0.0
+    assert edit.lens.enabled is False
+
+
+def test_a_lens_is_not_part_of_a_preset():
+    """A profile is of one lens: pasting it over a photo of another would be wrong."""
+    document = params.preset(with_lens(), ["exposure"])
+
+    pasted = params.apply_preset(with_lens().with_changes(exposure=1.0), document)
+
+    assert "lens" not in params.SECTIONS
+    assert pasted.lens == with_lens().lens

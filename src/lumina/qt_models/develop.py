@@ -16,6 +16,7 @@ the photo is its original again.
 
 import json
 import os
+from dataclasses import replace
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
@@ -45,6 +46,8 @@ Grading = _params.Grading
 Curves = _params.Curves
 Matte = _params.Matte
 Crop = _params.Crop
+Lens = _params.Lens
+LENS = _params.LENS
 ExportOptions = _export.ExportOptions
 FORMATS = _export.FORMATS
 EXPOSURE = _params.EXPOSURE
@@ -115,6 +118,10 @@ class DevelopSession(QObject):
     image_ready = Signal(object, object, str)
     # The photo was decoded: its width and height
     opened = Signal(int, int)
+    # What is known of the photo's lens changed: see `lens_name`, `lens_state`
+    lens_changed = Signal()
+    # The names of the lenses that fit the camera, asked for by `request_lenses`
+    lenses_ready = Signal(object)
     # A part of the photo rendered at the zoom came back: QImage, its (left, top) and the
     # size of the whole, in pixels of the image it is a part of
     region_ready = Signal(object, object, object)
@@ -137,6 +144,15 @@ class DevelopSession(QObject):
         self.photo_id = None
         self.path = None
         self.params = Params()
+        # What an edit of this photo starts as, and what a Reset goes back to: the lens
+        # corrections on for a RAW file whose lens is known, else nothing (see `_on_opened`)
+        self._baseline = Params()
+        # How the photo was taken, for finding its lens (lensdb.Shot), and the lens
+        # profile the database has for it, if any; False before it is known
+        self._shot = None
+        self._lens = None
+        self._lens_known = False
+        self._lens_data = True
         self._undo = []
         self._redo = []
         self._busy = False
@@ -163,9 +179,12 @@ class DevelopSession(QObject):
         self.size = None
         self._moving = False
         self._token += 1
+        self._baseline = Params()
+        self._shot = self.service.lens_shot(photo_id)
+        self._lens, self._lens_known, self._lens_data = None, False, True
         stored = self.service.edit_json(photo_id)
         try:
-            self.params = _params.from_json(stored) if stored else Params()
+            self.params = _params.from_json(stored) if stored else self._baseline
         except _params.NewerParams as error:
             # Read only, in a sense: nothing is saved over it
             self.photo_id = None
@@ -178,7 +197,8 @@ class DevelopSession(QObject):
         workers.submit(
             _session.open_photo,
             path,
-            on_done=lambda size: self._on_opened(token, size),
+            self._shot,
+            on_done=lambda opened: self._on_opened(token, opened),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
             process=workers.DEVELOP,
@@ -207,11 +227,20 @@ class DevelopSession(QObject):
     def is_open(self):
         return self.photo_id is not None
 
-    def _on_opened(self, token, size):
+    def _on_opened(self, token, opened):
         if token != self._token:
             return
-        self.size = (int(size[0]), int(size[1]))
-        self.opened.emit(*size)
+        self.size = (int(opened.size[0]), int(opened.size[1]))
+        self._lens, self._lens_known, self._lens_data = opened.lens, True, opened.lens_data
+        if opened.lens is not None and opened.raw:
+            # A RAW file has none of its lens's faults corrected: new edits start with the
+            # corrections on. A photo with an edit keeps what the edit says
+            self._baseline = Params(lens=_params.Lens(enabled=True, profile=opened.lens))
+            if self.params == Params() and self.service.edit_json(self.photo_id) is None:
+                self.params = self._baseline
+                self.params_changed.emit(self.params)
+        self.lens_changed.emit()
+        self.opened.emit(*self.size)
         self.request(SCREEN)
 
     def _on_failed(self, token, error):
@@ -289,7 +318,7 @@ class DevelopSession(QObject):
     def _committed(self):
         stored = self.service.edit_json(self.photo_id)
         try:
-            return _params.from_json(stored) if stored else Params()
+            return _params.from_json(stored) if stored else self._baseline
         except _params.NewerParams:
             return Params()
 
@@ -303,7 +332,9 @@ class DevelopSession(QObject):
             self.request(SCREEN)
 
     def _save(self):
-        if self.params.is_identity():
+        # What a new edit starts as is no edit: the photo is its original (see `reset`). With
+        # the lens corrections on to start with, an edit with them off is one to keep
+        if self.params == self._baseline:
             self.service.save_edit(self.photo_id, None)
         else:
             self.service.save_edit(self.photo_id, self.params.to_json())
@@ -327,8 +358,70 @@ class DevelopSession(QObject):
             self.history_changed.emit()
 
     def reset(self):
-        """Back to the original, as one step that can be undone."""
-        self.commit(Params())
+        """Back to where a new edit starts, as one step that can be undone."""
+        self.commit(self._baseline)
+
+    # The lens
+
+    def lens_name(self):
+        """The name of the lens profile the edit has, else the one the database has for
+        the photo, else None."""
+        profile = self.params.lens.profile or self._lens
+        return profile.name if profile is not None else None
+
+    def lens_state(self):
+        """What is known of the photo's lens: "waiting" (not yet), "known" (the database has
+        it), "unknown" (it does not), or "no data" (there is no lens database at all)."""
+        if not self._lens_known:
+            return "waiting"
+        if self._lens is not None:
+            return "known"
+        return "unknown" if self._lens_data else "no data"
+
+    def detected_lens(self):
+        """The profile the database has for the photo's own lens, or None."""
+        return self._lens
+
+    def request_lenses(self):
+        """Ask for the lenses that fit the photo's camera: `lenses_ready` gives their names."""
+        if not self.is_open() or self._shot is None:
+            self.lenses_ready.emit([])
+            return
+        token = self._token
+        workers.submit(
+            _session.lens_names,
+            self._shot,
+            on_done=lambda names: self._on_lenses(token, names),
+            on_error=lambda _error: self._on_lenses(token, []),
+            owner=self,
+            process=workers.DEVELOP,
+        )
+
+    def _on_lenses(self, token, names):
+        if token == self._token:
+            self.lenses_ready.emit(names)
+
+    def choose_lens(self, name):
+        """Correct the photo as the lens called `name` (from `lenses_ready`) would need."""
+        if not self.is_open() or self._shot is None:
+            return
+        token = self._token
+        workers.submit(
+            _session.lens_profile,
+            self._shot,
+            name,
+            on_done=lambda profile: self._on_lens_chosen(token, profile),
+            on_error=lambda error: self._on_failed(token, error),
+            owner=self,
+            process=workers.DEVELOP,
+        )
+
+    def _on_lens_chosen(self, token, profile):
+        if token != self._token or profile is None:
+            return
+        lens = replace(self.params.lens, enabled=True, profile=profile)
+        self.commit(self.params.with_changes(lens=lens))
+        self.lens_changed.emit()
 
     # Presets
 

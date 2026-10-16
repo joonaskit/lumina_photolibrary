@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from lumina.core import lensdb, raw
 from lumina.core.edit import params as edit_params
 from lumina.core.edit import pipeline
 from lumina.core.edit.source import EditSource, fitted
@@ -53,12 +54,36 @@ def _source(path):
     return _open
 
 
-def open_photo(path):
-    """Decode the photo and make its proxy. Returns its size (width, height)."""
+@dataclass(frozen=True)
+class Opened:
+    # The photo's (width, height) as decoded
+    size: tuple
+    # The profile of the lens it was taken with, if lensfun's data has one; whether it is a
+    # RAW file (which a camera has not corrected); whether there is lens data at all
+    lens: object
+    raw: bool
+    lens_data: bool
+
+
+def open_photo(path, shot=None):
+    """Decode the photo and make its proxy; find its lens in the lens database (`shot`: what
+    the photo says of how it was taken, see lensdb.Shot). Returns `Opened`."""
     source = _source(path)
     # Made now, while the view opens, not at the first move of a control
     source.make_ready()
-    return source.size()
+    database = lensdb.load()
+    profile = lensdb.match(shot, database=database) if shot is not None else None
+    return Opened(source.size(), profile, raw.is_raw(path), bool(len(database)))
+
+
+def lens_names(shot):
+    """The names of the lenses that fit the camera of `shot`, to choose from."""
+    return lensdb.lens_names(shot)
+
+
+def lens_profile(shot, name):
+    """The profile of the lens called `name` at the focal length and aperture of `shot`."""
+    return lensdb.match(shot, name=name)
 
 
 def render(path, params_json, kind=PROXY, screen_side=2560):

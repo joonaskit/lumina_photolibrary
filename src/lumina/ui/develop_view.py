@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QInputDialog,
+    QLabel,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -35,6 +36,7 @@ from lumina.ui.controls import ValueSlider
 from lumina.ui.crop_frame import dragged, dragged_to_ratio, reshaped
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.image_view import ImageView
+from lumina.ui.lens_dialog import LensDialog
 from lumina.ui.preset_dialog import PresetDialog
 from lumina.ui.ratio_dialog import RatioDialog
 
@@ -79,6 +81,7 @@ SECTIONS = (
     ("grading", "COLOUR GRADING"),
     ("matte", "MATTE"),
     ("effects", "EFFECTS"),
+    ("lens", "LENS"),
     ("crop", "CROP & ROTATE"),
     ("settings", "SETTINGS"),
 )
@@ -412,6 +415,7 @@ class DevelopView(QWidget):
         session.params_changed.connect(self._show_params)
         session.before_changed.connect(self.image.set_before)
         session.opened.connect(lambda *_size: self._sync_constraint())
+        session.lens_changed.connect(self._show_lens)
         session.image_ready.connect(self._on_image)
         session.region_ready.connect(self.image.set_detail)
         # The part of the photo at the zoom is asked for when the zoom or the place has
@@ -660,6 +664,38 @@ class DevelopView(QWidget):
             ),
         }
 
+        layout = self._begin(root, "lens", "LENS")
+        self.lens_on = QCheckBox("Correct for the lens")
+        self.lens_on.clicked.connect(self._on_lens_toggled)
+        layout.addWidget(self.lens_on)
+        row = QHBoxLayout()
+        self.lens_name = QLabel()
+        self.lens_name.setWordWrap(True)
+        self.lens_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lens_choose = QPushButton("Choose…")
+        self.lens_choose.setToolTip("Correct as another lens that fits this camera")
+        self.lens_choose.clicked.connect(self._choose_lens)
+        row.addWidget(self.lens_name, 1)
+        row.addWidget(self.lens_choose)
+        layout.addLayout(row)
+        self.lens = {
+            name: self._slider(
+                layout,
+                title,
+                *develop.LENS,
+                step=1,
+                decimals=0,
+                unit="%",
+                field=f"lens.{name}",
+                default=100.0,
+            )
+            for name, title in (
+                ("distortion", "Distortion"),
+                ("vignetting", "Vignetting"),
+                ("aberration", "Colour fringes"),
+            )
+        }
+
         layout = self._begin(root, "crop", "CROP & ROTATE")
         row = QHBoxLayout()
         self.crop_button = QPushButton("Crop")
@@ -839,6 +875,8 @@ class DevelopView(QWidget):
             return params.with_changes(vignette=replace(params.vignette, **{field[9:]: value}))
         if field.startswith("grain."):
             return params.with_changes(grain=replace(params.grain, **{field[6:]: value}))
+        if field.startswith("lens."):
+            return params.with_changes(lens=replace(params.lens, **{field[5:]: value}))
         if field.startswith("hsl."):
             band = self._chosen(self.band_group)
             changed = replace(getattr(params.hsl, band), **{field[4:]: value})
@@ -875,10 +913,58 @@ class DevelopView(QWidget):
             slider.set_value(getattr(params.vignette, name))
         for name, slider in self.grain.items():
             slider.set_value(getattr(params.grain, name))
+        self._show_lens(params)
         self.straighten.set_value(params.straighten)
         self._show_curve()
         self.image.set_crop(params.crop)
         self._sync_constraint()
+
+    def _show_lens(self, params=None):
+        """The lens section: on or off, which lens, and the amounts."""
+        params = params if isinstance(params, develop.Params) else self.session.params
+        session = self.session
+        usable = params.lens.profile is not None or session.detected_lens() is not None
+        self.lens_on.setEnabled(usable)
+        self.lens_on.setChecked(params.lens.enabled and params.lens.profile is not None)
+        for name, slider in self.lens.items():
+            slider.set_value(getattr(params.lens, name))
+            slider.setEnabled(params.lens.enabled and params.lens.profile is not None)
+        name = session.lens_name()
+        state = session.lens_state()
+        if name is not None:
+            self.lens_name.setText(name)
+        else:
+            self.lens_name.setText(
+                {
+                    "waiting": "Looking for the lens…",
+                    "unknown": "No profile for this lens",
+                    "no data": "No lens database found: install lensfun",
+                }.get(state, "")
+            )
+        self.lens_name.setToolTip(name or "")
+        self.lens_choose.setEnabled(state != "no data" and state != "waiting")
+
+    def _on_lens_toggled(self, on):
+        params = self.session.params
+        profile = params.lens.profile or self.session.detected_lens()
+        self.session.commit(
+            params.with_changes(lens=replace(params.lens, enabled=on, profile=profile))
+        )
+
+    def _choose_lens(self):
+        self.session.lenses_ready.connect(self._pick_lens)
+        self.session.request_lenses()
+
+    def _pick_lens(self, names):
+        self.session.lenses_ready.disconnect(self._pick_lens)
+        if not names:
+            QMessageBox.information(
+                self, "Choose Lens", "No lens in the database is known to fit this camera."
+            )
+            return
+        dialog = LensDialog(names, self.session.lens_name(), self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.chosen():
+            self.session.choose_lens(dialog.chosen())
 
     def _show_mixers(self, params=None):
         """The sliders of the band and the range chosen, and blending and balance."""

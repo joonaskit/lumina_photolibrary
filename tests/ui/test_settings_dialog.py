@@ -214,7 +214,10 @@ def test_a_folder_too_large_to_watch_is_named_in_the_settings(qtbot, service, dr
 def test_the_develop_panel_order_and_hidden_sections_are_kept_as_they_are_changed(qtbot):
     dialog = SettingsDialog()
     qtbot.addWidget(dialog)
-    names = [dialog.sections.item(r).data(Qt.ItemDataRole.UserRole) for r in range(14)]
+    names = [
+        dialog.sections.item(r).data(Qt.ItemDataRole.UserRole)
+        for r in range(len(develop_view.SECTION_NAMES))
+    ]
     assert tuple(names) == develop_view.SECTION_NAMES
 
     # Presets, Light, Tone curve ...: the third goes up past the second
