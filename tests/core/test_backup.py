@@ -237,7 +237,8 @@ def test_a_few_vectors_are_kept(path, folder):
 def test_a_backup_is_made_before_a_migration_and_kept_apart(path, monkeypatch):
     monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:5])
     monkeypatch.setattr(dbm, "SCHEMA_VERSION", 5)
-    fill(path)
+    # Not edited: saving an edit notes the change in a column that came after schema 5
+    fill(path, edited=False)
     monkeypatch.undo()
     folder = backup.default_folder(path)
     assert not os.path.exists(folder)
@@ -265,7 +266,7 @@ def test_a_new_library_is_not_backed_up(path):
 def test_without_a_backup_the_migration_is_not_made(path, monkeypatch):
     monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:5])
     monkeypatch.setattr(dbm, "SCHEMA_VERSION", 5)
-    fill(path)
+    fill(path, edited=False)
     monkeypatch.undo()
     # The folder can't be made: a file is in the way
     touch(os.path.dirname(path), "backups")
@@ -307,7 +308,7 @@ def test_restore_puts_the_backup_back_and_keeps_what_it_replaced(path, folder):
 def test_restore_of_an_older_schema_is_migrated_when_opened(path, folder, monkeypatch):
     monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:5])
     monkeypatch.setattr(dbm, "SCHEMA_VERSION", 5)
-    fill(path)
+    fill(path, edited=False)
     old = backup.back_up(path, folder, now=NOW)
     monkeypatch.undo()
     Library(path).close()

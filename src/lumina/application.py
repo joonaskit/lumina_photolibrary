@@ -95,6 +95,7 @@ def run(paths=(), restore=None):
     service.thumbnail_limit = settings.thumbnail_limit()
     service.gentle_scans = settings.gentle_scans()
     service.watcher.set_enabled(settings.watch_folders())
+    service.sidecars = settings.sidecars()
     # Nothing is fetched until the user asks: without the model, no indexing
     search = SearchService(service, parent=app)
     merge = MergeService(service, parent=app)

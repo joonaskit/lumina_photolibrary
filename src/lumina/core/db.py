@@ -17,7 +17,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
-from lumina.core import backup, keywords, metadata
+from lumina.core import backup, keywords, metadata, xmp
 
 # Steps of `metadata_state`
 PENDING, READ, FAILED = 0, 1, 2
@@ -311,6 +311,31 @@ def _migrate_9(db):
     )
 
 
+def _migrate_10(db):
+    db.executescript(
+        """
+        -- When a photo's flag, stars, keywords or edits last changed (time.time()), or
+        -- NULL when they never have since it was added. What an XMP sidecar (core/xmp.py)
+        -- is compared by
+        ALTER TABLE photos ADD COLUMN changed_at REAL;
+        -- The `changed_at` its sidecar holds, NULL when none was written or read; the
+        -- sidecar is out of date while this is behind `changed_at`
+        ALTER TABLE photos ADD COLUMN sidecar_at REAL;
+        -- The sidecar file's time (ns) when it was last written or read here: a scan reads
+        -- a sidecar again when the file's time is another
+        ALTER TABLE photos ADD COLUMN sidecar_mtime_ns INTEGER;
+        -- What was marked before this schema has no time of its own: the edit's, else now
+        UPDATE photos SET changed_at = COALESCE(
+            (SELECT MAX(updated_at) FROM edits WHERE photo_id = photos.id),
+            CAST(strftime('%s', 'now') AS REAL)
+        )
+        WHERE flag <> 0 OR rating <> 0
+            OR EXISTS (SELECT 1 FROM edits WHERE photo_id = photos.id)
+            OR EXISTS (SELECT 1 FROM photo_keywords WHERE photo_id = photos.id);
+        """
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
 _MIGRATIONS = [
     _migrate_1,
@@ -322,6 +347,7 @@ _MIGRATIONS = [
     _migrate_7,
     _migrate_8,
     _migrate_9,
+    _migrate_10,
 ]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -777,6 +803,15 @@ class Library:
                 f"UPDATE photos SET {column} = ? WHERE id = ?",
                 [(value, photo) for photo, value in values.items()],
             )
+            self._touch(values)
+
+    def _touch(self, photo_ids):
+        """Note that these photos' flag, stars, keywords or edits changed now: their
+        sidecars are out of date. In the caller's transaction."""
+        now = time.time()
+        self.db.executemany(
+            "UPDATE photos SET changed_at = ? WHERE id = ?", [(now, photo) for photo in photo_ids]
+        )
 
     def _marks(self, column, ids):
         ids = list(ids)
@@ -869,6 +904,7 @@ class Library:
                     "SELECT ?, id FROM keywords WHERE id = ?",
                     [(photo, keyword) for keyword in ids],
                 )
+            self._touch(values)
 
     def rename_keyword(self, path, new_path):
         """Make keyword `path` and those below it `new_path` and below. Returns False when
@@ -882,6 +918,7 @@ class Library:
             moved = {old.casefold() for _id, old in found}
             if taken - moved:
                 raise ValueError(f"There is a keyword {new_path} already")
+            self._touch_keyword_photos(keyword for keyword, _old in found)
             for keyword, old in found:
                 renamed = new_path + old[len(path) :]
                 self.db.execute("UPDATE keywords SET path = ? WHERE id = ?", (renamed, keyword))
@@ -894,8 +931,20 @@ class Library:
         how many keywords went."""
         with self.db:
             found = self._keywords_within(path)
+            self._touch_keyword_photos(i for i, _p in found)
             self.db.executemany("DELETE FROM keywords WHERE id = ?", [(i,) for i, _p in found])
         return len(found)
+
+    def _touch_keyword_photos(self, keyword_ids):
+        ids = list(keyword_ids)
+        marks = ", ".join("?" * len(ids))
+        photos = [
+            row[0]
+            for row in self.db.execute(
+                f"SELECT DISTINCT photo_id FROM photo_keywords WHERE keyword_id IN ({marks})", ids
+            )
+        ]
+        self._touch(photos)
 
     def _keywords_within(self, path):
         return [
@@ -1002,6 +1051,116 @@ class Library:
             )
         }
 
+    # Sidecars
+
+    def sidecar_pending(self, after=0, limit=100):
+        """[(id, volume key, path, available, changed_at)] of photos whose sidecar is out
+        of date (never written, or behind their last change), by id, those after id `after`."""
+        rows = self.db.execute(
+            "SELECT p.id, v.key, p.path, p.available, p.changed_at FROM photos p "
+            "JOIN volumes v ON v.id = p.volume_id WHERE p.id > ? AND p.changed_at IS NOT NULL "
+            "AND (p.sidecar_at IS NULL OR p.sidecar_at < p.changed_at) ORDER BY p.id LIMIT ?",
+            (after, limit),
+        )
+        return [(r[0], r[1], r[2], bool(r[3]), r[4]) for r in rows]
+
+    def count_sidecars_pending(self):
+        return self.db.execute(
+            "SELECT COUNT(*) FROM photos WHERE changed_at IS NOT NULL "
+            "AND (sidecar_at IS NULL OR sidecar_at < changed_at)"
+        ).fetchone()[0]
+
+    def sidecar_state(self, photo_id):
+        """What a photo's sidecar holds (xmp.SidecarState), or None for no such photo."""
+        row = self.db.execute(
+            "SELECT flag, rating, changed_at FROM photos WHERE id = ?", (photo_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        paths = self.keyword_paths()
+        found = self.photo_keywords([photo_id])[photo_id]
+        edits = self.db.execute(
+            "SELECT copy, params FROM edits WHERE photo_id = ? ORDER BY copy", (photo_id,)
+        )
+        return xmp.SidecarState(
+            updated=row[2] or 0.0,
+            flag=row[0],
+            rating=row[1],
+            keywords=tuple(sorted((paths[k] for k in found if k in paths), key=str.casefold)),
+            edits=tuple((r[0], r[1]) for r in edits),
+        )
+
+    def sidecar_written(self, photo_id, changed_at, mtime_ns):
+        """A sidecar was written holding the state as of `changed_at`; its file's time."""
+        with self.db:
+            self.db.execute(
+                "UPDATE photos SET sidecar_at = ?, sidecar_mtime_ns = ? WHERE id = ?",
+                (changed_at, mtime_ns, photo_id),
+            )
+
+    def sidecar_candidates(self, folder_id):
+        """[(id, path, sidecar_mtime_ns)] of the available photos of a folder: where to
+        look for a sidecar that changed."""
+        rows = self.db.execute(
+            "SELECT id, path, sidecar_mtime_ns FROM photos WHERE folder_id = ? AND available = 1",
+            (folder_id,),
+        )
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    def forget_sidecar(self, photo_id):
+        """Its sidecar is gone: a photo with something to keep gets a new one."""
+        with self.db:
+            self.db.execute(
+                "UPDATE photos SET sidecar_at = NULL, sidecar_mtime_ns = NULL WHERE id = ?",
+                (photo_id,),
+            )
+
+    def note_sidecar(self, photo_id, mtime_ns):
+        """A sidecar file that is not read (another program's) is as it was at `mtime_ns`."""
+        with self.db:
+            self.db.execute(
+                "UPDATE photos SET sidecar_mtime_ns = ? WHERE id = ?", (mtime_ns, photo_id)
+            )
+
+    def apply_sidecar(self, photo_id, state, mtime_ns):
+        """Take a sidecar's state (xmp.SidecarState) in when it is newer than the library's
+        own change of the photo; else the library's stays, and is written to the sidecar
+        again. Returns whether the sidecar was used."""
+        with self.db:
+            row = self.db.execute(
+                "SELECT changed_at FROM photos WHERE id = ?", (photo_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            used = state.updated > (row[0] or 0.0)
+            if used:
+                self._take_sidecar(photo_id, state)
+            self.db.execute(
+                "UPDATE photos SET sidecar_at = ?, sidecar_mtime_ns = ? WHERE id = ?",
+                (state.updated, mtime_ns, photo_id),
+            )
+        return used
+
+    def _take_sidecar(self, photo_id, state):
+        flag = state.flag if state.flag in FLAGS else UNFLAGGED
+        rating = state.rating if state.rating in RATINGS else 0
+        self.db.execute(
+            "UPDATE photos SET flag = ?, rating = ?, changed_at = ?, keywords_read = 1 "
+            "WHERE id = ?",
+            (flag, rating, state.updated, photo_id),
+        )
+        self.db.execute("DELETE FROM photo_keywords WHERE photo_id = ?", (photo_id,))
+        for path in state.keywords:
+            self.db.execute(
+                "INSERT OR IGNORE INTO photo_keywords (photo_id, keyword_id) VALUES (?, ?)",
+                (photo_id, self._keyword(path)),
+            )
+        self.db.execute("DELETE FROM edits WHERE photo_id = ?", (photo_id,))
+        self.db.executemany(
+            "INSERT OR REPLACE INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?)",
+            [(photo_id, copy, params, state.updated) for copy, params in state.edits],
+        )
+
     # Edits
 
     def edit(self, photo_id, copy=0):
@@ -1019,6 +1178,7 @@ class Library:
                 "params = excluded.params, updated_at = excluded.updated_at",
                 (photo_id, copy, params_json, time.time()),
             )
+            self._touch([photo_id])
 
     def save_edits(self, edits):
         """{photo id: parameters JSON, or None for no edit} as the photos' own edits, in
@@ -1037,11 +1197,13 @@ class Library:
                     "params = excluded.params, updated_at = excluded.updated_at",
                     (photo_id, params_json, now),
                 )
+            self._touch(edits)
 
     def delete_edit(self, photo_id, copy=0):
         """Back to the original. The photo's own edit and its copies are separate."""
         with self.db:
             self.db.execute("DELETE FROM edits WHERE photo_id = ? AND copy = ?", (photo_id, copy))
+            self._touch([photo_id])
 
     def copies(self, photo_id):
         """The numbers of a photo's edits: 0 for its own, then its virtual copies."""
@@ -1060,6 +1222,7 @@ class Library:
                 "INSERT INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?)",
                 (photo_id, row[0], params_json, time.time()),
             )
+            self._touch([photo_id])
         return row[0]
 
     def presets(self):

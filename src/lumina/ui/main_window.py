@@ -297,6 +297,7 @@ class MainWindow(QMainWindow):
 
         service.folders_changed.connect(self._refresh_folders)
         service.keywords_changed.connect(self._on_keywords_changed)
+        service.sidecars_written.connect(self._on_sidecars_written)
         service.collections_changed.connect(self._on_collections_changed)
         service.job_changed.connect(self.job_status.show_status)
         # A method, not a lambda: the connection goes with the window, and a scan that ends
@@ -315,6 +316,18 @@ class MainWindow(QMainWindow):
         self._refresh_folders(select=settings.selected_folder())
         self.sidebar.set_collections(service.collections())
         self.sidebar.set_last_import(service.last_import())
+
+    def _on_sidecars_written(self, result):
+        """Say what a pass of writing sidecars could not do; a quiet pass says nothing."""
+        if not result.failures:
+            return
+        path, why = result.failures[0]
+        more = f" (and {len(result.failures) - 1} more)" if len(result.failures) > 1 else ""
+        self.statusBar().showMessage(
+            f"{len(result.failures)} sidecar{'' if len(result.failures) == 1 else 's'} "
+            f"not written: {path}: {why}{more}",
+            10000,
+        )
 
     def _on_job_ended(self, _status):
         self._refresh_last_import()

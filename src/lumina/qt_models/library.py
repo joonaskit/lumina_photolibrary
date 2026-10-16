@@ -20,6 +20,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from lumina.core import db as dbm
 from lumina.core import images, lensdb, metadata, raw, thumbs, volumes
 from lumina.core import library as scanning
+from lumina.core import sidecars as sidecarsm
 from lumina.core.edit import params as _params
 from lumina.qt_models import workers
 from lumina.qt_models.watcher import FolderWatcher
@@ -38,16 +39,24 @@ QUEUED, RUNNING, DONE, FAILED, CANCELLED = (
     dbm.FAILED_JOB,
     dbm.CANCELLED,
 )
-FINDING, DETAILS = scanning.FINDING, scanning.DETAILS
+FINDING, DETAILS, SIDECARS = scanning.FINDING, scanning.DETAILS, scanning.SIDECARS
 
 # How often the mounts are read, and how often the grid hears of photos a scan wrote
 _MOUNTS_MS = 3000
 _PHOTOS_EVERY = 2.0
+# How long after the last change the sidecars are written, in milliseconds
+_SIDECARS_AFTER_MS = 3000
 # How soon after the thumbnails were pruned a job's end prunes them again, in seconds
 _PRUNE_EVERY = 600.0
 # The time left is told once this many photos, and this many seconds, tell the rate
 _ETA_AFTER_PHOTOS = 100
 _ETA_AFTER_SECONDS = 5.0
+
+
+def _write_sidecars(path, mounts, quitting):
+    """On a worker thread, with a connection of its own."""
+    with dbm.Library(path) as library:
+        return sidecarsm.write_pending(library, mounts, quitting)
 
 
 def _count_keywords(path):
@@ -105,6 +114,8 @@ class LibraryService(QObject):
     # The drives connected changed
     mounts_changed = Signal()
     presets_changed = Signal()
+    # A pass writing sidecars ended: a core.sidecars.Written
+    sidecars_written = Signal(object)
     # The keywords (their names, or the photos' counts) changed
     keywords_changed = Signal()
     # A collection was made, renamed, deleted or had photos put in or taken out: its id
@@ -155,6 +166,15 @@ class LibraryService(QObject):
         self.gentle_scans = True
         # (job, phase, when it began, how many were done then): for the time left
         self._phase_began = None
+        # Whether XMP sidecars are written and read; the application sets it from the
+        # settings (`set_sidecars`)
+        self.sidecars = False
+        self._writing_sidecars = False
+        self._sidecars_again = False
+        self._sidecar_timer = QTimer(self)
+        self._sidecar_timer.setSingleShot(True)
+        self._sidecar_timer.setInterval(_SIDECARS_AFTER_MS)
+        self._sidecar_timer.timeout.connect(self.write_sidecars)
         # Off until the application turns it on (from the settings)
         self.watcher = FolderWatcher(self, parent=self)
         self._pruning = False
@@ -172,10 +192,13 @@ class LibraryService(QObject):
         self._timer.start()
         self._next_job()
         self.prune_thumbnails()
+        if self.sidecars:
+            self.write_sidecars()
 
     def close(self):
         """For the app's exit: a running job stops and stays queued for the next start."""
         self._timer.stop()
+        self._sidecar_timer.stop()
         self.watcher.close()
         self._quitting.set()
         if self._stop is not None:
@@ -275,6 +298,7 @@ class LibraryService(QObject):
     def set_flags(self, flags):
         """{photo id: flag}. The grid's model keeps its rows up to date itself."""
         self.db.set_flags(flags)
+        self.sidecars_due()
 
     def flags(self, ids):
         return self.db.flags(ids)
@@ -282,6 +306,7 @@ class LibraryService(QObject):
     def set_ratings(self, ratings):
         """{photo id: stars, 0 for none}."""
         self.db.set_ratings(ratings)
+        self.sidecars_due()
 
     def ratings(self, ids):
         return self.db.ratings(ids)
@@ -335,6 +360,7 @@ class LibraryService(QObject):
     def set_photo_keywords(self, values):
         """{photo id: ids of its keywords}. The grid's model keeps its rows up to date."""
         self.db.set_photo_keywords(values)
+        self.sidecars_due()
         self.keyword_list()
         self.keywords_changed.emit()
 
@@ -342,12 +368,14 @@ class LibraryService(QObject):
         """Rename a keyword and those below it. Returns False when there is no such
         keyword; a ValueError when the new name is another keyword's."""
         renamed = self.db.rename_keyword(path, new_path)
+        self.sidecars_due()
         self.keyword_list()
         self.keywords_changed.emit()
         return renamed
 
     def delete_keyword(self, path):
         gone = self.db.delete_keyword(path)
+        self.sidecars_due()
         self.keyword_list()
         self.keywords_changed.emit()
         return gone
@@ -430,6 +458,7 @@ class LibraryService(QObject):
             self.db.delete_edit(photo_id)
         else:
             self.db.save_edit(photo_id, params_json)
+        self.sidecars_due()
         self.photos_changed.emit()
 
     # Copying settings from one photo to others
@@ -461,6 +490,7 @@ class LibraryService(QObject):
             except _params.NewerParams as error:
                 failed.append((self._photo_name(photo_id), str(error)))
         self.db.save_edits(edits)
+        self.sidecars_due()
         if edits:
             self.photos_changed.emit()
         return PasteResult(len(edits), tuple(failed))
@@ -496,6 +526,62 @@ class LibraryService(QObject):
             if folder.volume_key in arrived:
                 self.db.add_job(scanning.SCAN, folder.id)
         self._next_job()
+        # Photos on a drive that came can have their sidecars written now
+        self.sidecars_due()
+
+    # XMP sidecars
+
+    def set_sidecars(self, on):
+        """Write sidecars for what the library marks and edits, and read the ones beside
+        the photos when they are scanned (core/sidecars.py). Turning it on writes them
+        for the whole library, and scans every folder to read those already there."""
+        on = bool(on)
+        if on == self.sidecars:
+            return
+        self.sidecars = on
+        if on:
+            self.write_sidecars()
+            self.rescan()
+        else:
+            self._sidecar_timer.stop()
+
+    def sidecars_due(self):
+        """Something sidecars hold changed: write them once changes stop for a moment."""
+        if self.sidecars and not self._quitting.is_set():
+            self._sidecar_timer.start()
+
+    def write_sidecars(self):
+        """Write the sidecars that are out of date, on a thread of its own; one pass at a
+        time, and another after it when something changed meanwhile."""
+        if not self.sidecars or self._quitting.is_set():
+            return
+        if self._writing_sidecars:
+            self._sidecars_again = True
+            return
+        self._writing_sidecars = True
+        self._sidecars_again = False
+        quitting = self._quitting
+        workers.submit(
+            _write_sidecars,
+            self.path,
+            self.mounts,
+            # Turned off meanwhile: no more
+            lambda: quitting.is_set() or not self.sidecars,
+            on_done=self._sidecars_done,
+            on_error=lambda error: self._sidecars_done(
+                sidecarsm.Written(failures=[("sidecars", str(error))])
+            ),
+            owner=self,
+            process=workers.SIDECARS,
+        )
+
+    def _sidecars_done(self, result):
+        self._writing_sidecars = False
+        if self._quitting.is_set():
+            return
+        self.sidecars_written.emit(result)
+        if self._sidecars_again:
+            self.write_sidecars()
 
     # The thumbnail cache
 
@@ -592,6 +678,7 @@ class LibraryService(QObject):
             quitting,
             self._exiftool,
             self.gentle_scans,
+            self.sidecars,
             lambda *args: workers.call_on_main(self, self._on_progress, job.id, name, *args),
             on_done=lambda state: self._on_ended(job.id, job.folder_id, name, state),
             on_error=lambda error: self._on_failed(job.id, job.folder_id, name, error),
@@ -621,6 +708,9 @@ class LibraryService(QObject):
             self.db.remove_folder(folder_id)
         self.folders_changed.emit()
         self.photos_changed.emit()
+        # Sidecars read may have changed what the library holds, and the library's own
+        # change may be newer than a sidecar read: written to it
+        self.sidecars_due()
         # Details read may have brought keywords in
         self.keyword_list()
         self.keywords_changed.emit()
@@ -690,7 +780,9 @@ def _prune_thumbnails(path, root, limit, volume_keys):
     return thumbs.prune(root, limit, keep)
 
 
-def _run_scan(path, job_id, folder_id, mounts, stop, quitting, exiftool, gentle, report):
+def _run_scan(
+    path, job_id, folder_id, mounts, stop, quitting, exiftool, gentle, read_sidecars, report
+):
     """On a worker thread, with a connection of its own."""
     with dbm.Library(path) as library:
         state = scanning.scan(
@@ -702,6 +794,7 @@ def _run_scan(path, job_id, folder_id, mounts, stop, quitting, exiftool, gentle,
             report,
             exiftool=exiftool,
             gentle=gentle,
+            read_sidecars=read_sidecars,
         )
         if state == dbm.CANCELLED and quitting.is_set():
             # Stopped by a quit, not by the user: run again at the next start

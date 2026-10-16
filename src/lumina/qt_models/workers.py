@@ -66,6 +66,8 @@ WATCH = "watch"
 # process for their steps: a merge never holds up a scan, a thumbnail or a render
 MERGE = "merge"
 MERGING = "merging"
+# One thread for writing XMP sidecars (core/sidecars.py), apart from the scans
+SIDECARS = "sidecars"
 # One thread for import jobs, which copy from a card: a copy never waits for a scan
 IMPORT = "import"
 # One thread for backing up the library's database, which reads all of it
