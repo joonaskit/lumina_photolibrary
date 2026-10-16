@@ -43,7 +43,7 @@ command -v gtk-update-icon-cache >/dev/null &&
     gtk-update-icon-cache -q -t -f "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 command -v update-desktop-database >/dev/null && update-desktop-database "$apps_dir"
 
-echo "Installed. Start Lumina from the launcher, or run: lumina [FOLDER]"
+echo "Installed. Start Lumina from the launcher, or run: lumina [PATH...]"
 case ":$PATH:" in
     *":$bin_dir:"*) ;;
     *) echo "Note: $bin_dir is not on your PATH" ;;

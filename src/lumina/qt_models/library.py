@@ -18,8 +18,8 @@ from dataclasses import dataclass, replace
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from lumina.core import db as dbm
+from lumina.core import images, metadata, thumbs, volumes
 from lumina.core import library as scanning
-from lumina.core import metadata, thumbs, volumes
 from lumina.core.edit import params as _params
 from lumina.qt_models import workers
 from lumina.qt_models.watcher import FolderWatcher
@@ -224,6 +224,22 @@ class LibraryService(QObject):
 
     def choices(self, folder_id=None):
         return self.db.choices(folder_id)
+
+    def is_photo_file(self, path):
+        """Whether `path` is a file of a kind the library reads."""
+        return os.path.isfile(path) and images.is_photo(path)
+
+    def locate_photo(self, path):
+        """Where the file at `path` stands in the library: (folder id, photo id), each
+        None when the library has no such folder or photo. (None, None) too when the
+        file is not a photo the library reads or no mounted filesystem holds it."""
+        path = os.path.realpath(path)
+        if not self.is_photo_file(path):
+            return None, None
+        where = volumes.locate(path, self.mounts)
+        if where is None:
+            return None, None
+        return self.db.folder_holding(*where), self.db.photo_at(*where)
 
     def photo_details(self, photo_id):
         """Everything the library knows of one photo, as a dict, or None."""
