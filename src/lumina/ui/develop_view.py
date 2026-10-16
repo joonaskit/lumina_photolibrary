@@ -67,7 +67,9 @@ _ASPECTS = (
 # The panel's sections in their default order: (name, heading). The user may reorder and
 # hide them (ui/settings.py, the settings window) and collapse them on the panel
 SECTIONS = (
+    ("presets", "PRESETS"),
     ("light", "LIGHT"),
+    ("curve", "TONE CURVE"),
     ("presence", "PRESENCE"),
     ("sharpening", "SHARPENING"),
     ("noise", "NOISE REDUCTION"),
@@ -75,11 +77,9 @@ SECTIONS = (
     ("colour", "COLOUR"),
     ("hsl", "HSL"),
     ("grading", "COLOUR GRADING"),
-    ("curve", "TONE CURVE"),
     ("matte", "MATTE"),
     ("effects", "EFFECTS"),
     ("crop", "CROP & ROTATE"),
-    ("presets", "PRESETS"),
     ("settings", "SETTINGS"),
 )
 SECTION_NAMES = tuple(name for name, _title in SECTIONS)

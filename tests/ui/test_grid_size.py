@@ -18,11 +18,11 @@ def icon_side(window):
     return window.grid.iconSize().width()
 
 
-def test_medium_is_the_default(qtbot, service):
+def test_small_is_the_default(qtbot, service):
     window = open_window(qtbot, service)
 
-    assert window.grid_size.value() == "medium"
-    assert icon_side(window) == style.px(GRID_ICONS["medium"])
+    assert window.grid_size.value() == "small"
+    assert icon_side(window) == style.px(GRID_ICONS["small"])
 
 
 def test_a_size_chosen_is_shown_and_remembered(qtbot, service):
@@ -67,6 +67,7 @@ def wheel(window, up, modifiers):
 
 
 def test_ctrl_and_the_wheel_zoom_and_the_wheel_alone_scrolls(qtbot, service):
+    settings.set_grid_size("medium")
     window = open_window(qtbot, service)
 
     wheel(window, True, Qt.KeyboardModifier.ControlModifier)

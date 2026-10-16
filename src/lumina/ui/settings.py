@@ -76,7 +76,7 @@ def set_copy_sections(sections):
 def grid_size():
     """The grid's thumbnail size: "small", "medium" or "large"."""
     value = _settings().value("library/grid_size")
-    return value if value in ("small", "medium", "large") else "medium"
+    return value if value in ("small", "medium", "large") else "small"
 
 
 def set_grid_size(name):
@@ -138,7 +138,7 @@ def set_watch_folders(on):
 def density():
     """How much room the interface takes: "comfortable" or "compact"."""
     value = _settings().value("view/density")
-    return value if value in ("comfortable", "compact") else "comfortable"
+    return value if value in ("comfortable", "compact") else "compact"
 
 
 def set_density(name):
