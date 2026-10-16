@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from lumina.core import keywords
 from lumina.core.errors import PhotoError
 
 # Asked for by name. "Composite:" picks exiftool's signed decimal GPS position over
@@ -43,6 +44,9 @@ _TAGS = (
     "Orientation",
     "Composite:GPSLatitude",
     "Composite:GPSLongitude",
+    "HierarchicalSubject",
+    "Keywords",
+    "Subject",
 )
 # Seconds a batch may take before the process is taken for hung, and per file on top
 _BATCH_TIMEOUT = 30.0
@@ -78,6 +82,9 @@ class Metadata:
     file_type: str | None = None
     # What exiftool found wrong but could read past ("JPEG format error")
     warning: str | None = None
+    # The keywords the file carries, as paths (keywords.py): from XMP's hierarchical
+    # subject, IPTC's keywords and XMP's subject
+    keywords: tuple[str, ...] = ()
 
 
 # How far down the CPU priority goes (nice) for a process that should not be noticed
@@ -301,7 +308,26 @@ def _metadata(entry):
         longitude=_number(entry.get("GPSLongitude")),
         file_type=_text(entry.get("FileType")),
         warning=_text(entry.get("Warning")),
+        keywords=_keywords(entry),
     )
+
+
+def _keywords(entry):
+    found = []
+    # Hierarchical ones first, so that a flat keyword that is one of their names adds nothing
+    for tag in ("HierarchicalSubject", "Keywords", "Subject"):
+        value = entry.get(tag)
+        for item in value if isinstance(value, list) else [value]:
+            path = keywords.parse(str(item)) if item is not None else None
+            if path is None:
+                continue
+            if tag != "HierarchicalSubject" and any(
+                keywords.leaf(known).casefold() == path.casefold() for known in found
+            ):
+                continue
+            if path.casefold() not in {known.casefold() for known in found}:
+                found.append(path)
+    return tuple(found)
 
 
 def damage_warning(data):

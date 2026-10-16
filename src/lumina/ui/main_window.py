@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListView,
     QMainWindow,
@@ -36,9 +37,11 @@ from lumina.qt_models.library_model import (
     RATING_ROLE,
     REJECTED,
     SIMILAR,
+    TEXT,
     UNFLAGGED,
     Filter,
     LibraryModel,
+    SmartQuery,
 )
 from lumina.qt_models.previews import PreviewLoader
 from lumina.ui import damage, flags, settings, stars
@@ -50,6 +53,7 @@ from lumina.ui.grid_size import GridSizeSwitch
 from lumina.ui.image_view import ImageView
 from lumina.ui.import_dialog import ImportDialog
 from lumina.ui.job_status import JobStatus, import_status, merge_status
+from lumina.ui.keywords_dialog import KeywordsDialog
 from lumina.ui.merge_dialog import MergeDialog, PanoramaDialog
 from lumina.ui.preset_dialog import CopyDialog
 from lumina.ui.quick_view import QuickView
@@ -174,8 +178,20 @@ class MainWindow(QMainWindow):
         self.sidebar.rescan_requested.connect(service.rescan)
         self.sidebar.rescan_all_requested.connect(service.rescan)
         self.sidebar.remove_requested.connect(self.remove_folder)
+        self.sidebar.collection_selected.connect(self._on_collection_selected)
+        self.sidebar.import_selected.connect(self._on_import_selected)
+        self.sidebar.new_collection_requested.connect(lambda: self.new_collection())
+        self.sidebar.rename_collection_requested.connect(self.rename_collection)
+        self.sidebar.delete_collection_requested.connect(self.delete_collection)
+        self.sidebar.update_smart_requested.connect(self.update_smart_collection)
+        self.sidebar.photos_dropped.connect(self.add_ids_to_collection)
+        self.sidebar.keyword_chosen.connect(lambda path: self.filters.set_keyword(path))
+        self.sidebar.rename_keyword_requested.connect(self.rename_keyword)
+        self.sidebar.delete_keyword_requested.connect(self.delete_keyword)
         self.filters = FilterBar()
         self.filters.changed.connect(self._apply_filter)
+        self.filters.keyword_changed.connect(self.set_keyword_filter)
+        self.filters.save_requested.connect(lambda: self.new_smart_collection())
         self.filters.flag_changed.connect(self.set_flag_filter)
         self.filters.rating_changed.connect(self.set_rating_filter)
         self.filters.edit_changed.connect(self.set_edit_filter)
@@ -280,6 +296,8 @@ class MainWindow(QMainWindow):
             search.indexing_changed.connect(self._update_status)
 
         service.folders_changed.connect(self._refresh_folders)
+        service.keywords_changed.connect(self._on_keywords_changed)
+        service.collections_changed.connect(self._on_collections_changed)
         service.job_changed.connect(self.job_status.show_status)
         # A method, not a lambda: the connection goes with the window, and a scan that ends
         # after the window is closed does not reach its deleted widgets
@@ -292,9 +310,14 @@ class MainWindow(QMainWindow):
 
         self._draw_icons()
         style.themed.changed.connect(self._draw_icons)
+        service.keyword_list()
+        self._on_keywords_changed()
         self._refresh_folders(select=settings.selected_folder())
+        self.sidebar.set_collections(service.collections())
+        self.sidebar.set_last_import(service.last_import())
 
     def _on_job_ended(self, _status):
+        self._refresh_last_import()
         self._refresh_choices()
         self._open_arrived(scanned=True)
 
@@ -366,10 +389,10 @@ class MainWindow(QMainWindow):
         self.unflag_action.setShortcut(QKeySequence(Qt.Key.Key_U))
         self.unflag_action.triggered.connect(lambda: self.flag_photos(UNFLAGGED))
         # In the grid and the viewer; the Develop view's Undo is its edit's
-        self.undo_flag_action = QAction("Undo Flag or Rating", self)
+        self.undo_flag_action = QAction("Undo Flag, Rating or Keywords", self)
         self.undo_flag_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_flag_action.triggered.connect(self.undo_flags)
-        self.redo_flag_action = QAction("Redo Flag or Rating", self)
+        self.redo_flag_action = QAction("Redo Flag, Rating or Keywords", self)
         self.redo_flag_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_flag_action.triggered.connect(self.redo_flags)
         # 1 to 5 stars, 0 for none; the same key again clears it
@@ -382,7 +405,12 @@ class MainWindow(QMainWindow):
             action.setToolTip(f"Rate {number} (key {number})" if number else "Clear the rating (0)")
             action.triggered.connect(lambda _on=False, stars=number: self.rate_photos(stars))
             self.rate_actions.append(action)
+        self.keywords_action = QAction("Keywords…", self)
+        self.keywords_action.setShortcut(QKeySequence(Qt.Key.Key_K))
+        self.keywords_action.setToolTip("Give the photos keywords, or take them off (K)")
+        self.keywords_action.triggered.connect(self.edit_keywords)
         self.flag_actions = (
+            self.keywords_action,
             self.pick_action,
             self.reject_action,
             self.unflag_action,
@@ -594,6 +622,10 @@ class MainWindow(QMainWindow):
         self.grid.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.grid.setWordWrap(False)
         self.grid.setSelectionMode(QListView.SelectionMode.ExtendedSelection)
+        # Photos dragged onto a collection in the sidebar
+        self.grid.setDragEnabled(True)
+        self.grid.setDragDropMode(QListView.DragDropMode.DragOnly)
+        self.grid.setDefaultDropAction(Qt.DropAction.CopyAction)
         self.grid.activated.connect(lambda index: self.show_photo(index.row()))
         self.grid.addActions(
             [
@@ -844,6 +876,27 @@ class MainWindow(QMainWindow):
         if self.pages.currentIndex() == _VIEWER and changed:
             self.show_grid()
 
+    def _on_collection_selected(self, collection_id, smart):
+        settings.set_selected_folder(None)
+        self._refresh_choices(None)
+        if smart:
+            self._apply_smart(collection_id)
+        self._apply_filter()
+        if self.pages.currentIndex() == _VIEWER:
+            self.show_grid()
+
+    def _on_import_selected(self, _job_id):
+        settings.set_selected_folder(None)
+        self._refresh_choices(None)
+        self._apply_filter()
+        if self.pages.currentIndex() == _VIEWER:
+            self.show_grid()
+
+    def _refresh_last_import(self):
+        self.sidebar.set_last_import(self.service.last_import())
+        if self.sidebar.current_import() is not None:
+            self._apply_filter()
+
     def _refresh_choices(self, folder_id=None):
         folder_id = folder_id if folder_id is not None else self.sidebar.current_folder()
         self.filters.blockSignals(True)
@@ -853,7 +906,15 @@ class MainWindow(QMainWindow):
 
     def _apply_filter(self):
         year, camera, lens = self.filters.values()
-        shown = Filter(self.sidebar.current_folder(), year, camera, lens)
+        collection = self.sidebar.current_collection()
+        shown = Filter(
+            self.sidebar.current_folder(),
+            year,
+            camera,
+            lens,
+            collection[0] if collection is not None and not collection[1] else None,
+            self.sidebar.current_import(),
+        )
         if shown != self.model.filter or self.model.rowCount() == 0:
             self.model.set_filter(shown)
         self._update_title()
@@ -980,6 +1041,9 @@ class MainWindow(QMainWindow):
         if self.search is not None:
             menu.addAction(self.similar_action)
         menu.addSeparator()
+        menu.addAction(self.keywords_action)
+        self._add_collection_menu(menu)
+        menu.addSeparator()
         menu.addAction(self.pick_action)
         menu.addAction(self.reject_action)
         menu.addAction(self.unflag_action)
@@ -1024,7 +1088,7 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def undo_flags(self):
-        what = "Rating" if self.model.last_change() == "rating" else "Flag"
+        what = {"rating": "Rating", "keywords": "Keywords"}.get(self.model.last_change(), "Flag")
         if self.model.undo_flags():
             self.statusBar().showMessage(f"{what} change undone", 3000)
         self._update_flag_actions()
@@ -1098,6 +1162,226 @@ class MainWindow(QMainWindow):
             photo_id = self.model.photo_id(current.row())
             # Not while the selection model is telling of the change
             QTimer.singleShot(0, self, lambda: self.model.settle(photo_id))
+
+    # Keywords
+
+    def set_keyword_filter(self, path):
+        """Show only the photos given keyword `path` or one below it, or all."""
+        self.model.set_keyword_filter(path)
+        self.sidebar.select_keyword(path)
+        self._update_status()
+
+    def _on_keywords_changed(self):
+        items = self.service.keyword_items
+        self.sidebar.set_keywords(items)
+        self.filters.set_keywords([path for _id, path, _count in items])
+        self.model.refilter()
+        self._update_flag_actions()
+        self._update_status()
+
+    def edit_keywords(self):
+        """Ask which keywords the photos chosen (or shown) get or lose."""
+        rows = self._flag_rows()
+        if not rows:
+            return
+        dialog = KeywordsDialog(self)
+
+        def refresh():
+            have = {}
+            for row in rows:
+                for path in self.model.keywords(row):
+                    have[path] = have.get(path, 0) + 1
+            names = self.model.name(rows[0]) if len(rows) == 1 else f"{len(rows)} photos"
+            known = [path for _id, path, _count in self.service.keyword_items]
+            dialog.set_state(f"Keywords of {names}", known, have, len(rows))
+
+        def add(text):
+            given = self.model.add_keywords(rows, text.split(","))
+            if not given:
+                self.statusBar().showMessage("Nothing to add", 3000)
+            refresh()
+
+        def remove(paths):
+            self.model.remove_keywords(rows, paths)
+            refresh()
+
+        dialog.add_requested.connect(add)
+        dialog.remove_requested.connect(remove)
+        refresh()
+        dialog.exec()
+        self._update_flag_actions()
+        self._update_status()
+
+    def rename_keyword(self, path):
+        names = path.split(" > ")
+        text, ok = QInputDialog.getText(
+            self, "Rename Keyword", f"New name for {path}:", text=names[-1]
+        )
+        new = " > ".join([*names[:-1], text.strip()]) if ok and text.strip() else None
+        if new is None or new == path:
+            return
+        try:
+            self.service.rename_keyword(path, new)
+        except ValueError as error:
+            QMessageBox.warning(self, "Rename Keyword", str(error))
+            return
+        if self.filters.keyword_value() == path:
+            self.filters.set_keyword(new)
+
+    def delete_keyword(self, path):
+        answer = QMessageBox.question(
+            self,
+            "Delete Keyword",
+            f"Take {path}, and any keywords inside it, off every photo? The photos stay.",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.service.delete_keyword(path)
+
+    # Collections
+
+    def _on_collections_changed(self, collection_id):
+        chosen = self.sidebar.current_collection()
+        self.sidebar.set_collections(self.service.collections())
+        if chosen is not None and self.sidebar.current_collection() is None:
+            # The one shown was deleted
+            self.sidebar.select(None)
+        elif chosen is not None and chosen[0] == collection_id and not chosen[1]:
+            self.model.refresh()
+        self._update_title()
+
+    def _add_collection_menu(self, menu):
+        manual = [c for c in self.service.collections() if c.query is None]
+        sub = menu.addMenu("Add to Collection")
+        for collection in manual:
+            sub.addAction(
+                collection.name, lambda _on=False, c=collection.id: self.add_to_collection(c)
+            )
+        if manual:
+            sub.addSeparator()
+        sub.addAction("New Collection…", lambda: self.new_collection(add_chosen=True))
+        sub.setEnabled(bool(self._flag_rows()))
+        shown = self.sidebar.current_collection()
+        if shown is not None and not shown[1]:
+            action = menu.addAction(
+                "Remove from This Collection", lambda: self.remove_from_collection(shown[0])
+            )
+            action.setEnabled(bool(self._flag_rows()))
+
+    def _ask_name(self, title, text=""):
+        name, ok = QInputDialog.getText(self, title, "Name:", text=text)
+        return name.strip() if ok and name.strip() else None
+
+    def new_collection(self, add_chosen=False):
+        """Make a manual collection, asking its name; the photos chosen go into it."""
+        name = self._ask_name("New Collection")
+        if name is None:
+            return None
+        try:
+            made = self.service.add_collection(name)
+        except ValueError as error:
+            QMessageBox.warning(self, "New Collection", str(error))
+            return None
+        if add_chosen:
+            self.add_to_collection(made)
+        return made
+
+    def add_to_collection(self, collection_id):
+        rows = self._flag_rows()
+        self.add_ids_to_collection(collection_id, [self.model.photo_id(row) for row in rows])
+
+    def add_ids_to_collection(self, collection_id, photo_ids):
+        added = self.service.add_to_collection(collection_id, photo_ids)
+        name = next((c.name for c in self.service.collections() if c.id == collection_id), "")
+        left = len(photo_ids) - added
+        text = f"Added {added} photo{'' if added == 1 else 's'} to {name}"
+        if left:
+            text += f" ({left} already there)"
+        self.statusBar().showMessage(text, 5000)
+
+    def remove_from_collection(self, collection_id):
+        ids = [self.model.photo_id(row) for row in self._flag_rows()]
+        if ids:
+            self.service.remove_from_collection(collection_id, ids)
+
+    def rename_collection(self, collection_id):
+        current = next((c.name for c in self.service.collections() if c.id == collection_id), "")
+        name = self._ask_name("Rename Collection", current)
+        if name is None or name == current:
+            return
+        try:
+            self.service.rename_collection(collection_id, name)
+        except ValueError as error:
+            QMessageBox.warning(self, "Rename Collection", str(error))
+
+    def delete_collection(self, collection_id):
+        found = next((c for c in self.service.collections() if c.id == collection_id), None)
+        if found is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete Collection",
+            f"Delete the collection {found.name}? The photos stay in the library.",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.service.delete_collection(collection_id)
+
+    def _current_query(self):
+        """The filters now set, as a smart collection's query."""
+        year, camera, lens = self.filters.values()
+        search = self.model.search
+        return SmartQuery(
+            year=year,
+            model=camera,
+            lens=lens,
+            flag=self.filters.flag_value(),
+            rating=self.filters.rating_value(),
+            edit=self.filters.edit_value(),
+            keyword=self.filters.keyword_value(),
+            text=search.query if search is not None and search.kind == TEXT else None,
+        )
+
+    def new_smart_collection(self):
+        """Save the filters (and the search) now set as a smart collection."""
+        query = self._current_query()
+        if query.is_empty():
+            return
+        name = self._ask_name("New Smart Collection")
+        if name is None:
+            return
+        try:
+            made = self.service.add_collection(name, query.to_json())
+        except ValueError as error:
+            QMessageBox.warning(self, "New Smart Collection", str(error))
+            return
+        self.sidebar.select_collection(made)
+
+    def update_smart_collection(self, collection_id):
+        query = self._current_query()
+        if query.is_empty():
+            return
+        self.service.set_collection_query(collection_id, query.to_json())
+        self.statusBar().showMessage("Smart collection saved with the filters now set", 4000)
+
+    def _apply_smart(self, collection_id):
+        found = next((c for c in self.service.collections() if c.id == collection_id), None)
+        if found is None or found.query is None:
+            return
+        query = SmartQuery.from_json(found.query)
+        self.filters.apply(
+            {
+                "year": query.year,
+                "camera": query.model,
+                "lens": query.lens,
+                "flag": query.flag,
+                "rating": query.rating,
+                "edit": query.edit,
+                "keyword": query.keyword,
+            }
+        )
+        if query.text and self.search is not None and self._model_ready():
+            self.search_field.set_text(query.text)
+        elif self.model.is_searching():
+            self.end_search()
 
     # Copying settings from one photo to others
 
@@ -1612,6 +1896,12 @@ class MainWindow(QMainWindow):
         folder = self.sidebar.current_folder()
         info = next((f for f in self.service.folders() if f.id == folder), None)
         name = info.name if info is not None else "All Photos"
+        collection = self.sidebar.current_collection()
+        if self.sidebar.current_import() is not None:
+            name = "Last Import"
+        elif collection is not None:
+            found = next((c for c in self.service.collections() if c.id == collection[0]), None)
+            name = found.name if found is not None else name
         self.title.setText(name if self.service.folders() else APP_NAME)
         self.setWindowTitle(f"{name} — {APP_NAME}" if self.service.folders() else APP_NAME)
 
@@ -1626,6 +1916,8 @@ class MainWindow(QMainWindow):
             where = self.model.path(row) or f"{self.model.name(row)} (not connected)"
             flag = FLAG_NAMES.get(self.model.flag(row))
             rated = stars.text(self.model.rating(row))
+            tagged = ", ".join(self.model.keywords(row))
+            tagged = f"Keywords: {tagged}" if tagged else None
             zoom = None
             view = self._zoom_view()
             if view.is_zoomed():
@@ -1633,7 +1925,7 @@ class MainWindow(QMainWindow):
                 if self._zoom_loading(view):
                     zoom += ", loading full size…" if view is self.viewer else ", rendering…"
             damaged = "Raw data may be damaged" if self.model.damage(row) else None
-            parts = (f"{row + 1} of {count}", zoom, flag, rated, damaged, details, where)
+            parts = (f"{row + 1} of {count}", zoom, flag, rated, tagged, damaged, details, where)
             text = "  ·  ".join(part for part in parts if part)
         else:
             text = f"{count} photo" + ("" if count == 1 else "s")

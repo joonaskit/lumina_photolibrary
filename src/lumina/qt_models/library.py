@@ -50,6 +50,11 @@ _ETA_AFTER_PHOTOS = 100
 _ETA_AFTER_SECONDS = 5.0
 
 
+def _count_keywords(path):
+    with dbm.Library(path) as library:
+        return library.keyword_counts()
+
+
 @dataclass(frozen=True)
 class FolderInfo:
     id: int
@@ -100,6 +105,10 @@ class LibraryService(QObject):
     # The drives connected changed
     mounts_changed = Signal()
     presets_changed = Signal()
+    # The keywords (their names, or the photos' counts) changed
+    keywords_changed = Signal()
+    # A collection was made, renamed, deleted or had photos put in or taken out: its id
+    collections_changed = Signal(object)
     # Settings were copied: `copied` has them
     settings_copied = Signal()
     # A JobStatus, while one runs and when it ends
@@ -129,6 +138,12 @@ class LibraryService(QObject):
         self.future = None
         # What Copy Settings kept, or None
         self.copied = None
+        # Every keyword as (id, path, count), by path, and {id: path}: kept up to date,
+        # for the grid's model and the window to read
+        self.keyword_items = []
+        self.keyword_paths = {}
+        self._keyword_counts = {}
+        self._counting = 0
         self._quitting = threading.Event()
         self._remove_after = set()
         self._photos_told = 0.0
@@ -205,6 +220,9 @@ class LibraryService(QObject):
         self.db.remove_folder(folder_id)
         self.folders_changed.emit()
         self.photos_changed.emit()
+        self.keyword_list()
+        self.keywords_changed.emit()
+        self.collections_changed.emit(None)
 
     def rescan(self, folder_id=None):
         """Scan one folder, or all."""
@@ -267,6 +285,110 @@ class LibraryService(QObject):
 
     def ratings(self, ids):
         return self.db.ratings(ids)
+
+    # Keywords
+
+    def keyword_list(self):
+        """Read the keywords again: their names now, and `keyword_items` (id, path, count)
+        and `keyword_paths` with them; the photo counts a moment later, from a thread
+        (they are a query over every link), when `keywords_changed` is told again."""
+        self.keyword_paths = self.db.keyword_paths()
+        self._list_keywords()
+        self._counting += 1
+        counting = self._counting
+        workers.submit(
+            _count_keywords,
+            self.path,
+            on_done=lambda counts: self._keywords_counted(counting, counts),
+            on_error=lambda _error: None,
+            owner=self,
+            process=False,
+        )
+        return self.keyword_items
+
+    def _list_keywords(self):
+        self.keyword_items = sorted(
+            (
+                (keyword, path, self._keyword_counts.get(keyword, 0))
+                for keyword, path in self.keyword_paths.items()
+            ),
+            key=lambda item: [name.casefold() for name in item[1].split(" > ")],
+        )
+
+    def _keywords_counted(self, counting, counts):
+        # The newest read only
+        if counting == self._counting and not self._quitting.is_set():
+            self._keyword_counts = counts
+            self._list_keywords()
+            self.keywords_changed.emit()
+
+    def ensure_keywords(self, paths):
+        """{path: id} of the keywords `paths` (see core/keywords.parse), made when new."""
+        made = self.db.ensure_keywords(paths)
+        self.keyword_list()
+        self.keywords_changed.emit()
+        return made
+
+    def photo_keywords(self, ids):
+        return self.db.photo_keywords(ids)
+
+    def set_photo_keywords(self, values):
+        """{photo id: ids of its keywords}. The grid's model keeps its rows up to date."""
+        self.db.set_photo_keywords(values)
+        self.keyword_list()
+        self.keywords_changed.emit()
+
+    def rename_keyword(self, path, new_path):
+        """Rename a keyword and those below it. Returns False when there is no such
+        keyword; a ValueError when the new name is another keyword's."""
+        renamed = self.db.rename_keyword(path, new_path)
+        self.keyword_list()
+        self.keywords_changed.emit()
+        return renamed
+
+    def delete_keyword(self, path):
+        gone = self.db.delete_keyword(path)
+        self.keyword_list()
+        self.keywords_changed.emit()
+        return gone
+
+    # Collections
+
+    def collections(self):
+        return self.db.collections()
+
+    def last_import(self):
+        """The id of the last import job that copied photos, or None."""
+        return self.db.last_import()
+
+    def add_collection(self, name, query=None):
+        """Make a collection (smart with a saved filter's JSON); returns its id. A
+        ValueError says what is wrong with the name."""
+        made = self.db.add_collection(name, query)
+        self.collections_changed.emit(made)
+        return made
+
+    def rename_collection(self, collection_id, name):
+        self.db.rename_collection(collection_id, name)
+        self.collections_changed.emit(collection_id)
+
+    def set_collection_query(self, collection_id, query):
+        self.db.set_collection_query(collection_id, query)
+        self.collections_changed.emit(collection_id)
+
+    def delete_collection(self, collection_id):
+        self.db.delete_collection(collection_id)
+        self.collections_changed.emit(collection_id)
+
+    def add_to_collection(self, collection_id, photo_ids):
+        """Returns how many photos were added (those in it already are not)."""
+        added = self.db.add_to_collection(collection_id, photo_ids)
+        self.collections_changed.emit(collection_id)
+        return added
+
+    def remove_from_collection(self, collection_id, photo_ids):
+        self.db.remove_from_collection(collection_id, photo_ids)
+        self.collections_changed.emit(collection_id)
 
     # Edits and presets
 
@@ -499,6 +621,9 @@ class LibraryService(QObject):
             self.db.remove_folder(folder_id)
         self.folders_changed.emit()
         self.photos_changed.emit()
+        # Details read may have brought keywords in
+        self.keyword_list()
+        self.keywords_changed.emit()
         self.job_changed.emit(status)
         self.job_ended.emit(status)
         self._next_job()

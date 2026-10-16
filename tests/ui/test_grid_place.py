@@ -103,7 +103,9 @@ def test_the_place_in_the_view_is_kept_to_the_pixel_when_rows_come_in_above(
     count = model.rowCount()
     bar = grid.verticalScrollBar()
     # Between two rows, as a user leaves a scrolled grid
-    bar.setValue(bar.maximum() // 2 + 17)
+    # (a whole number of rows down, so that the top of the view is in a cell, not a gap)
+    row_height = grid.gridSize().height()
+    bar.setValue(bar.maximum() // 2 // row_height * row_height + 17)
     qtbot.wait(100)
     window._save_place()
     top_id = window._place[0]
