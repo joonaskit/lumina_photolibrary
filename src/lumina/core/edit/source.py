@@ -14,7 +14,7 @@ import numpy as np
 import rawpy
 from PIL import Image
 
-from lumina.core import images, raw
+from lumina.core import images, linear_tiff, raw
 from lumina.core.edit.pipeline import srgb_decode
 from lumina.core.errors import PhotoError
 
@@ -26,15 +26,20 @@ DAMAGE_SHARE = 0.001
 
 
 def load_linear(path, half=False):
-    """The photo at `path` as H x W x 3 uint16 linear light, upright. With `half`, a RAW
-    is decoded at half size, four times faster: for thumbnails and the viewer. Raises
-    PhotoError naming it."""
+    """The photo at `path` as H x W x 3 linear light, upright: uint16, or float16 for a
+    linear TIFF (a merge's), whose light past white is above 1. With `half`, a RAW is
+    decoded at half size, four times faster, and a linear TIFF read at half size: for
+    thumbnails and the viewer. Raises PhotoError naming it."""
     if raw.is_raw(path):
-        return _raw_linear(path, half)
+        return raw_linear(path, half)
+    if linear_tiff.is_linear(path):
+        return linear_tiff.read(path, step=2 if half else 1)
     return _image_linear(path)
 
 
-def _raw_linear(path, half=False):
+def raw_linear(path, half=False, white_balance=None):
+    """A RAW file decoded to uint16 linear light, upright: with the camera's white
+    balance, or `white_balance` (multipliers, as `camera_white_balance` gives them)."""
     try:
         with rawpy.imread(str(path)) as file:
             if _damaged(file):
@@ -43,17 +48,36 @@ def _raw_linear(path, half=False):
                     "the raw data is damaged. The camera's JPEG preview is fine; "
                     "copy the file from the card again",
                 )
+            balance = {"use_camera_wb": True}
+            if white_balance is not None:
+                balance = {"use_camera_wb": False, "user_wb": list(white_balance)}
             # postprocess() turns the image by the file's flip itself
             return file.postprocess(
                 gamma=(1, 1),
                 no_auto_bright=True,
                 output_bps=16,
-                use_camera_wb=True,
                 output_color=rawpy.ColorSpace.sRGB,
                 half_size=half,
+                **balance,
             )
     except (rawpy.LibRawError, OSError, ValueError) as error:
         raise PhotoError(path, f"cannot decode RAW ({error})") from error
+
+
+def camera_white_balance(path):
+    """The white balance the camera chose for the RAW file at `path`, as four
+    multipliers, or None when the file has none. Raises PhotoError naming it."""
+    try:
+        with rawpy.imread(str(path)) as file:
+            multipliers = [float(m) for m in file.camera_whitebalance]
+    except (rawpy.LibRawError, OSError, ValueError) as error:
+        raise PhotoError(path, f"cannot decode RAW ({error})") from error
+    if not any(multipliers[:3]):
+        return None
+    if multipliers[3] == 0:
+        # Three colours: the second green is the first one's
+        multipliers[3] = multipliers[1]
+    return multipliers
 
 
 def _damaged(file):
@@ -76,9 +100,10 @@ def _image_linear(path):
 
 
 def resize(linear, width, height, quality=True):
-    """`linear` (uint16 or float32) at `width` x `height` as float32 in [0, 1], resampled
-    in linear light, which is what keeps fine detail's brightness right. `quality`
-    uses Lanczos (for export); without it an area average (fast, for the proxy)."""
+    """`linear` (uint16, or floats) at `width` x `height` as float32, resampled in linear
+    light, which is what keeps fine detail's brightness right: in [0, 1] from uint16;
+    floats keep their light past white (a merge's). `quality` uses Lanczos (for export);
+    without it an area average (fast, for the proxy)."""
     scale = 65535.0 if linear.dtype == np.uint16 else 1.0
     method = Image.Resampling.LANCZOS if quality else Image.Resampling.BOX
     channels = []
@@ -88,7 +113,9 @@ def resize(linear, width, height, quality=True):
     result = np.stack(channels, axis=-1)
     if scale != 1.0:
         result /= np.float32(scale)
-    return np.clip(result, 0.0, 1.0, out=result)
+        return np.clip(result, 0.0, 1.0, out=result)
+    # Lanczos rings below black at a hard edge
+    return np.maximum(result, 0.0, out=result)
 
 
 def fit(width, height, pixels=None, side=None):

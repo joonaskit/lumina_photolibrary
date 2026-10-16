@@ -15,6 +15,7 @@ from lumina.integration.single_instance import SingleInstance
 from lumina.integration.theme_watcher import ThemeWatcher
 from lumina.qt_models import workers
 from lumina.qt_models.library import LibraryService, NewerDatabase
+from lumina.qt_models.merge import MergeService
 from lumina.qt_models.search import SearchService
 from lumina.ui import settings
 from lumina.ui.main_window import MainWindow
@@ -73,15 +74,18 @@ def run(paths=()):
     service.watcher.set_enabled(settings.watch_folders())
     # Nothing is fetched until the user asks: without the model, no indexing
     search = SearchService(service, parent=app)
-    # A scan or indexing in progress stops and is queued for the next start
+    merge = MergeService(service, parent=app)
+    # A scan, indexing or a merge in progress stops and is queued for the next start
     app.aboutToQuit.connect(search.close)
+    app.aboutToQuit.connect(merge.close)
     app.aboutToQuit.connect(service.close)
     app.aboutToQuit.connect(workers.shutdown)
 
-    window = MainWindow(service, search)
+    window = MainWindow(service, search, merge)
     instance.opened.connect(lambda wanted: _open(window, wanted))
     service.start()
     search.start()
+    merge.start()
     _open(window, paths)
     return app.exec()
 

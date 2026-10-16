@@ -205,6 +205,51 @@ def test_a_library_from_schema_5_reads_its_cr3s_again_to_find_damage(tmp_path, m
         assert all(photo.damage_warning is None for photo in library.photos())
 
 
+def test_a_merge_made_outlives_its_sources_leaving_the_library(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    add_photos(library, folder, volume, ["p/a.cr3", "p/b.cr3"])
+    sources = [dbm.Source("uuid:A", "p/a.cr3", "1"), dbm.Source("uuid:A", "/p/b.cr3", "2")]
+    job = library.add_derived_job("hdr", '{"version": 1}', sources, folder)
+    derived = library.job(job).derived_id
+    library.set_derived_result(derived, "uuid:A", "p/a-HDR.tif")
+    library.update_job(job, state=dbm.DONE)
+
+    library.remove_folder(folder)
+
+    made = library.derived_at("uuid:A", "p/a-HDR.tif")
+    assert made.id == derived and made.kind == "hdr" and made.settings == '{"version": 1}'
+    assert made.sources == (
+        dbm.Source("uuid:A", "p/a.cr3", "1"),
+        dbm.Source("uuid:A", "p/b.cr3", "2"),
+    )
+
+
+def test_a_merge_never_made_goes_with_its_folder(library):
+    folder = library.add_folder("uuid:A", "p")
+    job = library.add_derived_job("hdr", "{}", [dbm.Source("uuid:A", "p/a.cr3")], folder)
+    derived = library.job(job).derived_id
+
+    library.remove_folder(folder)
+
+    assert library.job(job) is None and library.derived(derived) is None
+
+
+def test_a_library_from_schema_6_gets_derived_photos_and_keeps_its_jobs(tmp_path, monkeypatch):
+    path = tmp_path / "library.sqlite3"
+    monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:6])
+    monkeypatch.setattr(dbm, "SCHEMA_VERSION", 6)
+    with Library(path) as old:
+        folder = old.add_folder("uuid:A", "p")
+        scan = old.add_job("scan", folder)
+    monkeypatch.undo()
+
+    with Library(path) as library:
+        assert library.job(scan).derived_id is None and library.job(scan).kind == "scan"
+        job = library.add_derived_job("hdr", "{}", [dbm.Source("uuid:A", "p/a.cr3")], folder)
+        assert library.derived(library.job(job).derived_id).sources[0].path == "p/a.cr3"
+
+
 def test_a_warning_of_damage_is_kept_and_goes_when_the_file_reads_clean(library):
     volume = library.volume_id("uuid:A")
     folder = library.add_folder("uuid:A", "p")

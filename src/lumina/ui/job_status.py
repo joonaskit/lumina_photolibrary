@@ -5,17 +5,28 @@ from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QToolButton, QWidget
 
 from lumina.integration import style
-from lumina.qt_models import library
+from lumina.qt_models import library, merge
 
 # How long the end of a job stays in the status bar
 _KEEP_MS = 10000
 
 
 class JobStatus(QWidget):
+    """A scan's, by default; a merge's with `describe_merge` and the merge's phases."""
+
     cancel_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        parent=None,
+        words=None,
+        counted=(library.DETAILS,),
+        cancel_tip="Stop scanning",
+    ):
         super().__init__(parent)
+        # The status in words, and the phases whose done and total are a bar's
+        self._words = words or describe
+        self._counted = counted
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, style.px(8), 0)
         layout.setSpacing(style.px(8))
@@ -25,7 +36,7 @@ class JobStatus(QWidget):
         self.bar.setFixedSize(style.px(140), style.px(6))
         self.cancel = QToolButton()
         self.cancel.setText("Cancel")
-        self.cancel.setToolTip("Stop scanning")
+        self.cancel.setToolTip(cancel_tip)
         self.cancel.setAutoRaise(True)
         self.cancel.clicked.connect(self.cancel_requested)
         layout.addWidget(self.label)
@@ -39,7 +50,7 @@ class JobStatus(QWidget):
 
     def show_status(self, status):
         running = status.state in (library.QUEUED, library.RUNNING)
-        self.label.setText(describe(status))
+        self.label.setText(self._words(status))
         tooltip = "\n".join(f"{path}: {message}" for path, message in status.failures)
         self.label.setToolTip(tooltip)
         failed = status.state == library.FAILED or (not running and status.failures)
@@ -49,11 +60,11 @@ class JobStatus(QWidget):
         self.cancel.setVisible(running)
         if running:
             self._hide.stop()
-            if status.phase == library.DETAILS and status.total:
+            if status.phase in self._counted and status.total:
                 self.bar.setRange(0, status.total)
                 self.bar.setValue(status.done)
             else:
-                # Finding: how many there are is not known until the end
+                # Finding: how many there are is not known until the end; or waiting
                 self.bar.setRange(0, 0)
         else:
             self._hide.start()
@@ -93,3 +104,32 @@ def describe(status):
     if status.message:
         text += f": {status.message}"
     return text + more
+
+
+def merge_status():
+    """A JobStatus for merges."""
+    return JobStatus(
+        words=describe_merge,
+        counted=(merge.DECODING, merge.MERGING),
+        cancel_tip="Stop merging",
+    )
+
+
+def describe_merge(status):
+    """A MergeStatus in words, for the status bar."""
+    name = status.name
+    more = f"  ·  {status.queued} more waiting" if status.queued else ""
+    if status.state == library.QUEUED or status.phase is None:
+        return f"Waiting to merge {name}{more}"
+    if status.state == library.RUNNING:
+        if status.phase == merge.DECODING:
+            return f"Merging {name}: reading photo {status.done} of {status.total}{more}"
+        if status.phase == merge.PLANNING:
+            return f"Merging {name}: aligning{more}"
+        share = round(100 * status.done / status.total) if status.total else 0
+        return f"Merging {name}: {share} %{more}"
+    if status.state == library.DONE:
+        return (status.message or f"Merged {name}") + more
+    if status.state == library.CANCELLED:
+        return f"Stopped merging {name}{more}"
+    return (status.message or f"Could not merge {name}") + more

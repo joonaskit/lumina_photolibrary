@@ -62,7 +62,11 @@ SEARCH = "search"
 CACHE = "cache"
 # One thread for walking a library folder to watch it
 WATCH = "watch"
-_NAMED_PROCESSES = {DEVELOP, EMBED, QUERY}
+# One thread for merge jobs (core/hdr.py), which wait on MERGING for minutes, and one
+# process for their steps: a merge never holds up a scan, a thumbnail or a render
+MERGE = "merge"
+MERGING = "merging"
+_NAMED_PROCESSES = {DEVELOP, EMBED, QUERY, MERGING}
 
 
 def _the_relay():

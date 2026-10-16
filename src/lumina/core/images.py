@@ -7,9 +7,10 @@ Runs in worker processes, so what it returns is plain data that pickles: rows of
 import io
 from dataclasses import dataclass
 
+import numpy as np
 from PIL import Image, ImageCms, ImageOps
 
-from lumina.core import raw
+from lumina.core import linear_tiff, raw
 from lumina.core.errors import PhotoError
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
@@ -49,6 +50,8 @@ def load_pixels(path, max_side):
     naming the file."""
     if raw.is_raw(path):
         image, full = raw.load_preview_sized(path, max_side)
+    elif linear_tiff.is_linear(path):
+        image, full = _load_linear(path, max_side)
     else:
         image, full = _load_image(path, max_side)
     if max_side and max(image.size) > max_side:
@@ -97,6 +100,27 @@ def _draft_box(image, max_side):
     width, height = image.size
     scale = max_side / max(width, height)
     return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def _srgb_table():
+    # Linear [0, 1] in 4096 steps -> 8-bit sRGB
+    linear = np.linspace(0.0, 1.0, 4096)
+    encoded = np.where(linear <= 0.0031308, 12.92 * linear, 1.055 * linear ** (1 / 2.4) - 0.055)
+    return np.round(encoded * 255).astype(np.uint8)
+
+
+_SRGB_TABLE = _srgb_table()
+
+
+def _load_linear(path, max_side):
+    """A linear TIFF (a merge's) as an 8-bit sRGB image, light past white clipped, as an
+    unedited RAW shows: read every n-th row and column, for a size still at least
+    `max_side`."""
+    full = linear_tiff.size(path)
+    step = max(1, max(full) // max_side) if max_side else 1
+    linear = linear_tiff.read(path, step=step).astype(np.float32)
+    index = (np.clip(linear, 0.0, 1.0) * 4095 + 0.5).astype(np.uint16)
+    return Image.fromarray(_SRGB_TABLE[index], "RGB"), full
 
 
 def _load_image(path, max_side):
