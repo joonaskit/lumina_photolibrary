@@ -1,7 +1,7 @@
-"""Year, camera, lens, flag, rating and edit state, above the grid: what is shown, and
+"""Year, camera, lens, flag, rating, edit state and keyword, above the grid: what is shown, and
 nothing else. Clear at the right end shows everything again."""
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QPushButton, QSizePolicy, QWidget
 
 from lumina.integration import style
@@ -13,6 +13,7 @@ from lumina.qt_models.library_model import (
     UNEDITED,
     UNFLAGGED,
 )
+from lumina.qt_models.library_model import keyword_names as keywordm
 
 FLAG_CHOICES = (
     ("All flags", None),
@@ -47,10 +48,15 @@ class FilterBar(QWidget):
     rating_changed = Signal(object)
     # EDITED or UNEDITED to show only those, or None for all
     edit_changed = Signal(object)
+    # A keyword path to show only the photos given it or one below it, or None for all
+    keyword_changed = Signal(object)
+    # Save the filters as a smart collection
+    save_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
+        self._searching = False
         self.year = self._combo("All years")
         self.camera = self._combo("All cameras")
         self.lens = self._combo("All lenses")
@@ -58,6 +64,9 @@ class FilterBar(QWidget):
         self.flag = self._fixed_combo(FLAG_CHOICES, self.flag_changed)
         self.rating = self._fixed_combo(RATING_CHOICES, self.rating_changed)
         self.edit = self._fixed_combo(EDIT_CHOICES, self.edit_changed)
+        self.keyword = self._fixed_combo((("Any keyword", None),), self.keyword_changed)
+        self.keyword.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.keyword.setMaximumWidth(style.px(240))
         for combo in (self.year, self.camera, self.lens):
             layout.addWidget(combo)
         # What the photos are, then what was done with them
@@ -65,7 +74,7 @@ class FilterBar(QWidget):
         divider.setObjectName("divider")
         divider.setFixedWidth(1)
         layout.addWidget(divider)
-        for combo in (self.flag, self.rating, self.edit):
+        for combo in (self.flag, self.rating, self.edit, self.keyword):
             layout.addWidget(combo)
             combo.currentIndexChanged.connect(self._update_clear)
         for combo in (self.year, self.camera, self.lens):
@@ -77,6 +86,11 @@ class FilterBar(QWidget):
         self.clear_button.setToolTip("Show every photo again")
         self.clear_button.clicked.connect(self.clear)
         layout.addWidget(self.clear_button)
+        self.save_button = QPushButton("Save…")
+        self.save_button.setObjectName("row")
+        self.save_button.setToolTip("Save these filters as a smart collection")
+        self.save_button.clicked.connect(self.save_requested)
+        layout.addWidget(self.save_button)
         # As tall and as round as the toolbar's cards and search field, whatever the font
         for combo in self._combos():
             combo.setObjectName("row")
@@ -86,19 +100,38 @@ class FilterBar(QWidget):
     def _fit(self, layout):
         layout.setContentsMargins(0, 0, 0, style.gap(8))
         layout.setSpacing(style.gap(8))
-        for widget in (*self._combos(), self.clear_button):
+        for widget in (*self._combos(), self.clear_button, self.save_button):
             widget.setFixedHeight(style.row_height())
 
     def _combos(self):
-        return (self.year, self.camera, self.lens, self.flag, self.rating, self.edit)
+        return (
+            self.year,
+            self.camera,
+            self.lens,
+            self.flag,
+            self.rating,
+            self.edit,
+            self.keyword,
+        )
 
     def _update_clear(self):
-        self.clear_button.setEnabled(any(combo.currentIndex() for combo in self._combos()))
+        active = any(combo.currentIndex() for combo in self._combos())
+        self.clear_button.setEnabled(active)
+        self.save_button.setEnabled(active or self._searching)
+
+    def set_searching(self, on):
+        """Whether a search is on, which a smart collection can save too."""
+        self._searching = on
+        self._update_clear()
 
     def clear(self):
         """Every filter back to all, each signal once for what changed."""
         before = self.values()
-        changed = [combo for combo in (self.flag, self.rating, self.edit) if combo.currentIndex()]
+        changed = [
+            combo
+            for combo in (self.flag, self.rating, self.edit, self.keyword)
+            if combo.currentIndex()
+        ]
         for combo in self._combos():
             combo.blockSignals(True)
             combo.setCurrentIndex(0)
@@ -110,6 +143,7 @@ class FilterBar(QWidget):
             self.flag: self.flag_changed,
             self.rating: self.rating_changed,
             self.edit: self.edit_changed,
+            self.keyword: self.keyword_changed,
         }
         for combo in changed:
             signals[combo].emit(None)
@@ -122,6 +156,52 @@ class FilterBar(QWidget):
             combo.addItem(text, value)
         combo.currentIndexChanged.connect(lambda _index: changed.emit(combo.currentData()))
         return combo
+
+    def keyword_value(self):
+        """A keyword path, or None for any."""
+        return self.keyword.currentData()
+
+    def set_keywords(self, paths):
+        """The keywords to choose from, as paths by name; a choice still there stays
+        chosen. Signals `keyword_changed` when the chosen one went."""
+        current = self.keyword.currentData()
+        self.keyword.blockSignals(True)
+        while self.keyword.count() > 1:
+            self.keyword.removeItem(1)
+        for path in paths:
+            depth = len(keywordm.levels(path)) - 1
+            self.keyword.addItem("\u2003" * depth + keywordm.leaf(path), path)
+            self.keyword.setItemData(self.keyword.count() - 1, path, Qt.ItemDataRole.ToolTipRole)
+        index = self.keyword.findData(current) if current is not None else 0
+        self.keyword.setCurrentIndex(max(index, 0))
+        self.keyword.blockSignals(False)
+        self._update_clear()
+        if self.keyword.currentData() != current:
+            self.keyword_changed.emit(self.keyword.currentData())
+
+    def set_keyword(self, path):
+        """Choose keyword `path` (None for any); signals `keyword_changed` if that is a
+        change. A keyword that is not in the list is not chosen."""
+        index = self.keyword.findData(path) if path is not None else 0
+        self.keyword.setCurrentIndex(max(index, 0))
+
+    def apply(self, values):
+        """Choose year, camera, lens, flag, rating, edit state and keyword from the dict
+        `values` (keys "year", "camera", "lens", "flag", "rating", "edit", "keyword";
+        a missing one is any); a choice that is not there is any. Signals once for the
+        year, camera and lens together."""
+        before = self.values()
+        for name in ("year", "camera", "lens"):
+            combo = getattr(self, name)
+            combo.blockSignals(True)
+            combo.setCurrentIndex(max(combo.findData(values.get(name)), 0))
+            combo.blockSignals(False)
+        for name in ("flag", "rating", "edit", "keyword"):
+            combo = getattr(self, name)
+            combo.setCurrentIndex(max(combo.findData(values.get(name)), 0))
+        self._update_clear()
+        if self.values() != before:
+            self.changed.emit()
 
     def edit_value(self):
         """EDITED or UNEDITED to show only those, or None for all."""

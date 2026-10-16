@@ -93,6 +93,8 @@ def describe(status):
     if status.state == library.RUNNING:
         if status.phase == library.FINDING:
             return f"Scanning {name}: {status.done} photos found{more}"
+        if status.phase == library.SIDECARS:
+            return f"Reading sidecars in {name}{more}"
         left = f"  ·  about {time_left(status.eta)} left" if status.eta is not None else ""
         return f"Reading details in {name}: {status.done} of {status.total}{left}{more}"
     ended = {

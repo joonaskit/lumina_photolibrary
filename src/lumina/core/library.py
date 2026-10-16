@@ -23,7 +23,7 @@ import os
 import time
 
 from lumina.core import db as dbm
-from lumina.core import metadata, scanner, volumes
+from lumina.core import metadata, scanner, sidecars, volumes
 from lumina.core.errors import PhotoError
 from lumina.core.fingerprint import content_id
 
@@ -40,7 +40,7 @@ _REST_RATIO = 1.0
 _REST_MOST = 5.0
 _REST_STEP = 0.1
 
-FINDING, DETAILS = "finding", "details"
+FINDING, DETAILS, SIDECARS = "finding", "details", sidecars.SIDECARS
 
 
 class NotConnected(Exception):
@@ -82,12 +82,14 @@ def scan(
     exiftool=metadata.ExifTool,
     gentle=False,
     rest=rest,
+    read_sidecars=False,
 ):
     """Run scan job `job_id` for folder `folder_id` to its end and return its state.
     `mounts` are the system's mounts (volumes.read_mounts()); `exiftool` makes an
     ExifTool. With `gentle`, a large scan rests between batches (`rest(seconds,
-    should_stop)`) and reads at a low priority. Raises NotConnected, leaving the job
-    queued, when the folder's volume is not mounted."""
+    should_stop)`) and reads at a low priority. With `read_sidecars`, the sidecars beside
+    the photos that changed are taken in last (core/sidecars.py). Raises NotConnected,
+    leaving the job queued, when the folder's volume is not mounted."""
     folder = library.folder(folder_id)
     if folder is None:
         library.update_job(job_id, state=dbm.FAILED_JOB, message="The folder is not in the library")
@@ -117,6 +119,14 @@ def scan(
         job.end(dbm.CANCELLED, "Cancelled while reading details")
         return dbm.CANCELLED
     state, note, unread = details
+    if read_sidecars:
+        taken = _read_sidecars(library, job, folder, base, should_stop)
+        if taken is None:
+            job.end(dbm.CANCELLED, "Cancelled while reading sidecars")
+            return dbm.CANCELLED
+        sidecar_note, unreadable = taken
+        note = ", ".join(part for part in (note, sidecar_note) if part)
+        unread += unreadable
     library.mark_scanned(folder_id)
     job.end(state, _summary(library, folder_id, counts, failures + unread, note))
     return state
@@ -242,6 +252,30 @@ def _details(library, job, folder, base, should_stop, exiftool, gentle=False, re
         tool.close()
     job.progress(DETAILS, done, total, force=True)
     return dbm.DONE, None, failures
+
+
+def _read_sidecars(library, job, folder, base, should_stop):
+    """Take in sidecars that changed. Returns (a note for the summary, failures) or None
+    when cancelled."""
+    job.progress(SIDECARS, 0, None, force=True)
+    result = sidecars.read_changed(
+        library,
+        folder.id,
+        lambda relative: _absolute(folder.path, base, relative),
+        should_stop,
+        lambda done, total: job.progress(SIDECARS, done, total),
+    )
+    library.add_failures(job.id, result.failures)
+    if should_stop():
+        return None
+    parts = []
+    if result.used:
+        n = result.used
+        parts.append(f"{n} sidecar{'' if n == 1 else 's'} read in")
+    if result.kept:
+        n = result.kept
+        parts.append(f"{n} sidecar{'' if n == 1 else 's'} older than the library's own, kept")
+    return ", ".join(parts), len(result.failures)
 
 
 def _relative(folder_path, base, path):

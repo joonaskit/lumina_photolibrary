@@ -91,6 +91,14 @@ class SearchField(QWidget):
         self._clearing = False
         self._sent = ""
 
+    def set_text(self, text):
+        """Put `text` in the field and search for it now ("" ends the search)."""
+        self._typing.stop()
+        self._clearing = True
+        self.edit.setText(text)
+        self._clearing = False
+        self._search(again=True)
+
     def show_similar(self, name):
         """Show "Like <name>" in front of the field; None hides it."""
         self.chip.setVisible(name is not None)

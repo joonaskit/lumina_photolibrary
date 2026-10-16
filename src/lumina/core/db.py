@@ -17,7 +17,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
-from lumina.core import backup, metadata
+from lumina.core import backup, keywords, metadata, xmp
 
 # Steps of `metadata_state`
 PENDING, READ, FAILED = 0, 1, 2
@@ -269,6 +269,73 @@ def _migrate_8(db):
     )
 
 
+def _migrate_9(db):
+    db.executescript(
+        """
+        -- A keyword is a path of names from the top ("Places > Finland > Helsinki",
+        -- core/keywords.py), compared without regard to case. The ones above a keyword
+        -- have rows of their own, so the list is a tree; a photo is linked to the
+        -- keywords it was given, not to those above them
+        CREATE TABLE keywords (
+            id INTEGER PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE COLLATE NOCASE
+        );
+        -- Per photo, not per virtual copy, as flags are. Forgotten with the photo (a
+        -- folder removed from the library), kept while its file or drive is missing
+        CREATE TABLE photo_keywords (
+            photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+            keyword_id INTEGER NOT NULL REFERENCES keywords(id) ON DELETE CASCADE,
+            PRIMARY KEY (photo_id, keyword_id)
+        );
+        CREATE INDEX photo_keywords_keyword ON photo_keywords (keyword_id);
+        -- Whether the keywords in the file (IPTC, XMP) have been taken in as a starting
+        -- set. Once: a keyword taken off a photo is not put back by reading its file again
+        ALTER TABLE photos ADD COLUMN keywords_read INTEGER NOT NULL DEFAULT 0;
+
+        -- Manual collections hold photos; a smart one has `query`, a saved filter as
+        -- JSON (core/smart.py), and holds none
+        CREATE TABLE collections (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            query TEXT,
+            created_at REAL NOT NULL
+        );
+        CREATE TABLE collection_photos (
+            collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+            photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+            added_at REAL NOT NULL,
+            PRIMARY KEY (collection_id, photo_id)
+        );
+        CREATE INDEX collection_photos_photo ON collection_photos (photo_id);
+        """
+    )
+
+
+def _migrate_10(db):
+    db.executescript(
+        """
+        -- When a photo's flag, stars, keywords or edits last changed (time.time()), or
+        -- NULL when they never have since it was added. What an XMP sidecar (core/xmp.py)
+        -- is compared by
+        ALTER TABLE photos ADD COLUMN changed_at REAL;
+        -- The `changed_at` its sidecar holds, NULL when none was written or read; the
+        -- sidecar is out of date while this is behind `changed_at`
+        ALTER TABLE photos ADD COLUMN sidecar_at REAL;
+        -- The sidecar file's time (ns) when it was last written or read here: a scan reads
+        -- a sidecar again when the file's time is another
+        ALTER TABLE photos ADD COLUMN sidecar_mtime_ns INTEGER;
+        -- What was marked before this schema has no time of its own: the edit's, else now
+        UPDATE photos SET changed_at = COALESCE(
+            (SELECT MAX(updated_at) FROM edits WHERE photo_id = photos.id),
+            CAST(strftime('%s', 'now') AS REAL)
+        )
+        WHERE flag <> 0 OR rating <> 0
+            OR EXISTS (SELECT 1 FROM edits WHERE photo_id = photos.id)
+            OR EXISTS (SELECT 1 FROM photo_keywords WHERE photo_id = photos.id);
+        """
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
 _MIGRATIONS = [
     _migrate_1,
@@ -279,6 +346,8 @@ _MIGRATIONS = [
     _migrate_6,
     _migrate_7,
     _migrate_8,
+    _migrate_9,
+    _migrate_10,
 ]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -301,6 +370,20 @@ class Filter:
     year: str | None = None
     model: str | None = None
     lens: str | None = None
+    # The manual collection whose photos to show
+    collection_id: int | None = None
+    # The import job whose copied photos to show (`Library.last_import`)
+    import_job: int | None = None
+
+
+@dataclass(frozen=True)
+class Collection:
+    id: int
+    name: str
+    # A smart collection's saved filter as JSON (core/smart.py); None for a manual one
+    query: str | None
+    # How many photos a manual collection holds; None for a smart one
+    count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -318,6 +401,8 @@ class PhotoRow:
     rating: int = 0
     # exiftool's warning that the raw data may be damaged, or None
     damage_warning: str | None = None
+    # The ids of the keywords the photo was given (not of those above them)
+    keywords: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -589,6 +674,8 @@ class Library:
                 "latitude = ?, longitude = ?, file_type = ?, damage_warning = ? WHERE id = ?",
                 [(cid, *_metadata_columns(data), photo) for photo, cid, data in read],
             )
+            for photo, _cid, data in read:
+                self._take_in_keywords(photo, data.keywords)
             self.db.executemany(
                 "UPDATE photos SET metadata_state = 2, metadata_error = ?, "
                 "content_id = COALESCE(?, content_id) WHERE id = ?",
@@ -616,14 +703,28 @@ class Library:
         rows = self.db.execute(
             "SELECT p.id, v.key, p.path, p.content_id, p.available, "
             "COALESCE(p.captured, p.file_time) AS taken, e.params, p.flag, p.rating, "
-            "p.damage_warning "
+            "p.damage_warning, "
+            "(SELECT GROUP_CONCAT(k.keyword_id) FROM photo_keywords k WHERE k.photo_id = p.id) "
             f"FROM photos p JOIN volumes v ON v.id = p.volume_id "
             "LEFT JOIN edits e ON e.photo_id = p.id AND e.copy = 0 "
             f"{where} ORDER BY taken, p.path",
             args,
         )
         return [
-            PhotoRow(r[0], r[1], r[2], r[3], bool(r[4]), r[5], r[6], r[7], r[8], r[9]) for r in rows
+            PhotoRow(
+                r[0],
+                r[1],
+                r[2],
+                r[3],
+                bool(r[4]),
+                r[5],
+                r[6],
+                r[7],
+                r[8],
+                r[9],
+                tuple(int(i) for i in r[10].split(",")) if r[10] else (),
+            )
+            for r in rows
         ]
 
     def photo(self, photo_id):
@@ -702,6 +803,15 @@ class Library:
                 f"UPDATE photos SET {column} = ? WHERE id = ?",
                 [(value, photo) for photo, value in values.items()],
             )
+            self._touch(values)
+
+    def _touch(self, photo_ids):
+        """Note that these photos' flag, stars, keywords or edits changed now: their
+        sidecars are out of date. In the caller's transaction."""
+        now = time.time()
+        self.db.executemany(
+            "UPDATE photos SET changed_at = ? WHERE id = ?", [(now, photo) for photo in photo_ids]
+        )
 
     def _marks(self, column, ids):
         ids = list(ids)
@@ -713,6 +823,343 @@ class Library:
             rows = self.db.execute(f"SELECT id, {column} FROM photos WHERE id IN ({marks})", part)
             found.update((row[0], row[1]) for row in rows)
         return found
+
+    # Keywords
+
+    def keyword_paths(self):
+        """{id: path} of every keyword."""
+        return {row[0]: row[1] for row in self.db.execute("SELECT id, path FROM keywords")}
+
+    def keyword_counts(self):
+        """{id: photos given the keyword or one below it} (one given two keywords in a
+        branch counts once there); a keyword nothing is given is left out."""
+        # Those below are the paths from "<path> > " up to "<path> >!": the next character
+        # after the separator's last, so the range holds nothing else (and the index serves it)
+        return {
+            row[0]: row[1]
+            for row in self.db.execute(
+                "SELECT a.id, COUNT(DISTINCT m.photo_id) FROM keywords a "
+                "JOIN keywords b ON b.path = a.path OR "
+                "(b.path >= a.path || ?1 AND b.path < a.path || ?2) "
+                "JOIN photo_keywords m ON m.keyword_id = b.id GROUP BY a.id",
+                (keywords.SEPARATOR, keywords.SEPARATOR[:-1] + "!"),
+            )
+        }
+
+    def keyword_list(self):
+        """[(id, path, count)] of every keyword, by path; `count` is the photos given it
+        or one below it."""
+        counts = self.keyword_counts()
+        return sorted(
+            (
+                (keyword, path, counts.get(keyword, 0))
+                for keyword, path in self.keyword_paths().items()
+            ),
+            key=lambda item: [name.casefold() for name in keywords.levels(item[1])],
+        )
+
+    def ensure_keywords(self, paths):
+        """{path: id} of the keywords `paths` (parsed by `keywords.parse`), made when they
+        are new, with the levels above them. The path is as first written."""
+        with self.db:
+            return {path: self._keyword(path) for path in paths}
+
+    def _keyword(self, path):
+        # Each level is spelt as the keyword that is there already spells it, so that what
+        # is below a keyword always starts with its path
+        names = keywords.levels(path)
+        found = None
+        for number in range(1, len(names) + 1):
+            above = keywords.SEPARATOR.join([*([found] if found else []), names[number - 1]])
+            self.db.execute("INSERT OR IGNORE INTO keywords (path) VALUES (?)", (above,))
+            found = self.db.execute(
+                "SELECT path FROM keywords WHERE path = ?", (above,)
+            ).fetchone()[0]
+        return self.db.execute("SELECT id FROM keywords WHERE path = ?", (found,)).fetchone()[0]
+
+    def photo_keywords(self, ids):
+        """{photo id: ids of its keywords, sorted} of those of `ids` in the library."""
+        ids = list(ids)
+        found = {photo: () for photo in self._marks("id", ids)}
+        for start in range(0, len(ids), 500):
+            part = ids[start : start + 500]
+            marks = ", ".join("?" * len(part))
+            rows = self.db.execute(
+                "SELECT photo_id, keyword_id FROM photo_keywords "
+                f"WHERE photo_id IN ({marks}) ORDER BY keyword_id",
+                part,
+            )
+            for photo, keyword in rows:
+                found[photo] = (*found[photo], keyword)
+        return found
+
+    def set_photo_keywords(self, values):
+        """{photo id: ids of the keywords it has}, replacing what each had, in one
+        transaction."""
+        with self.db:
+            for photo, ids in values.items():
+                self.db.execute("DELETE FROM photo_keywords WHERE photo_id = ?", (photo,))
+                self.db.executemany(
+                    "INSERT OR IGNORE INTO photo_keywords (photo_id, keyword_id) "
+                    "SELECT ?, id FROM keywords WHERE id = ?",
+                    [(photo, keyword) for keyword in ids],
+                )
+            self._touch(values)
+
+    def rename_keyword(self, path, new_path):
+        """Make keyword `path` and those below it `new_path` and below. Returns False when
+        `path` is not a keyword; a ValueError when `new_path` is another keyword's. Photos
+        keep their keywords. The levels above `new_path` are made."""
+        with self.db:
+            found = self._keywords_within(path)
+            if not found:
+                return False
+            taken = {other.casefold() for _id, other in self._keywords_within(new_path)}
+            moved = {old.casefold() for _id, old in found}
+            if taken - moved:
+                raise ValueError(f"There is a keyword {new_path} already")
+            self._touch_keyword_photos(keyword for keyword, _old in found)
+            for keyword, old in found:
+                renamed = new_path + old[len(path) :]
+                self.db.execute("UPDATE keywords SET path = ? WHERE id = ?", (renamed, keyword))
+            for above in keywords.ancestors(new_path):
+                self.db.execute("INSERT OR IGNORE INTO keywords (path) VALUES (?)", (above,))
+        return True
+
+    def delete_keyword(self, path):
+        """Forget keyword `path` and those below it, taking them off every photo. Returns
+        how many keywords went."""
+        with self.db:
+            found = self._keywords_within(path)
+            self._touch_keyword_photos(i for i, _p in found)
+            self.db.executemany("DELETE FROM keywords WHERE id = ?", [(i,) for i, _p in found])
+        return len(found)
+
+    def _touch_keyword_photos(self, keyword_ids):
+        ids = list(keyword_ids)
+        marks = ", ".join("?" * len(ids))
+        photos = [
+            row[0]
+            for row in self.db.execute(
+                f"SELECT DISTINCT photo_id FROM photo_keywords WHERE keyword_id IN ({marks})", ids
+            )
+        ]
+        self._touch(photos)
+
+    def _keywords_within(self, path):
+        return [
+            (row[0], row[1])
+            for row in self.db.execute("SELECT id, path FROM keywords")
+            if keywords.within(row[1], path)
+        ]
+
+    def keyword_ids_within(self, path):
+        """The ids of keyword `path` and those below it."""
+        return {keyword for keyword, _path in self._keywords_within(path)}
+
+    def _take_in_keywords(self, photo, found):
+        # The first time its file is read only
+        row = self.db.execute("SELECT keywords_read FROM photos WHERE id = ?", (photo,)).fetchone()
+        if row is None or row[0]:
+            return
+        self.db.execute("UPDATE photos SET keywords_read = 1 WHERE id = ?", (photo,))
+        for path in found:
+            self.db.execute(
+                "INSERT OR IGNORE INTO photo_keywords (photo_id, keyword_id) VALUES (?, ?)",
+                (photo, self._keyword(path)),
+            )
+
+    # Collections
+
+    def collections(self):
+        """Every collection, by name, manual ones with their photo counts."""
+        rows = self.db.execute(
+            "SELECT c.id, c.name, c.query, "
+            "(SELECT COUNT(*) FROM collection_photos m WHERE m.collection_id = c.id) "
+            "FROM collections c ORDER BY c.name COLLATE NOCASE"
+        )
+        return [Collection(r[0], r[1], r[2], None if r[2] is not None else r[3]) for r in rows]
+
+    def add_collection(self, name, query=None):
+        """A new collection, smart when it has a `query` (JSON). Returns its id; a
+        ValueError when the name is empty or another collection has it."""
+        name = " ".join(name.split())
+        if not name:
+            raise ValueError("A collection needs a name")
+        try:
+            with self.db:
+                cursor = self.db.execute(
+                    "INSERT INTO collections (name, query, created_at) VALUES (?, ?, ?)",
+                    (name, query, time.time()),
+                )
+        except sqlite3.IntegrityError as error:
+            raise ValueError(f"There is a collection called {name} already") from error
+        return cursor.lastrowid
+
+    def rename_collection(self, collection_id, name):
+        name = " ".join(name.split())
+        if not name:
+            raise ValueError("A collection needs a name")
+        try:
+            with self.db:
+                self.db.execute(
+                    "UPDATE collections SET name = ? WHERE id = ?", (name, collection_id)
+                )
+        except sqlite3.IntegrityError as error:
+            raise ValueError(f"There is a collection called {name} already") from error
+
+    def set_collection_query(self, collection_id, query):
+        """Change a smart collection's saved filter (JSON)."""
+        with self.db:
+            self.db.execute(
+                "UPDATE collections SET query = ? WHERE id = ? AND query IS NOT NULL",
+                (query, collection_id),
+            )
+
+    def delete_collection(self, collection_id):
+        """Forget a collection; its photos stay in the library."""
+        with self.db:
+            self.db.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+
+    def add_to_collection(self, collection_id, photo_ids):
+        """Put photos in a manual collection (those in it already stay). Returns how many
+        were added."""
+        now = time.time()
+        with self.db:
+            before = self.db.total_changes
+            self.db.executemany(
+                "INSERT OR IGNORE INTO collection_photos (collection_id, photo_id, added_at) "
+                "SELECT c.id, p.id, ? FROM collections c, photos p "
+                "WHERE c.id = ? AND c.query IS NULL AND p.id = ?",
+                [(now, collection_id, photo) for photo in photo_ids],
+            )
+            return self.db.total_changes - before
+
+    def remove_from_collection(self, collection_id, photo_ids):
+        with self.db:
+            self.db.executemany(
+                "DELETE FROM collection_photos WHERE collection_id = ? AND photo_id = ?",
+                [(collection_id, photo) for photo in photo_ids],
+            )
+
+    def collection_photo_ids(self, collection_id):
+        return {
+            row[0]
+            for row in self.db.execute(
+                "SELECT photo_id FROM collection_photos WHERE collection_id = ?",
+                (collection_id,),
+            )
+        }
+
+    # Sidecars
+
+    def sidecar_pending(self, after=0, limit=100):
+        """[(id, volume key, path, available, changed_at)] of photos whose sidecar is out
+        of date (never written, or behind their last change), by id, those after id `after`."""
+        rows = self.db.execute(
+            "SELECT p.id, v.key, p.path, p.available, p.changed_at FROM photos p "
+            "JOIN volumes v ON v.id = p.volume_id WHERE p.id > ? AND p.changed_at IS NOT NULL "
+            "AND (p.sidecar_at IS NULL OR p.sidecar_at < p.changed_at) ORDER BY p.id LIMIT ?",
+            (after, limit),
+        )
+        return [(r[0], r[1], r[2], bool(r[3]), r[4]) for r in rows]
+
+    def count_sidecars_pending(self):
+        return self.db.execute(
+            "SELECT COUNT(*) FROM photos WHERE changed_at IS NOT NULL "
+            "AND (sidecar_at IS NULL OR sidecar_at < changed_at)"
+        ).fetchone()[0]
+
+    def sidecar_state(self, photo_id):
+        """What a photo's sidecar holds (xmp.SidecarState), or None for no such photo."""
+        row = self.db.execute(
+            "SELECT flag, rating, changed_at FROM photos WHERE id = ?", (photo_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        paths = self.keyword_paths()
+        found = self.photo_keywords([photo_id])[photo_id]
+        edits = self.db.execute(
+            "SELECT copy, params FROM edits WHERE photo_id = ? ORDER BY copy", (photo_id,)
+        )
+        return xmp.SidecarState(
+            updated=row[2] or 0.0,
+            flag=row[0],
+            rating=row[1],
+            keywords=tuple(sorted((paths[k] for k in found if k in paths), key=str.casefold)),
+            edits=tuple((r[0], r[1]) for r in edits),
+        )
+
+    def sidecar_written(self, photo_id, changed_at, mtime_ns):
+        """A sidecar was written holding the state as of `changed_at`; its file's time."""
+        with self.db:
+            self.db.execute(
+                "UPDATE photos SET sidecar_at = ?, sidecar_mtime_ns = ? WHERE id = ?",
+                (changed_at, mtime_ns, photo_id),
+            )
+
+    def sidecar_candidates(self, folder_id):
+        """[(id, path, sidecar_mtime_ns)] of the available photos of a folder: where to
+        look for a sidecar that changed."""
+        rows = self.db.execute(
+            "SELECT id, path, sidecar_mtime_ns FROM photos WHERE folder_id = ? AND available = 1",
+            (folder_id,),
+        )
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    def forget_sidecar(self, photo_id):
+        """Its sidecar is gone: a photo with something to keep gets a new one."""
+        with self.db:
+            self.db.execute(
+                "UPDATE photos SET sidecar_at = NULL, sidecar_mtime_ns = NULL WHERE id = ?",
+                (photo_id,),
+            )
+
+    def note_sidecar(self, photo_id, mtime_ns):
+        """A sidecar file that is not read (another program's) is as it was at `mtime_ns`."""
+        with self.db:
+            self.db.execute(
+                "UPDATE photos SET sidecar_mtime_ns = ? WHERE id = ?", (mtime_ns, photo_id)
+            )
+
+    def apply_sidecar(self, photo_id, state, mtime_ns):
+        """Take a sidecar's state (xmp.SidecarState) in when it is newer than the library's
+        own change of the photo; else the library's stays, and is written to the sidecar
+        again. Returns whether the sidecar was used."""
+        with self.db:
+            row = self.db.execute(
+                "SELECT changed_at FROM photos WHERE id = ?", (photo_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            used = state.updated > (row[0] or 0.0)
+            if used:
+                self._take_sidecar(photo_id, state)
+            self.db.execute(
+                "UPDATE photos SET sidecar_at = ?, sidecar_mtime_ns = ? WHERE id = ?",
+                (state.updated, mtime_ns, photo_id),
+            )
+        return used
+
+    def _take_sidecar(self, photo_id, state):
+        flag = state.flag if state.flag in FLAGS else UNFLAGGED
+        rating = state.rating if state.rating in RATINGS else 0
+        self.db.execute(
+            "UPDATE photos SET flag = ?, rating = ?, changed_at = ?, keywords_read = 1 "
+            "WHERE id = ?",
+            (flag, rating, state.updated, photo_id),
+        )
+        self.db.execute("DELETE FROM photo_keywords WHERE photo_id = ?", (photo_id,))
+        for path in state.keywords:
+            self.db.execute(
+                "INSERT OR IGNORE INTO photo_keywords (photo_id, keyword_id) VALUES (?, ?)",
+                (photo_id, self._keyword(path)),
+            )
+        self.db.execute("DELETE FROM edits WHERE photo_id = ?", (photo_id,))
+        self.db.executemany(
+            "INSERT OR REPLACE INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?)",
+            [(photo_id, copy, params, state.updated) for copy, params in state.edits],
+        )
 
     # Edits
 
@@ -731,6 +1178,7 @@ class Library:
                 "params = excluded.params, updated_at = excluded.updated_at",
                 (photo_id, copy, params_json, time.time()),
             )
+            self._touch([photo_id])
 
     def save_edits(self, edits):
         """{photo id: parameters JSON, or None for no edit} as the photos' own edits, in
@@ -749,11 +1197,13 @@ class Library:
                     "params = excluded.params, updated_at = excluded.updated_at",
                     (photo_id, params_json, now),
                 )
+            self._touch(edits)
 
     def delete_edit(self, photo_id, copy=0):
         """Back to the original. The photo's own edit and its copies are separate."""
         with self.db:
             self.db.execute("DELETE FROM edits WHERE photo_id = ? AND copy = ?", (photo_id, copy))
+            self._touch([photo_id])
 
     def copies(self, photo_id):
         """The numbers of a photo's edits: 0 for its own, then its virtual copies."""
@@ -772,6 +1222,7 @@ class Library:
                 "INSERT INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?)",
                 (photo_id, row[0], params_json, time.time()),
             )
+            self._touch([photo_id])
         return row[0]
 
     def presets(self):
@@ -961,6 +1412,17 @@ class Library:
                 (state, path.strip("/") if path else None, message, item_id),
             )
 
+    def last_import(self):
+        """The id of the newest import job that copied a photo, or None. Its photos are
+        what `Filter(import_job=...)` shows; the ones already in the library."""
+        row = self.db.execute(
+            "SELECT j.id FROM jobs j WHERE j.kind = 'import' AND EXISTS "
+            "(SELECT 1 FROM import_items i WHERE i.job_id = j.id AND i.state = ?) "
+            "ORDER BY j.id DESC LIMIT 1",
+            (COPIED,),
+        ).fetchone()
+        return row[0] if row is not None else None
+
     def imported(self, content_ids):
         """Those of `content_ids` that are in the library or were imported before: a photo
         imported and later removed from its folder is still not new."""
@@ -1087,6 +1549,18 @@ def _where(shown):
     if shown.lens is not None:
         clauses.append("p.lens = ?")
         args.append(shown.lens)
+    if shown.collection_id is not None:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM collection_photos m WHERE m.photo_id = p.id "
+            "AND m.collection_id = ?)"
+        )
+        args.append(shown.collection_id)
+    if shown.import_job is not None:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM import_items i WHERE i.job_id = ? AND i.state = ? "
+            "AND i.volume_id = p.volume_id AND i.path = p.path)"
+        )
+        args.extend([shown.import_job, COPIED])
     return ("WHERE " + " AND ".join(clauses)) if clauses else "", args
 
 

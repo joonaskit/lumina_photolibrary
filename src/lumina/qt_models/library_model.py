@@ -9,26 +9,32 @@ With a search (a text, or "like this photo"), the same rows are shown ranked by 
 SearchService, best first, and only those that match. The search is run again when
 the rows are read again and while indexing makes more photos findable.
 
-Flags (thumbs up or down) and ratings (stars) narrow what is shown here, not in the
+Flags (thumbs up or down), ratings (stars) and keywords narrow what is shown here, not in the
 query, so that flagging and rating are instant and a photo flagged or rated out of the
 view stays until the user moves on (`settle`): a photo given a thumbs down while
 thumbs-down photos are hidden does not vanish under the pointer. Changes of either can
 be undone, in one order, for any photo, also one no longer shown.
 """
 
+import json
 import os
 import time
 from dataclasses import dataclass, replace
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, QTimer, Signal
+from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, Qt, QTimer, Signal
 
 from lumina.core import db as dbm
+from lumina.core import keywords as keywordm
+from lumina.core import smart
 from lumina.qt_models import workers
 from lumina.qt_models.thumbnails import Thumbnails
 
 # For the UI, which does not import core/
 Filter = dbm.Filter
 PICKED, UNFLAGGED, REJECTED = dbm.PICKED, dbm.UNFLAGGED, dbm.REJECTED
+# Keyword paths (their names and levels), and a smart collection's saved filter
+keyword_names = keywordm
+SmartQuery = smart.SmartQuery
 
 PATH_ROLE = Qt.ItemDataRole.UserRole + 1
 ID_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -39,6 +45,11 @@ DIMMED_ROLE = Qt.ItemDataRole.UserRole + 4
 RATING_ROLE = Qt.ItemDataRole.UserRole + 5
 # What is known of damage to the photo's raw data, as a sentence, or None
 DAMAGE_ROLE = Qt.ItemDataRole.UserRole + 6
+# The paths of the photo's keywords, as a list
+KEYWORDS_ROLE = Qt.ItemDataRole.UserRole + 7
+
+# What a drag of photos from the grid carries: the photo ids as JSON
+PHOTOS_MIME = "application/x-lumina-photos"
 
 # What becomes of thumbs-down photos when no flag filter is chosen
 SHOW, DIM, HIDE = "show", "dim", "hide"
@@ -47,6 +58,9 @@ SHOW, DIM, HIDE = "show", "dim", "hide"
 _RESEARCH_EVERY = 3.0
 # Flag and rating changes that can be undone
 _HISTORY = 200
+# The service's methods that read and write a field of many photos
+_READ = {"flag": "flags", "rating": "ratings", "keywords": "photo_keywords"}
+_WRITE = {"flag": "set_flags", "rating": "set_ratings", "keywords": "set_photo_keywords"}
 # The rating filter's "no stars": any other value is that many stars or more
 NOT_RATED = 0
 STARS = (1, 2, 3, 4, 5)
@@ -90,6 +104,8 @@ class LibraryModel(QAbstractListModel):
         # NOT_RATED for photos without stars, or a number of stars for those with that
         # many or more, or None for any
         self.rating_filter = None
+        # A keyword path to show only the photos given it or one below it, or None for any
+        self.keyword_filter = None
         self.rejected = DIM
         # Every row of the filter; `_ranked` the ids a search found, best first; `_rows`
         # what is shown
@@ -101,8 +117,8 @@ class LibraryModel(QAbstractListModel):
         self._index = {}
         # Photos flagged or rated out of the view, shown until the user moves on
         self._kept = set()
-        # Changes that can be undone: (field, {photo id: value it had}) with field "flag"
-        # or "rating"
+        # Changes that can be undone: (field, {photo id: value it had}) with field "flag",
+        # "rating" or "keywords" (the ids of its keywords)
         self._undo = []
         self._redo = []
         self._loading = False
@@ -255,10 +271,25 @@ class LibraryModel(QAbstractListModel):
             return photo.rating == 0
         return photo.rating >= self.rating_filter
 
+    def _keyword_passes(self, photo):
+        if self.keyword_filter is None:
+            return True
+        paths = self.service.keyword_paths
+        return any(
+            keywordm.within(paths[keyword], self.keyword_filter)
+            for keyword in photo.keywords
+            if keyword in paths
+        )
+
+    def _kept_passes(self, photo):
+        return (
+            self._edit_passes(photo) and self._rating_passes(photo) and self._keyword_passes(photo)
+        )
+
     def _passes(self, photo):
         if photo.id in self._kept:
             return True
-        if not (self._edit_passes(photo) and self._rating_passes(photo)):
+        if not self._kept_passes(photo):
             return False
         if self.flag_filter is not None:
             return photo.flag == self.flag_filter
@@ -337,6 +368,17 @@ class LibraryModel(QAbstractListModel):
             self._kept.clear()
             self._show(self._compose(), reset=False)
 
+    def set_keyword_filter(self, path):
+        """Show only the photos given keyword `path` or one below it, or any (None)."""
+        if path != self.keyword_filter:
+            self.keyword_filter = path
+            self._kept.clear()
+            self._show(self._compose(), reset=False)
+
+    def refilter(self):
+        """The keywords' names changed (renamed, deleted): show what passes now."""
+        self._show(self._compose(), reset=False)
+
     def set_rejected(self, mode):
         """SHOW, DIM or HIDE thumbs-down photos (with no flag filter)."""
         if mode != self.rejected:
@@ -354,8 +396,7 @@ class LibraryModel(QAbstractListModel):
         else:
             base = [self._all[self._positions[i]] for i in self._ranked if i in self._positions]
 
-        def wanted(photo):
-            return self._edit_passes(photo) and self._rating_passes(photo)
+        wanted = self._kept_passes
 
         return sum(1 for p in base if wanted(p)) - sum(1 for p in self._rows if wanted(p))
 
@@ -364,6 +405,57 @@ class LibraryModel(QAbstractListModel):
 
     def rating(self, row):
         return self._rows[row].rating
+
+    def keywords(self, row):
+        """The paths of the keywords of `row`'s photo, by path."""
+        paths = self.service.keyword_paths
+        return sorted((paths[k] for k in self._rows[row].keywords if k in paths), key=str.casefold)
+
+    def add_keywords(self, rows, names):
+        """Give the photos of `rows` the keywords `names` (as typed: "Places > Finland").
+        Returns the keyword paths given, or [] for no change (nothing to add, or every
+        photo has them)."""
+        paths = [path for path in map(keywordm.parse, names) if path]
+        photos = [self._rows[row] for row in rows if 0 <= row < len(self._rows)]
+        if not paths or not photos:
+            return []
+        ids = self.service.ensure_keywords(paths)
+        wanted = set(ids.values())
+        changes = {
+            photo.id: tuple(sorted(set(photo.keywords) | wanted))
+            for photo in photos
+            if not wanted <= set(photo.keywords)
+        }
+        self._change_keywords(photos, changes)
+        return list(ids) if changes else []
+
+    def remove_keywords(self, rows, names):
+        """Take the keywords `names` off the photos of `rows` (not those below them: a
+        photo with Places > Finland keeps it when Places is taken off). Returns how many
+        photos changed."""
+        paths = {path.casefold() for path in map(keywordm.parse, names) if path}
+        photos = [self._rows[row] for row in rows if 0 <= row < len(self._rows)]
+        known = self.service.keyword_paths
+        unwanted = {k for k, path in known.items() if path.casefold() in paths}
+        changes = {
+            photo.id: tuple(k for k in photo.keywords if k not in unwanted)
+            for photo in photos
+            if unwanted & set(photo.keywords)
+        }
+        self._change_keywords(photos, changes)
+        return len(changes)
+
+    def _change_keywords(self, photos, changes):
+        if not changes:
+            return
+        before = {photo.id: photo.keywords for photo in photos if photo.id in changes}
+        self._write("keywords", changes)
+        self._push_undo("keywords", before)
+
+    def _push_undo(self, field, before):
+        self._undo = [*self._undo[-(_HISTORY - 1) :], (field, before)]
+        self._redo.clear()
+        self.flags_changed.emit()
 
     def damage(self, row):
         """What is known of damage to the raw data of `row`'s photo, or None."""
@@ -391,9 +483,7 @@ class LibraryModel(QAbstractListModel):
             return None
         before = {photo.id: getattr(photo, field) for photo in photos if photo.id in changes}
         self._write(field, changes)
-        self._undo = [*self._undo[-(_HISTORY - 1) :], (field, before)]
-        self._redo.clear()
-        self.flags_changed.emit()
+        self._push_undo(field, before)
         return value
 
     def can_undo_flags(self):
@@ -411,7 +501,7 @@ class LibraryModel(QAbstractListModel):
         return self._step_history(self._redo, self._undo)
 
     def last_change(self):
-        """What undo would undo, "flag" or "rating", or None."""
+        """What undo would undo, "flag", "rating" or "keywords", or None."""
         return self._undo[-1][0] if self._undo else None
 
     def _step_history(self, source, target):
@@ -419,13 +509,13 @@ class LibraryModel(QAbstractListModel):
             return 0
         field, values = source.pop()
         # From the library: a photo not in the rows still has its value there
-        target.append((field, getattr(self.service, f"{field}s")(values)))
+        target.append((field, getattr(self.service, _READ[field])(values)))
         self._write(field, values)
         self.flags_changed.emit()
         return len(values)
 
     def _write(self, field, values):
-        getattr(self.service, f"set_{field}s")(values)
+        getattr(self.service, _WRITE[field])(values)
         for photo_id, value in values.items():
             position = self._positions.get(photo_id)
             if position is not None:
@@ -453,6 +543,23 @@ class LibraryModel(QAbstractListModel):
     def photo_id(self, row):
         return self._rows[row].id
 
+    def flags(self, index):
+        flags = super().flags(index)
+        return flags | Qt.ItemFlag.ItemIsDragEnabled if index.isValid() else flags
+
+    def mimeTypes(self):
+        return [PHOTOS_MIME]
+
+    def mimeData(self, indexes):
+        """The ids of the photos dragged, for dropping on a collection."""
+        data = QMimeData()
+        ids = [self._rows[index.row()].id for index in indexes if index.isValid()]
+        data.setData(PHOTOS_MIME, json.dumps(ids).encode())
+        return data
+
+    def supportedDragActions(self):
+        return Qt.DropAction.CopyAction
+
     def row_of(self, photo_id):
         return self._index.get(photo_id)
 
@@ -476,6 +583,8 @@ class LibraryModel(QAbstractListModel):
             return photo.flag
         if role == RATING_ROLE:
             return photo.rating
+        if role == KEYWORDS_ROLE:
+            return self.keywords(index.row())
         if role == DAMAGE_ROLE:
             return damage_text(photo.damage_warning)
         if role == DIMMED_ROLE:

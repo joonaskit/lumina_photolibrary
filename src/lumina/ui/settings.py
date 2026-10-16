@@ -135,6 +135,16 @@ def set_watch_folders(on):
     _settings().setValue("scan/watch", bool(on))
 
 
+def sidecars():
+    """Whether XMP sidecars are written beside the photos and read back when they are
+    scanned. Off at first: nothing is written next to a photo unless the user asks."""
+    return _settings().value("library/sidecars", False) in (True, "true")
+
+
+def set_sidecars(on):
+    _settings().setValue("library/sidecars", bool(on))
+
+
 def density():
     """How much room the interface takes: "comfortable" or "compact"."""
     value = _settings().value("view/density")

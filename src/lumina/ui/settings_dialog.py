@@ -230,6 +230,23 @@ class SettingsDialog(QDialog):
             library.watcher.status_changed.connect(self._show_watching)
             self._show_watching()
 
+            self.sidecars = QCheckBox("Keep XMP sidecars beside the photos")
+            self.sidecars.setChecked(settings.sidecars())
+            self.sidecars.toggled.connect(self._on_sidecars_toggled)
+            layout.addWidget(self._heading("Sidecars"))
+            layout.addWidget(self.sidecars)
+            layout.addWidget(
+                self._note(
+                    "A .xmp file next to each photo you have marked or edited "
+                    "(IMG_0001.CR3.xmp) with its edits, flag, stars and keywords, so they "
+                    "travel with the photos and a library can be rebuilt from them. Other "
+                    "programs see the stars and keywords too. The photos are never changed, "
+                    "and another program's .xmp is left alone. Turning it on writes them for "
+                    "the whole library and reads those already there; a sidecar newer than "
+                    "the library's own record is taken in when a folder is scanned."
+                )
+            )
+
             self.cache_limit = QSpinBox()
             self.cache_limit.setRange(0, _MAX_LIMIT_GB)
             self.cache_limit.setSuffix(" GB")
@@ -543,6 +560,10 @@ class SettingsDialog(QDialog):
             named = ", ".join(sorted(names.get(folder, "?") for folder in watcher.unwatched))
             text += f" Too many folders inside to watch: {named}. Rescan finds their changes."
         self.watch_note.setText(text)
+
+    def _on_sidecars_toggled(self, on):
+        settings.set_sidecars(on)
+        self.library.set_sidecars(on)
 
     def _on_gentle_toggled(self, on):
         settings.set_gentle_scans(on)
