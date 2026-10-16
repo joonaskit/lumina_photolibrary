@@ -23,8 +23,10 @@ def open_window(qtbot, service, folder=None):
     return window
 
 
-def test_comfortable_is_the_default_and_sizes_are_as_they_were():
-    assert style.density() == "comfortable" == settings.density()
+def test_compact_is_what_the_app_starts_with_and_comfortable_the_sizes_as_they_were():
+    # The style's own start is comfortable; the app sets the density from the settings
+    assert settings.density() == "compact"
+    assert style.density() == "comfortable"
     assert style.row_height() == style.px(36)
     assert style.group_padding() == style.px(4)
     assert style.row_inner_height() == style.px(36) - 2 * style.px(4) - 2
@@ -54,7 +56,7 @@ def test_a_stored_value_is_read_and_a_bad_one_is_not(qtbot):
     settings.set_density("compact")
     assert settings.density() == "compact"
     settings.set_density("huge")
-    assert settings.density() == "comfortable"
+    assert settings.density() == "compact"
 
     settings.set_density("compact")
     dialog = SettingsDialog()
@@ -63,6 +65,7 @@ def test_a_stored_value_is_read_and_a_bad_one_is_not(qtbot):
 
 
 def test_a_changed_value_is_kept_and_applied_at_once(qtbot, qapp, service, drive):
+    settings.set_density("comfortable")
     window = open_window(qtbot, service, drive / "Photos")
     dialog = SettingsDialog(parent=window)
     qtbot.addWidget(dialog)

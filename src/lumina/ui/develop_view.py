@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QInputDialog,
-    QLabel,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -31,6 +30,7 @@ from PySide6.QtWidgets import (
 from lumina.integration import style
 from lumina.qt_models import develop
 from lumina.qt_models.develop import Crop, Curves, Matte
+from lumina.ui import settings
 from lumina.ui.controls import ValueSlider
 from lumina.ui.crop_frame import dragged, dragged_to_ratio, reshaped
 from lumina.ui.curve_editor import CurveEditor
@@ -64,8 +64,68 @@ _ASPECTS = (
     ("16:9", 16 / 9),
     ("Custom…", "custom"),
 )
+# The panel's sections in their default order: (name, heading). The user may reorder and
+# hide them (ui/settings.py, the settings window) and collapse them on the panel
+SECTIONS = (
+    ("presets", "PRESETS"),
+    ("light", "LIGHT"),
+    ("curve", "TONE CURVE"),
+    ("presence", "PRESENCE"),
+    ("sharpening", "SHARPENING"),
+    ("noise", "NOISE REDUCTION"),
+    ("white_balance", "WHITE BALANCE"),
+    ("colour", "COLOUR"),
+    ("hsl", "HSL"),
+    ("grading", "COLOUR GRADING"),
+    ("matte", "MATTE"),
+    ("effects", "EFFECTS"),
+    ("crop", "CROP & ROTATE"),
+    ("settings", "SETTINGS"),
+)
+SECTION_NAMES = tuple(name for name, _title in SECTIONS)
 # How many squares the grid shown while straightening makes along the photo's short side
 _GRID = 8
+
+
+class _Section(QWidget):
+    """A heading that folds its controls away when clicked, and the controls under it
+    (`body`, a layout). Hidden or folded, the controls keep their values."""
+
+    toggled = Signal(bool)
+
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.title = title
+        self.header = QToolButton()
+        self.header.setObjectName("sectionHeader")
+        self.header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.header.clicked.connect(lambda: self.set_collapsed(not self.collapsed))
+        self.content = QWidget()
+        self.body = QVBoxLayout(self.content)
+        self.body.setContentsMargins(0, 0, 0, 0)
+        self.collapsed = False
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self.header)
+        outer.addWidget(self.content)
+        style.follow_density(self, self._space)
+        self._show_header()
+
+    def _space(self):
+        self.layout().setSpacing(style.gap(10))
+        self.body.setSpacing(style.gap(10))
+
+    def _show_header(self):
+        self.header.setText(f"{'▸' if self.collapsed else '▾'}  {self.title}")
+
+    def set_collapsed(self, collapsed):
+        changed = collapsed != self.collapsed
+        self.collapsed = collapsed
+        self.content.setVisible(not collapsed)
+        self._show_header()
+        if changed:
+            self.toggled.emit(collapsed)
 
 
 class _Segment(QToolButton):
@@ -377,12 +437,14 @@ class DevelopView(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         panel = QFrame()
         panel.setObjectName("card")
-        layout = QVBoxLayout(panel)
+        self._panel = panel
+        self._sections = {}
+        root = QVBoxLayout(panel)
 
         def space():
             margin = style.gap(14)
-            layout.setContentsMargins(margin, margin, margin, margin)
-            layout.setSpacing(style.gap(10))
+            root.setContentsMargins(margin, margin, margin, margin)
+            root.setSpacing(style.gap(10))
 
         style.follow_density(panel, space)
 
@@ -393,9 +455,9 @@ class DevelopView(QWidget):
             "or only while the \\ key is held"
         )
         self.before_button.toggled.connect(lambda _on: self._update_before())
-        layout.addWidget(self.before_button)
+        root.addWidget(self.before_button)
 
-        self._heading(layout, "LIGHT")
+        layout = self._begin(root, "light", "LIGHT")
         self.exposure = self._slider(
             layout, "Exposure", *develop.EXPOSURE, unit=" EV", field="exposure"
         )
@@ -406,7 +468,7 @@ class DevelopView(QWidget):
             )
             for name in develop.BASIC_FIELDS
         }
-        self._heading(layout, "PRESENCE")
+        layout = self._begin(root, "presence", "PRESENCE")
         # Texture, Clarity, Dehaze
         self.presence = {
             name: self._slider(
@@ -414,7 +476,7 @@ class DevelopView(QWidget):
             )
             for name in develop.PRESENCE_FIELDS
         }
-        self._heading(layout, "SHARPENING")
+        layout = self._begin(root, "sharpening", "SHARPENING")
         self.sharpening = {
             "amount": self._slider(
                 layout,
@@ -447,7 +509,7 @@ class DevelopView(QWidget):
                 layout, "Masking", *develop.PERCENT, step=1, decimals=0, field="sharpening.masking"
             ),
         }
-        self._heading(layout, "NOISE REDUCTION")
+        layout = self._begin(root, "noise", "NOISE REDUCTION")
         self.noise = {
             "luminance": self._slider(
                 layout,
@@ -470,13 +532,13 @@ class DevelopView(QWidget):
                 layout, "Colour", *develop.PERCENT, step=1, decimals=0, field="noise.colour"
             ),
         }
-        self._heading(layout, "WHITE BALANCE")
+        layout = self._begin(root, "white_balance", "WHITE BALANCE")
         self.temperature = self._slider(
             layout, "Temperature", *develop.WARMTH, step=1, decimals=0, field="temperature"
         )
         self.tint = self._slider(layout, "Tint", *develop.WARMTH, step=1, decimals=0, field="tint")
 
-        self._heading(layout, "COLOUR")
+        layout = self._begin(root, "colour", "COLOUR")
         # Vibrance, Saturation
         self.colour = {
             name: self._slider(
@@ -485,7 +547,7 @@ class DevelopView(QWidget):
             for name in develop.COLOUR_FIELDS
         }
 
-        self._heading(layout, "HSL")
+        layout = self._begin(root, "hsl", "HSL")
         colours = {
             name: QColor.fromHsvF(hue / 360.0, *_BAND_COLOUR)
             for name, hue in develop.BAND_HUES.items()
@@ -499,7 +561,7 @@ class DevelopView(QWidget):
             for name in develop.BAND_FIELDS
         }
 
-        self._heading(layout, "COLOUR GRADING")
+        layout = self._begin(root, "grading", "COLOUR GRADING")
         self.range_group = self._segments(layout, _RANGES, self._show_mixers)
         # Hue (a tint's direction), Saturation (its strength), Luminance of the range
         self.wheel = {
@@ -527,7 +589,7 @@ class DevelopView(QWidget):
             layout, "Balance", *develop.GRADING, step=1, decimals=0, field="grading.balance"
         )
 
-        self._heading(layout, "TONE CURVE")
+        layout = self._begin(root, "curve", "TONE CURVE")
         channels = QHBoxLayout()
         channels.setSpacing(style.px(4))
         self.channel_group = QButtonGroup(self)
@@ -552,14 +614,14 @@ class DevelopView(QWidget):
         reset_curve.clicked.connect(self.curve.reset)
         layout.addWidget(reset_curve, 0, Qt.AlignmentFlag.AlignRight)
 
-        self._heading(layout, "MATTE")
+        layout = self._begin(root, "matte", "MATTE")
         self.matte_black = self._slider(layout, "Lift blacks", *develop.MATTE_BLACK, field="black")
         self.matte_white = self._slider(layout, "Lower whites", *develop.MATTE_WHITE, field="white")
         self.matte_desaturation = self._slider(
             layout, "Desaturate shadows", *develop.DESATURATION, field="shadow_desaturation"
         )
 
-        self._heading(layout, "EFFECTS")
+        layout = self._begin(root, "effects", "EFFECTS")
         self.vignette = {
             "amount": self._slider(
                 layout, "Vignette", *develop.VIGNETTE, step=1, decimals=0, field="vignette.amount"
@@ -598,7 +660,7 @@ class DevelopView(QWidget):
             ),
         }
 
-        self._heading(layout, "CROP & ROTATE")
+        layout = self._begin(root, "crop", "CROP & ROTATE")
         row = QHBoxLayout()
         self.crop_button = QPushButton("Crop")
         self.crop_button.setCheckable(True)
@@ -659,7 +721,7 @@ class DevelopView(QWidget):
         row.addWidget(self.flip_vertical)
         layout.addLayout(row)
 
-        self._heading(layout, "PRESETS")
+        layout = self._begin(root, "presets", "PRESETS")
         self.presets = QComboBox()
         self.presets.activated.connect(self._on_preset_chosen)
         layout.addWidget(self.presets)
@@ -671,7 +733,7 @@ class DevelopView(QWidget):
         row.addWidget(save)
         row.addWidget(self.delete_preset_button)
         layout.addLayout(row)
-        self._heading(layout, "SETTINGS")
+        layout = self._begin(root, "settings", "SETTINGS")
         row = QHBoxLayout()
         self.copy_settings_button = QPushButton("Copy…")
         self.copy_settings_button.setToolTip("Copy parts of this edit, to paste on other photos")
@@ -680,15 +742,42 @@ class DevelopView(QWidget):
         row.addWidget(self.copy_settings_button)
         row.addWidget(self.paste_settings_button)
         layout.addLayout(row)
-        layout.addStretch(1)
+        root.addStretch(1)
+        self.arrange()
         scroll.setWidget(panel)
         return scroll
 
-    def _heading(self, layout, text):
-        heading = QLabel(text)
-        heading.setObjectName("heading")
-        layout.addSpacing(style.px(4))
-        layout.addWidget(heading)
+    def _begin(self, root, name, title):
+        """A section of the panel, added to `root`; returns the layout for its controls."""
+        section = _Section(title)
+        section.toggled.connect(self._save_collapsed)
+        self._sections[name] = section
+        root.addWidget(section)
+        return section.body
+
+    def _save_collapsed(self, _collapsed):
+        settings.set_collapsed_sections(
+            [name for name, section in self._sections.items() if section.collapsed]
+        )
+
+    def arrange(self):
+        """Put the sections in the order the user chose, hide those they hid and fold
+        those they folded. Hidden sections keep their values: they stay in the edit."""
+        order = settings.develop_order(SECTION_NAMES)
+        hidden = settings.hidden_sections()
+        collapsed = settings.collapsed_sections()
+        root = self._panel.layout()
+        for name in order:
+            root.removeWidget(self._sections[name])
+        for index, name in enumerate(order):
+            section = self._sections[name]
+            # After the Show Original button
+            root.insertWidget(1 + index, section)
+            section.setVisible(name not in hidden)
+            # Not a change of the user's: it is already what is stored
+            section.blockSignals(True)
+            section.set_collapsed(name in collapsed)
+            section.blockSignals(False)
 
     def _segments(self, layout, choices, slot, colours=None):
         """A row of buttons, one chosen at a time: (name, label) each, marked with

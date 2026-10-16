@@ -554,10 +554,34 @@ def _stylesheet():
         #sidebar QListWidget::item:selected {{
             background: {selected}; color: {colors["textPrimary"]};
         }}
-        #heading {{
+        /* The settings window's tabs: pills over a rounded card, as the menus' items */
+        QTabWidget::pane {{
+            border: 1px solid {card_border}; border-radius: {large}px; background: {card};
+            top: -1px;
+        }}
+        QTabBar {{ background: transparent; }}
+        QTabBar::tab {{
+            padding: {gap(6)}px {gap(14)}px; margin: 0 {gap(2)}px {gap(6)}px 0;
+            border-radius: {_radius_for_text("medium", 6)}px; background: transparent;
+        }}
+        QTabBar::tab:hover {{ background: {hover}; }}
+        QTabBar::tab:selected {{ background: {selected}; color: {colors["textPrimary"]}; }}
+        QListWidget#settingsList {{
+            border: 1px solid {divider}; border-radius: {boxed}px; background: {raised};
+            padding: {gap(4)}px; outline: none;
+        }}
+        QListWidget#settingsList::item {{
+            padding: {gap(4)}px {gap(6)}px; border-radius: {medium}px;
+        }}
+        QListWidget#settingsList::item:hover {{ background: {hover}; }}
+        QListWidget#settingsList::item:selected {{
+            background: {selected}; color: {colors["textPrimary"]};
+        }}
+        #heading, #sectionHeader {{
             color: {colors["textSecondary"]}; font-size: {small_font}px; font-weight: 600;
             padding: {gap(4)}px {gap(8)}px;
         }}
+        #sectionHeader {{ text-align: left; }}
 
         /* The arrow sits inside the rounded box, in the padding, not in a square
            button of the platform style's own */
