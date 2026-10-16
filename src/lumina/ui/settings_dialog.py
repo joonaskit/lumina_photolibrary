@@ -1,6 +1,8 @@
 """The app's settings, in one window. A change is made as it is picked: there is no
 OK to press, only Close. What is chosen is kept in `ui/settings.py`."""
 
+import os
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
@@ -8,6 +10,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -22,6 +25,13 @@ from PySide6.QtWidgets import (
 )
 
 from lumina.integration import style
+from lumina.qt_models.backups import (
+    BEFORE_MIGRATION,
+    BEFORE_RESTORE,
+    DAMAGED,
+    KEEP_DAILY,
+    KEEP_WEEKLY,
+)
 from lumina.ui import settings
 from lumina.ui.develop_view import SECTION_NAMES, SECTIONS
 
@@ -31,21 +41,65 @@ _LIMIT_SETTLE_MS = 1500
 _MAX_LIMIT_GB = 1000
 
 
+_DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_MONTHS = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+
 def size_text(size):
-    """Bytes for people: megabytes below a gigabyte."""
+    """Bytes for people: megabytes below a gigabyte, kilobytes below a megabyte."""
     if size >= 1024**3:
         return f"{size / 1024**3:.1f} GB"
-    return f"{size / 1024**2:.0f} MB"
+    if size >= 1024**2:
+        return f"{size / 1024**2:.0f} MB"
+    return f"{max(1, round(size / 1024))} KB"
+
+
+def when_text(when, joiner=", "):
+    """ "Friday 16 October 2026, 09:30": in English as the rest of the app, not in the
+    locale's words, which Qt makes strftime use."""
+    day = f"{_DAYS[when.weekday()]} {when.day} {_MONTHS[when.month - 1]} {when.year}"
+    return f"{day}{joiner}{when:%H:%M}"
+
+
+_KINDS = {
+    BEFORE_MIGRATION: "before an update",
+    BEFORE_RESTORE: "before a restore",
+    DAMAGED: "damaged, moved aside",
+}
+
+
+def backup_text(made):
+    """A backup in the list: when, how large, and why when it is not a daily one."""
+    text = f"{when_text(made.taken)}  ·  {size_text(made.size)}"
+    if made.kind in _KINDS:
+        text += f"  ·  {_KINDS[made.kind]}"
+    return text
 
 
 class SettingsDialog(QDialog):
-    """`search` is the SearchService and `library` the LibraryService; without one there
-    is no Search, or no Thumbnails, section."""
+    """`search` is the SearchService, `library` the LibraryService and `backups` the
+    BackupService; without one there is no Search, Library or Backups section."""
 
-    def __init__(self, search=None, library=None, parent=None):
+    def __init__(self, search=None, library=None, parent=None, backups=None):
         super().__init__(parent)
         self.search = search
         self.library = library
+        self.backups = backups
+        # What the backup chosen holds, once read: (path, Contents or None)
+        self._contents = None
         self._closed = False
         self.setWindowTitle("Settings")
         self.setMinimumWidth(style.px(460))
@@ -197,11 +251,178 @@ class SettingsDialog(QDialog):
             search.model_changed.connect(self._show_model)
             self._show_model()
 
+        if backups is not None:
+            self._backups_page(page("Backups"))
+
         for made in pages:
             made.addStretch(1)
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.reject)
         outer.addWidget(close)
+
+    def _backups_page(self, layout):
+        layout.addWidget(self._heading("Backups"))
+        layout.addWidget(
+            self._note(
+                "Your edits, flags, ratings and the index are in one database. It is "
+                "copied each day Lumina starts, and before an update changes it. Your "
+                "photos are not in it: back them up too."
+            )
+        )
+        self.backup_list = QListWidget()
+        self.backup_list.setObjectName("settingsList")
+        self.backup_list.currentItemChanged.connect(self._show_backup)
+        self.backup_details = self._note("")
+        self.back_up_button = QPushButton("Back Up Now")
+        self.back_up_button.clicked.connect(self._back_up)
+        self.restore_button = QPushButton("Restore…")
+        self.restore_button.clicked.connect(self.restore_backup)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.back_up_button)
+        buttons.addStretch(1)
+        buttons.addWidget(self.restore_button)
+        layout.addWidget(self.backup_list)
+        layout.addWidget(self.backup_details)
+        layout.addLayout(buttons)
+
+        self.extra_folder = QLabel()
+        self.extra_folder.setWordWrap(True)
+        self.choose_extra = QPushButton("Choose…")
+        self.choose_extra.clicked.connect(self.choose_backup_folder)
+        self.clear_extra = QPushButton("None")
+        self.clear_extra.clicked.connect(lambda: self.set_backup_folder(None))
+        extra = QHBoxLayout()
+        extra.addWidget(self.extra_folder, 1)
+        extra.addWidget(self.choose_extra)
+        extra.addWidget(self.clear_extra)
+        daily, weekly = settings.backups_kept(KEEP_DAILY, KEEP_WEEKLY)
+        self.keep_daily = QSpinBox()
+        self.keep_daily.setRange(1, 365)
+        self.keep_daily.setSuffix(" daily")
+        self.keep_daily.setValue(max(1, daily))
+        self.keep_weekly = QSpinBox()
+        self.keep_weekly.setRange(0, 520)
+        self.keep_weekly.setSuffix(" weekly")
+        self.keep_weekly.setValue(weekly)
+        self.keep_daily.valueChanged.connect(self._on_kept_changed)
+        self.keep_weekly.valueChanged.connect(self._on_kept_changed)
+        kept = QHBoxLayout()
+        kept.addWidget(self.keep_daily)
+        kept.addWidget(self.keep_weekly)
+        kept.addStretch(1)
+        form = QFormLayout()
+        form.addRow("Also back up to", extra)
+        form.addRow("Keep", kept)
+        layout.addLayout(form)
+        layout.addWidget(
+            self._note(
+                "Another drive keeps a copy should this one fail; when it is not "
+                "connected, the backup there waits for the next start. Those before an "
+                "update or a restore are always kept."
+            )
+        )
+        self.backups.changed.connect(self._fill_backups)
+        self._show_extra_folder()
+        self._fill_backups()
+
+    def _fill_backups(self):
+        chosen = self._chosen_backup()
+        self.backup_list.blockSignals(True)
+        self.backup_list.clear()
+        for made in self.backups.backups():
+            item = QListWidgetItem(backup_text(made))
+            item.setData(Qt.ItemDataRole.UserRole, made)
+            self.backup_list.addItem(item)
+            if chosen is not None and made.path == chosen.path:
+                self.backup_list.setCurrentItem(item)
+        if self.backup_list.currentRow() < 0 and self.backup_list.count():
+            self.backup_list.setCurrentRow(0)
+        self.backup_list.blockSignals(False)
+        self.back_up_button.setEnabled(not self.backups.is_busy())
+        self._show_backup()
+
+    def _chosen_backup(self):
+        item = self.backup_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+
+    def _show_backup(self, *_items):
+        made = self._chosen_backup()
+        self.restore_button.setEnabled(made is not None and made.kind != DAMAGED)
+        if made is None:
+            self.backup_details.setText("No backup yet.")
+            return
+        if self._contents is not None and self._contents[0] == made.path:
+            self._show_contents(made, self._contents[1])
+            return
+        self.backup_details.setText("Reading…")
+        self.backups.contents(made.path, lambda held: self._on_contents(made, held))
+
+    def _on_contents(self, made, held):
+        if self._closed:
+            return
+        self._contents = (made.path, held)
+        if self._chosen_backup() == made:
+            self._show_contents(made, held)
+
+    def _show_contents(self, made, held):
+        where = os.path.dirname(made.path)
+        if held is None:
+            self.backup_details.setText(f"It can't be read. In {where}.")
+            return
+        photos = f"{held.photos:,} photo{'s' * (held.photos != 1)}"
+        text = f"{photos}, {held.edits:,} edited. In {where}."
+        if not held.vectors:
+            text += " Without the index for search, which is made again after a restore."
+        self.backup_details.setText(text)
+
+    def _back_up(self):
+        self.backups.back_up()
+        self.back_up_button.setEnabled(False)
+
+    def restore_backup(self):
+        """Ask, then have the app quit and start again on the backup chosen."""
+        made = self._chosen_backup()
+        if made is None:
+            return
+        held = self._contents[1] if self._contents and self._contents[0] == made.path else None
+        what = ""
+        if held is not None:
+            what = f" It has {held.photos:,} photo{'s' * (held.photos != 1)}."
+        answer = QMessageBox.question(
+            self,
+            "Restore This Backup?",
+            f"The library goes back to how it was on {when_text(made.taken, ' at ')}."
+            f"{what} Edits, flags and ratings made since then are not in it.\n\n"
+            "The library as it is now is backed up first, then Lumina starts again.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.accept()
+            self.backups.request_restore(made.path)
+
+    def choose_backup_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Also Back Up To", settings.backup_folder() or ""
+        )
+        if folder:
+            self.set_backup_folder(folder)
+
+    def set_backup_folder(self, folder):
+        settings.set_backup_folder(folder)
+        self.backups.extra_folder = folder or None
+        self._show_extra_folder()
+        self._fill_backups()
+
+    def _show_extra_folder(self):
+        folder = self.backups.extra_folder
+        self.extra_folder.setText(folder or "Nowhere else")
+        self.clear_extra.setEnabled(bool(folder))
+
+    def _on_kept_changed(self):
+        settings.set_backups_kept(self.keep_daily.value(), self.keep_weekly.value())
+        self.backups.keep_daily = self.keep_daily.value()
+        self.backups.keep_weekly = self.keep_weekly.value()
 
     def _fill_sections(self):
         titles = dict(SECTIONS)
@@ -346,4 +567,6 @@ class SettingsDialog(QDialog):
             self.library.watcher.status_changed.disconnect(self._show_watching)
         if self.search is not None:
             self.search.model_changed.disconnect(self._show_model)
+        if self.backups is not None:
+            self.backups.changed.disconnect(self._fill_backups)
         super().done(result)

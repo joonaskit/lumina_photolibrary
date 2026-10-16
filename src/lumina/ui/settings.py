@@ -241,6 +241,34 @@ def set_panorama_choices(projection, crop):
     _settings().setValue("panorama/crop", bool(crop))
 
 
+def backup_folder():
+    """A second folder the library is backed up to (another drive), or None."""
+    value = _settings().value("backup/folder")
+    return value if isinstance(value, str) and value else None
+
+
+def set_backup_folder(path):
+    _settings().setValue("backup/folder", path or "")
+
+
+def _count(key, default):
+    value = _settings().value(key)
+    try:
+        return max(0, int(value)) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def backups_kept(default_daily, default_weekly):
+    """How many daily backups are kept, and after those how many weekly ones."""
+    return _count("backup/keep_daily", default_daily), _count("backup/keep_weekly", default_weekly)
+
+
+def set_backups_kept(daily, weekly):
+    _settings().setValue("backup/keep_daily", max(0, int(daily)))
+    _settings().setValue("backup/keep_weekly", max(0, int(weekly)))
+
+
 def import_choices():
     """What the last import was asked for: {"destination": a folder or "", "layout",
     "naming", "backup": a folder or "", "backup_on": bool}. By year and day, names as

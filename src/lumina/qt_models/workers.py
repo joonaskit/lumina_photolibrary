@@ -68,6 +68,8 @@ MERGE = "merge"
 MERGING = "merging"
 # One thread for import jobs, which copy from a card: a copy never waits for a scan
 IMPORT = "import"
+# One thread for backing up the library's database, which reads all of it
+BACKUP = "backup"
 _NAMED_PROCESSES = {DEVELOP, EMBED, QUERY, MERGING}
 
 

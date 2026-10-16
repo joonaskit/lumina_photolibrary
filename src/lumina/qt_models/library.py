@@ -26,6 +26,7 @@ from lumina.qt_models.watcher import FolderWatcher
 
 # For the application, which tells the user
 NewerDatabase = dbm.NewerDatabase
+NoBackup = dbm.NoBackup
 # For the UI: an edit made by a newer Lumina
 NewerParams = _params.NewerParams
 

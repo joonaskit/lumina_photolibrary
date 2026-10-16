@@ -28,13 +28,15 @@ def main(argv=None):
         help="a folder of photos to add to the library and show, or photos to open",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    # The backup the user chose to restore: the app starts itself again with it
+    parser.add_argument("--restore", metavar="BACKUP", help=argparse.SUPPRESS)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     paths = [path for path in map(local_path, args.paths) if path is not None]
 
     # Qt and the window only now: --help and --version need none of it
     from lumina.application import run
 
-    return run(paths)
+    return run(paths, restore=args.restore)
 
 
 if __name__ == "__main__":

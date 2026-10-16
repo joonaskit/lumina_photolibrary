@@ -123,12 +123,14 @@ class _CellDelegate(QStyledItemDelegate):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, service, search=None, merge=None, importer=None, parent=None):
+    def __init__(self, service, search=None, merge=None, importer=None, parent=None, backups=None):
         """`search` is the SearchService; without one there is no search. `merge` is the
         MergeService; without one there are no merges. `importer` is the ImportService;
-        without one there is no importing."""
+        without one there is no importing. `backups` is the BackupService; without one
+        the settings have no Backups section."""
         super().__init__(parent)
         self.service = service
+        self.backups = backups
         self.search = search
         self.merge = merge
         self.importer = importer
@@ -665,7 +667,7 @@ class MainWindow(QMainWindow):
         self.search_field.draw_icons()
 
     def open_settings(self):
-        dialog = SettingsDialog(self.search, self.service, self)
+        dialog = SettingsDialog(self.search, self.service, self, backups=self.backups)
         dialog.exec()
         dialog.deleteLater()
         self.develop.arrange()
