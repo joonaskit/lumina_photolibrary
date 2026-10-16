@@ -207,3 +207,35 @@ def reset_develop_panel():
     """Back to the default order with every section shown (folding is kept)."""
     _settings().remove("develop/section_order")
     _settings().remove("develop/hidden_sections")
+
+
+def merge_deghost():
+    """The deghosting an HDR merge was last asked for: off at first."""
+    value = _settings().value("merge/deghost")
+    return value if value in ("off", "low", "medium", "high") else "off"
+
+
+def merge_align():
+    """Whether an HDR merge was last asked to align the photos. On at first."""
+    return _settings().value("merge/align", True) in (True, "true")
+
+
+def set_merge_choices(deghost, align):
+    _settings().setValue("merge/deghost", deghost)
+    _settings().setValue("merge/align", bool(align))
+
+
+def panorama_projection():
+    """The projection a panorama was last asked for: cylindrical at first."""
+    value = _settings().value("panorama/projection")
+    return value if value in ("cylindrical", "spherical", "perspective") else "cylindrical"
+
+
+def panorama_crop():
+    """Whether a panorama was last asked to be cropped to a rectangle. On at first."""
+    return _settings().value("panorama/crop", True) in (True, "true")
+
+
+def set_panorama_choices(projection, crop):
+    _settings().setValue("panorama/projection", projection)
+    _settings().setValue("panorama/crop", bool(crop))

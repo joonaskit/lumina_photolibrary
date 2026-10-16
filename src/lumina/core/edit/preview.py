@@ -6,7 +6,7 @@ pixels and four times faster than the full one; in full from the full decode.
 Runs in worker processes.
 """
 
-from lumina.core import raw
+from lumina.core import linear_tiff, raw
 from lumina.core.edit import params as edit_params
 from lumina.core.edit import pipeline, source
 from lumina.core.images import Pixels
@@ -20,7 +20,9 @@ def edited_pixels(path, max_side, edit_json):
     half = max_side is not None
     linear = source.load_linear(path, half=half)
     height, width = linear.shape[:2]
-    if half and raw.is_raw(path):
+    if half and linear_tiff.is_linear(path):
+        width, height = linear_tiff.size(path)
+    elif half and raw.is_raw(path):
         # About what the full decode gives: the viewer's 100 % before it comes
         width, height = width * 2, height * 2
     full = pipeline.output_size(width, height, edit)

@@ -200,8 +200,50 @@ def _migrate_6(db):
     )
 
 
+def _migrate_7(db):
+    db.executescript(
+        """
+        -- A photo made from others: an HDR merge (core/hdr.py), later a panorama. The
+        -- settings it was made with, as JSON, and where the result is once written
+        -- (a volume and the path from its root, as a photo's; NULL until then). Kept
+        -- when its sources go missing or leave the library: they are only named here
+        CREATE TABLE derived (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL,
+            settings TEXT NOT NULL,
+            volume_id INTEGER REFERENCES volumes(id),
+            path TEXT,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX derived_result ON derived (volume_id, path);
+
+        -- What it was made from, in order, by place and content id, not by photo row: a
+        -- source whose folder is removed from the library is still named
+        CREATE TABLE derived_sources (
+            derived_id INTEGER NOT NULL REFERENCES derived(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            volume_id INTEGER NOT NULL REFERENCES volumes(id),
+            path TEXT NOT NULL,
+            content_id TEXT,
+            PRIMARY KEY (derived_id, position)
+        );
+
+        -- The derived photo a merge job makes
+        ALTER TABLE jobs ADD COLUMN derived_id INTEGER REFERENCES derived(id) ON DELETE CASCADE;
+        """
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
-_MIGRATIONS = [_migrate_1, _migrate_2, _migrate_3, _migrate_4, _migrate_5, _migrate_6]
+_MIGRATIONS = [
+    _migrate_1,
+    _migrate_2,
+    _migrate_3,
+    _migrate_4,
+    _migrate_5,
+    _migrate_6,
+    _migrate_7,
+]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
 
@@ -253,6 +295,29 @@ class Job:
     total: int | None
     message: str | None
     failures: int
+    # The derived photo a merge job makes, or None
+    derived_id: int | None = None
+
+
+@dataclass(frozen=True)
+class Source:
+    """A photo a derived one is made from, where it was when it was chosen."""
+
+    volume_key: str
+    path: str
+    content_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Derived:
+    id: int
+    kind: str
+    # JSON
+    settings: str
+    sources: tuple
+    # Where the result is, once written: a volume key and the path from its root
+    volume_key: str | None
+    path: str | None
 
 
 class Library:
@@ -355,6 +420,12 @@ class Library:
             self.db.execute(
                 "DELETE FROM embeddings WHERE content_id NOT IN "
                 "(SELECT content_id FROM photos WHERE content_id IS NOT NULL)"
+            )
+            # Merges that were to be made there and now never will be. Those made stay:
+            # they say what a file was made of, should the folder come back
+            self.db.execute(
+                "DELETE FROM derived WHERE path IS NULL "
+                "AND id NOT IN (SELECT derived_id FROM jobs WHERE derived_id IS NOT NULL)"
             )
 
     def mark_scanned(self, folder_id):
@@ -733,7 +804,7 @@ class Library:
     def job(self, job_id):
         row = self.db.execute(
             "SELECT j.id, j.kind, j.folder_id, j.state, j.phase, j.done, j.total, j.message, "
-            "(SELECT COUNT(*) FROM job_failures WHERE job_id = j.id) "
+            "(SELECT COUNT(*) FROM job_failures WHERE job_id = j.id), j.derived_id "
             "FROM jobs j WHERE j.id = ?",
             (job_id,),
         ).fetchone()
@@ -745,6 +816,95 @@ class Library:
             "SELECT id FROM jobs WHERE state IN (?, ?) ORDER BY id", UNFINISHED
         ).fetchall()
         return [self.job(row[0]) for row in rows]
+
+    # Derived photos
+
+    def add_derived_job(self, kind, settings_json, sources, folder_id):
+        """A photo to be made from `sources` (Source, in order) with `settings_json`, and
+        the job of kind `kind` that makes it in the library folder `folder_id`, queued:
+        both in one transaction. Returns the job's id."""
+        now = time.time()
+        # Before the transaction: volume_id() commits one of its own
+        volumes = [self.volume_id(source.volume_key) for source in sources]
+        with self.db:
+            derived = self.db.execute(
+                "INSERT INTO derived (kind, settings, created_at) VALUES (?, ?, ?)",
+                (kind, settings_json, now),
+            ).lastrowid
+            for position, (source, volume) in enumerate(zip(sources, volumes, strict=True)):
+                self.db.execute(
+                    "INSERT INTO derived_sources (derived_id, position, volume_id, path, "
+                    "content_id) VALUES (?, ?, ?, ?, ?)",
+                    (derived, position, volume, source.path.strip("/"), source.content_id),
+                )
+            job = self.db.execute(
+                "INSERT INTO jobs (kind, folder_id, state, created_at, updated_at, derived_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (kind, folder_id, QUEUED, now, now, derived),
+            ).lastrowid
+        return job
+
+    def derived(self, derived_id):
+        row = self.db.execute(
+            "SELECT d.id, d.kind, d.settings, v.key, d.path FROM derived d "
+            "LEFT JOIN volumes v ON v.id = d.volume_id WHERE d.id = ?",
+            (derived_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        sources = self.db.execute(
+            "SELECT v.key, s.path, s.content_id FROM derived_sources s "
+            "JOIN volumes v ON v.id = s.volume_id WHERE s.derived_id = ? ORDER BY s.position",
+            (derived_id,),
+        )
+        return Derived(row[0], row[1], row[2], tuple(Source(*s) for s in sources), row[3], row[4])
+
+    def set_derived_result(self, derived_id, volume_key, path):
+        """The derived photo was written: it is the file at `path` of volume `volume_key`."""
+        volume = self.volume_id(volume_key)
+        with self.db:
+            self.db.execute(
+                "UPDATE derived SET volume_id = ?, path = ? WHERE id = ?",
+                (volume, path.strip("/"), derived_id),
+            )
+
+    def derived_at(self, volume_key, path):
+        """The Derived that the file at `path` of volume `volume_key` is, or None: the
+        newest, should a name have been made twice."""
+        row = self.db.execute(
+            "SELECT d.id FROM derived d JOIN volumes v ON v.id = d.volume_id "
+            "WHERE v.key = ? AND d.path = ? ORDER BY d.id DESC",
+            (volume_key, path.strip("/")),
+        ).fetchone()
+        return self.derived(row[0]) if row is not None else None
+
+    def photos_near(self, folder_id, taken, seconds):
+        """Photos of the folder taken within `seconds` of `taken` (ISO text), as dicts with
+        their details, in time order: where a bracket is looked for."""
+        rows = self.db.execute(
+            "SELECT p.*, v.key AS volume_key, COALESCE(p.captured, p.file_time) AS taken "
+            "FROM photos p JOIN volumes v ON v.id = p.volume_id WHERE p.folder_id = ? "
+            "AND abs(julianday(COALESCE(p.captured, p.file_time)) - julianday(?)) * 86400 <= ? "
+            "ORDER BY taken, p.path",
+            (folder_id, taken, seconds),
+        )
+        return [dict(row) for row in rows]
+
+    def photo_rows(self, ids):
+        """The photos `ids` as dicts with their details and volume key, in that order;
+        those not in the library left out."""
+        found = {}
+        ids = list(ids)
+        for start in range(0, len(ids), 500):
+            part = ids[start : start + 500]
+            marks = ", ".join("?" * len(part))
+            rows = self.db.execute(
+                "SELECT p.*, v.key AS volume_key, COALESCE(p.captured, p.file_time) AS taken "
+                f"FROM photos p JOIN volumes v ON v.id = p.volume_id WHERE p.id IN ({marks})",
+                part,
+            )
+            found.update((row["id"], dict(row)) for row in rows)
+        return [found[i] for i in ids if i in found]
 
 
 def _inside(path, folder):
