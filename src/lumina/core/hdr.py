@@ -33,20 +33,19 @@ folder holds every frame decoded (as much on disk) until the job ends.
 import json
 import math
 import os
-import shutil
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
 from lumina.core import db as dbm
-from lumina.core import linear_tiff, raw, volumes
+from lumina.core import derived, raw
+from lumina.core.derived import finish_result, start_result
 from lumina.core.edit import source
 from lumina.core.errors import PhotoError
-from lumina.core.library import NotConnected, _Job
 
 HDR = "hdr"
-DECODING, PLANNING, MERGING = "decoding", "planning", "merging"
+DECODING, PLANNING, MERGING = derived.DECODING, "planning", "merging"
 SETTINGS_VERSION = 1
 MIN_FRAMES, MAX_FRAMES = 2, 9
 # Deghosting: how far (in stops) a frame may be from the guide before it is left out
@@ -148,13 +147,7 @@ def check_frames(rows):
     for row in rows:
         if not raw.is_raw(row["path"]):
             raise ValueError(f"{os.path.basename(row['path'])} is not a RAW file")
-    first = rows[0]
-    for row in rows[1:]:
-        if (row.get("make"), row.get("model")) != (first.get("make"), first.get("model")):
-            raise ValueError(
-                f"{os.path.basename(row['path'])} is from another camera "
-                f"({row.get('model') or 'unknown'}, not {first.get('model') or 'unknown'})"
-            )
+    derived.check_camera(rows)
 
 
 def settings_for(rows, deghost="off", align=True):
@@ -179,13 +172,7 @@ def settings_for(rows, deghost="off", align=True):
         # The result goes beside the first photo taken, named after it
         "beside": beside,
         "name": os.path.splitext(os.path.basename(rows[beside]["path"]))[0] + "-HDR",
-        "tags": {
-            "make": reference.get("make"),
-            "model": reference.get("model"),
-            "lens": reference.get("lens"),
-            "captured": _exif_time(reference.get("captured")),
-            "subseconds": _subseconds(reference.get("captured")),
-        },
+        "tags": derived.tags_of(reference),
     }
     return rows, json.dumps(settings, sort_keys=True)
 
@@ -193,31 +180,12 @@ def settings_for(rows, deghost="off", align=True):
 def queue(library, photo_ids, deghost="off", align=True):
     """Queue a merge of the photos `photo_ids` and return the job's id. Raises
     ValueError saying why they cannot be merged."""
-    rows = library.photo_rows(photo_ids)
-    if len(rows) != len(set(photo_ids)):
-        raise ValueError("Some of the photos are no longer in the library")
-    for row in rows:
-        if not row["available"]:
-            raise ValueError(f"{os.path.basename(row['path'])} is missing")
+    rows = derived.rows_to_queue(library, photo_ids)
     check_frames(rows)
     rows, settings = settings_for(rows, deghost, align)
     sources = [dbm.Source(row["volume_key"], row["path"], row["content_id"]) for row in rows]
     beside = json.loads(settings)["beside"]
     return library.add_derived_job(HDR, settings, sources, rows[beside]["folder_id"])
-
-
-def _subseconds(captured):
-    # "2026-10-16 14:03:05.120000" -> "12"
-    if not captured or "." not in captured:
-        return None
-    return captured.split(".", 1)[1].rstrip("0") or None
-
-
-def _exif_time(captured):
-    # "2026-10-16 14:03:05.120000" -> "2026:10:16 14:03:05"
-    if not captured:
-        return None
-    return captured[:19].replace("-", ":", 2)
 
 
 # The steps, in a worker process
@@ -437,7 +405,6 @@ def merge_rows(work, part, tags, first, last, deghost=None):
     may stray from the guide, in stops, or None."""
     plan = load_plan(work)
     width, height = plan.size
-    file_layout = linear_tiff.layout(width, height, linear_tiff.Tags(**tags))
     halo = _GHOST_BLUR if deghost else 0
     top, bottom = max(0, first - halo), min(height, last + halo)
     left, upper, right, _lower = plan.box
@@ -465,12 +432,7 @@ def merge_rows(work, part, tags, first, last, deghost=None):
     weight[nothing] = 1.0
     total /= weight[..., None]
     total[nothing] = light[darkest][nothing]
-    kept = total[first - top : last - top]
-    fd = os.open(part, os.O_WRONLY)
-    try:
-        linear_tiff.write_rows(fd, file_layout, first, kept)
-    finally:
-        os.close(fd)
+    derived.write_rows(part, width, height, tags, first, total[first - top : last - top])
     return last - first
 
 
@@ -509,32 +471,10 @@ def _smoothstep(low, high, x):
     return t * t * (3 - 2 * t)
 
 
-def start_result(part, width, height, tags):
-    """The result file `part`, laid out for `width` x `height` with `tags` (a dict of
-    linear_tiff.Tags), ready for its rows."""
-    file_layout = linear_tiff.layout(width, height, linear_tiff.Tags(**tags))
-    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-    try:
-        linear_tiff.start(fd, file_layout)
-    finally:
-        os.close(fd)
-
-
-def finish_result(part):
-    """The result file's bytes on the disk, before it is put in place."""
-    fd = os.open(part, os.O_WRONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 # The job, on a thread
 
 
-def default_work_root():
-    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(base, "lumina", "merge")
+default_work_root = derived.default_work_root
 
 
 def run(
@@ -552,38 +492,20 @@ def run(
     quit) keeps its decoded frames, for the next start; otherwise the work folder goes
     when the job ends. Raises NotConnected, leaving the job queued, when a source's drive
     is not mounted."""
-    job = _Job(library, job_id, report)
-    record = library.job(job_id)
-    derived = library.derived(record.derived_id) if record and record.derived_id else None
-    if derived is None:
-        job.end(dbm.FAILED_JOB, "Nothing to merge: the job lost its photos")
-        return dbm.FAILED_JOB
-    settings = json.loads(derived.settings)
-    paths = []
-    for item in derived.sources:
-        where = volumes.resolve(item.volume_key, item.path, mounts)
-        if where is None:
-            raise NotConnected(item.path)
-        paths.append(where)
-    work = os.path.join(work_root or default_work_root(), str(job_id))
-    folder = os.path.dirname(paths[settings.get("beside", 0)])
-    part = os.path.join(folder, f".lumina-merge-{job_id}.part")
-    library.update_job(job_id, state=dbm.RUNNING, phase=DECODING, done=0, total=len(paths))
-    state, message, failed = _merge(job, paths, settings, work, part, call, should_stop)
-    if failed is not None:
-        library.add_failures(job_id, [(failed.path, failed.message)])
-    if state != dbm.DONE:
-        _remove(part)
-        if not (state == dbm.CANCELLED and keep_work()):
-            shutil.rmtree(work, ignore_errors=True)
-        job.end(state, message)
-        return state
-    shutil.rmtree(work, ignore_errors=True)
-    where = volumes.locate(message, mounts)
-    if where is not None:
-        library.set_derived_result(derived.id, *where)
-    job.end(dbm.DONE, f"Merged {len(paths)} photos into {os.path.basename(message)}")
-    return dbm.DONE
+
+    def make(job, paths, settings, work, part):
+        return _merge(job, paths, settings, work, part, call, should_stop)
+
+    return derived.run(
+        library,
+        job_id,
+        mounts,
+        make,
+        lambda count, name: f"Merged {count} photos into {name}",
+        report,
+        work_root,
+        keep_work,
+    )
 
 
 def _merge(job, paths, settings, work, part, call, should_stop):
@@ -593,9 +515,7 @@ def _merge(job, paths, settings, work, part, call, should_stop):
     tags["description"] = f"HDR merge of {len(paths)} photos"
     cancelled = (dbm.CANCELLED, "Cancelled while merging", None)
     try:
-        for path in paths:
-            if not os.path.isfile(path):
-                raise PhotoError(path, "is missing: the photo is not where it was")
+        derived.check_sources(paths)
         os.makedirs(work, exist_ok=True)
         balance = call(source.camera_white_balance, paths[reference])
         order = [reference] + [i for i in range(len(paths)) if i != reference]
@@ -631,44 +551,12 @@ def _merge(job, paths, settings, work, part, call, should_stop):
         call(finish_result, part)
         if should_stop():
             return cancelled
-        return dbm.DONE, _place(part, os.path.dirname(part), settings["name"]), None
-    except PhotoError as error:
-        return dbm.FAILED_JOB, f"Could not merge: {error.message}", error
-    except OSError as error:
-        failed = PhotoError(error.filename or part, error.strerror or str(error))
-        return dbm.FAILED_JOB, f"Could not merge: {failed.message}", failed
+        return dbm.DONE, derived.place(part, os.path.dirname(part), settings["name"]), None
+    except (PhotoError, OSError) as error:
+        return derived.failure(error, part, "merge")
 
 
 def _stops(exposures, index, reference):
     if not exposures or exposures[index] is None or exposures[reference] is None:
         return None
     return exposures[index] - exposures[reference]
-
-
-def _place(part, folder, stem):
-    """`part` put in place as `stem`.tif in `folder`, or -2, -3 and so on: the first name
-    no file has. A name is claimed by creating it exclusively, so a file that appears
-    meanwhile is never written over. Returns the path."""
-    for number in range(1, 10000):
-        name = f"{stem}.tif" if number == 1 else f"{stem}-{number}.tif"
-        destination = os.path.join(folder, name)
-        try:
-            claim = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        except FileExistsError:
-            continue
-        os.close(claim)
-        try:
-            # Over the empty file just made, which is ours
-            os.replace(part, destination)
-        except OSError:
-            _remove(destination)
-            raise
-        return destination
-    raise PhotoError(os.path.join(folder, stem + ".tif"), "every name for it is taken")
-
-
-def _remove(path):
-    try:
-        os.remove(path)
-    except OSError:
-        pass

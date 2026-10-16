@@ -168,6 +168,45 @@ def scene(width=192, height=128):
     return light
 
 
+def surroundings(focal=200.0, height=260):
+    """Light all around a camera, linear, as a cylinder unrolled: `focal` pixels a radian
+    across (the whole turn), `height` pixels high, centred on the horizon, and as many
+    pixels of the cylinder's height a radian of it. Blobs of several sizes, the same
+    every time, for features to be found at every scale."""
+    import cv2
+
+    width = round(2 * np.pi * focal)
+    rng = np.random.default_rng(3)
+    light = np.zeros((height, width))
+    for cell in (3, 7, 17, 41):
+        noise = rng.random((height // cell + 2, width // cell + 2))
+        grown = cv2.resize(noise, None, fx=cell, fy=cell, interpolation=cv2.INTER_CUBIC)
+        light += grown[:height, :width] / 4
+    return 0.03 + 0.6 * np.clip(light, 0.0, 1.0) ** 2
+
+
+def view(around, yaw, size=(240, 160), focal=200.0):
+    """What a camera of `focal` pixels sees of `around` (from `surroundings`, made with
+    the same focal) turned `yaw` degrees to the right: `size` (width x height) of light."""
+    import cv2
+
+    width, height = size
+    x, y = np.meshgrid(np.arange(width, dtype=np.float64), np.arange(height, dtype=np.float64))
+    rays = np.stack([(x - (width - 1) / 2) / focal, (y - (height - 1) / 2) / focal], -1)
+    turn = np.radians(yaw)
+    rx = rays[..., 0] * np.cos(turn) + np.sin(turn)
+    rz = np.cos(turn) - rays[..., 0] * np.sin(turn)
+    across = (np.arctan2(rx, rz) + np.pi) * focal
+    up = rays[..., 1] / np.hypot(rx, rz) * focal + around.shape[0] / 2
+    return cv2.remap(
+        around.astype(np.float32),
+        across.astype(np.float32),
+        up.astype(np.float32),
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_WRAP,
+    ).astype(np.float64)
+
+
 def bracket_mosaic(light, stops=0.0, shift=(0, 0)):
     """`light` (from `scene`) as a camera at `stops` from the middle exposure records it:
     12 bits, white at 4095 and clipped there, moved by `shift` (x, y) whole pixels, as an

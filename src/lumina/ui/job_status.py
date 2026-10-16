@@ -110,26 +110,34 @@ def merge_status():
     """A JobStatus for merges."""
     return JobStatus(
         words=describe_merge,
-        counted=(merge.DECODING, merge.MERGING),
+        counted=(merge.DECODING, merge.MERGING, merge.STITCHING),
         cancel_tip="Stop merging",
     )
 
 
+# Per kind of merge: (to do it, doing it, done it, what planning is)
+_WORDS = {
+    merge.HDR: ("merge", "Merging", "Merged", "aligning"),
+    merge.PANORAMA: ("stitch", "Stitching", "Stitched", "finding how the photos fit"),
+}
+
+
 def describe_merge(status):
-    """A MergeStatus in words, for the status bar."""
+    """A MergeStatus (an HDR merge's or a panorama's) in words, for the status bar."""
     name = status.name
+    verb, doing, done, planning = _WORDS.get(status.kind, _WORDS[merge.HDR])
     more = f"  ·  {status.queued} more waiting" if status.queued else ""
     if status.state == library.QUEUED or status.phase is None:
-        return f"Waiting to merge {name}{more}"
+        return f"Waiting to {verb} {name}{more}"
     if status.state == library.RUNNING:
         if status.phase == merge.DECODING:
-            return f"Merging {name}: reading photo {status.done} of {status.total}{more}"
+            return f"{doing} {name}: reading photo {status.done} of {status.total}{more}"
         if status.phase == merge.PLANNING:
-            return f"Merging {name}: aligning{more}"
+            return f"{doing} {name}: {planning}{more}"
         share = round(100 * status.done / status.total) if status.total else 0
-        return f"Merging {name}: {share} %{more}"
+        return f"{doing} {name}: {share} %{more}"
     if status.state == library.DONE:
-        return (status.message or f"Merged {name}") + more
+        return (status.message or f"{done} {name}") + more
     if status.state == library.CANCELLED:
-        return f"Stopped merging {name}{more}"
-    return (status.message or f"Could not merge {name}") + more
+        return f"Stopped {doing.lower()} {name}{more}"
+    return (status.message or f"Could not {verb} {name}") + more

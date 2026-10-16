@@ -49,7 +49,7 @@ from lumina.ui.grid_size import NAMES as GRID_SIZE_NAMES
 from lumina.ui.grid_size import GridSizeSwitch
 from lumina.ui.image_view import ImageView
 from lumina.ui.job_status import JobStatus, merge_status
-from lumina.ui.merge_dialog import MergeDialog
+from lumina.ui.merge_dialog import MergeDialog, PanoramaDialog
 from lumina.ui.preset_dialog import CopyDialog
 from lumina.ui.quick_view import QuickView
 from lumina.ui.search import SearchField, SearchStatus
@@ -405,6 +405,12 @@ class MainWindow(QMainWindow):
             "the bracket it was taken in"
         )
         self.merge_hdr_action.triggered.connect(self.merge_hdr)
+        self.stitch_panorama_action = QAction("Stitch Panorama…", self)
+        self.stitch_panorama_action.setShortcut(QKeySequence("Ctrl+M"))
+        self.stitch_panorama_action.setToolTip(
+            "Stitch overlapping photos, taken turning the camera, into one panorama (Ctrl+M)"
+        )
+        self.stitch_panorama_action.triggered.connect(self.stitch_panorama)
         for action in (
             self.back_action,
             self.previous_action,
@@ -415,6 +421,7 @@ class MainWindow(QMainWindow):
             *self.zoom_actions,
             *self.settings_actions,
             self.merge_hdr_action,
+            self.stitch_panorama_action,
         ):
             # Only while a photo is shown: in the grid the arrows move the selection.
             # The flags' keys are the grid's and the viewer's, not the search field's
@@ -560,7 +567,14 @@ class MainWindow(QMainWindow):
         self.grid.setWordWrap(False)
         self.grid.setSelectionMode(QListView.SelectionMode.ExtendedSelection)
         self.grid.activated.connect(lambda index: self.show_photo(index.row()))
-        self.grid.addActions([*self.flag_actions, *self.settings_actions, self.merge_hdr_action])
+        self.grid.addActions(
+            [
+                *self.flag_actions,
+                *self.settings_actions,
+                self.merge_hdr_action,
+                self.stitch_panorama_action,
+            ]
+        )
         self.grid.selectionModel().selectionChanged.connect(self._update_flag_actions)
         self.grid.selectionModel().currentChanged.connect(self._on_current_changed)
         # Escape in the grid ends a search
@@ -601,6 +615,7 @@ class MainWindow(QMainWindow):
                 *self.zoom_actions,
                 *self.settings_actions,
                 self.merge_hdr_action,
+                self.stitch_panorama_action,
             ]
         )
         self.viewer.zoom_changed.connect(self._on_zoom_changed)
@@ -918,6 +933,7 @@ class MainWindow(QMainWindow):
         if self.merge is not None:
             menu.addSeparator()
             menu.addAction(self.merge_hdr_action)
+            menu.addAction(self.stitch_panorama_action)
         return menu
 
     # Flags
@@ -1079,6 +1095,27 @@ class MainWindow(QMainWindow):
             self.merge.merge_hdr(ids, dialog.deghost(), dialog.align())
         except ValueError as error:
             QMessageBox.information(self, "Merge to HDR", str(error))
+
+    def stitch_panorama(self):
+        """Stitch the photos chosen into a panorama, after asking how."""
+        if self.merge is None:
+            return
+        ids = [self.model.photo_id(row) for row in self._flag_rows()]
+        if not ids:
+            return
+        problem = self.merge.check_panorama(ids)
+        if problem is not None:
+            if len(ids) == 1:
+                problem = "Choose the photos to stitch in the grid: two or more that overlap."
+            QMessageBox.information(self, "Stitch Panorama", problem)
+            return
+        dialog = PanoramaDialog(self.merge.panorama_frames(ids), parent=self)
+        if dialog.exec() != PanoramaDialog.DialogCode.Accepted:
+            return
+        try:
+            self.merge.stitch_panorama(ids, dialog.projection(), dialog.crop())
+        except ValueError as error:
+            QMessageBox.information(self, "Stitch Panorama", str(error))
 
     def _photo_name(self, photo_id):
         photo = self.service.photo_details(photo_id)

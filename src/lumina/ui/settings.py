@@ -223,3 +223,19 @@ def merge_align():
 def set_merge_choices(deghost, align):
     _settings().setValue("merge/deghost", deghost)
     _settings().setValue("merge/align", bool(align))
+
+
+def panorama_projection():
+    """The projection a panorama was last asked for: cylindrical at first."""
+    value = _settings().value("panorama/projection")
+    return value if value in ("cylindrical", "spherical", "perspective") else "cylindrical"
+
+
+def panorama_crop():
+    """Whether a panorama was last asked to be cropped to a rectangle. On at first."""
+    return _settings().value("panorama/crop", True) in (True, "true")
+
+
+def set_panorama_choices(projection, crop):
+    _settings().setValue("panorama/projection", projection)
+    _settings().setValue("panorama/crop", bool(crop))

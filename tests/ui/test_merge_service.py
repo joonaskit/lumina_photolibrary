@@ -1,18 +1,20 @@
-"""HDR merges as jobs for the UI, and asking for one from the window."""
+"""HDR merges and panoramas as jobs for the UI, and asking for them from the window."""
 
 from datetime import datetime, timedelta
 
 import pytest
 from conftest import TIMEOUT
-from rawfiles import bracket_mosaic, make_dng, scene
+from PySide6.QtCore import QItemSelectionModel
+from rawfiles import bracket_mosaic, make_dng, scene, surroundings, view
 
 from lumina.core import db as dbm
-from lumina.core import hdr, linear_tiff
+from lumina.core import hdr, linear_tiff, panorama
 from lumina.core.metadata import Metadata
 from lumina.qt_models import library
 from lumina.qt_models.merge import MergeService
 from lumina.ui import main_window
-from lumina.ui.merge_dialog import MergeDialog
+from lumina.ui.job_status import describe_merge
+from lumina.ui.merge_dialog import MergeDialog, PanoramaDialog
 
 START = datetime(2026, 10, 16, 14, 3, 5)
 
@@ -218,3 +220,90 @@ def test_a_photo_in_no_bracket_says_so(service, make_merge, drive, qtbot, monkey
     assert told == [
         "c.dng is not in a bracket that Lumina can find. Choose the photos to merge in the grid."
     ]
+
+
+@pytest.fixture
+def turned(drive):
+    """Three frames of a camera turning, 35 degrees apart."""
+    around = surroundings()
+    return [
+        make_dng(
+            drive / "Photos" / f"PAN_{i + 1:04d}.dng", mosaic=bracket_mosaic(view(around, yaw))
+        )
+        for i, yaw in enumerate((-35, 0, 35))
+    ]
+
+
+def test_a_panorama_runs_and_its_photo_comes_into_the_library(
+    service, make_merge, drive, turned, qtbot, wait_idle
+):
+    ids = scanned(service, drive, qtbot)
+    merge = make_merge(service)
+    statuses = []
+    merge.job_changed.connect(statuses.append)
+
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT) as rescanned:
+        merge.stitch_panorama([ids[path.name] for path in turned], "spherical", crop=False)
+        qtbot.waitUntil(lambda: statuses and statuses[-1].state == library.DONE, timeout=TIMEOUT)
+
+    assert statuses[-1].message == "Stitched 3 photos into PAN_0001-pano.tif"
+    assert statuses[-1].kind == panorama.PANORAMA
+    assert {s.phase for s in statuses} >= {panorama.DECODING, panorama.STITCHING}
+    assert describe_merge(statuses[-2]).startswith("Stitching PAN_0001-pano: ")
+    assert rescanned.args[0].state == library.DONE
+    assert linear_tiff.is_linear(drive / "Photos" / "PAN_0001-pano.tif")
+    assert "Photos/PAN_0001-pano.tif" in [photo.path for photo in service.db.photos()]
+    wait_idle(service)
+
+
+def test_stitch_panorama_in_the_grid_asks_how_then_stitches(
+    service, make_merge, drive, turned, qtbot, monkeypatch
+):
+    ids = scanned(service, drive, qtbot)
+    merge = make_merge(service, start=False)
+    window = main_window.MainWindow(service, merge=merge)
+    qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: window.model.rowCount() == 6, timeout=TIMEOUT)
+    asked = []
+
+    def answer(dialog):
+        asked.append([frame.name for frame in merge.panorama_frames(chosen)])
+        dialog.projection_box.setCurrentIndex(dialog.projection_box.findData("perspective"))
+        dialog.crop_box.setChecked(False)
+        return PanoramaDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(PanoramaDialog, "exec", answer)
+    queued = []
+    monkeypatch.setattr(merge, "stitch_panorama", lambda *args: queued.append(args))
+    chosen = [ids[path.name] for path in turned]
+    selection = window.grid.selectionModel()
+    for row in range(window.model.rowCount()):
+        if window.model.photo_id(row) in chosen:
+            selection.select(window.model.index(row), QItemSelectionModel.SelectionFlag.Select)
+
+    window.stitch_panorama_action.trigger()
+
+    assert asked == [["PAN_0001.dng", "PAN_0002.dng", "PAN_0003.dng"]]
+    assert len(queued) == 1
+    assert sorted(queued[0][0]) == sorted(chosen) and queued[0][1:] == ("perspective", False)
+
+
+def test_one_photo_is_not_a_panorama(service, make_merge, drive, qtbot, monkeypatch):
+    ids = scanned(service, drive, qtbot)
+    merge = make_merge(service, start=False)
+    window = main_window.MainWindow(service, merge=merge)
+    qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: window.model.rowCount() == 3, timeout=TIMEOUT)
+    told = []
+    monkeypatch.setattr(
+        main_window.QMessageBox, "information", lambda _parent, _title, text: told.append(text)
+    )
+    row = next(r for r in range(3) if window.model.photo_id(r) == ids["c.dng"])
+    window.grid.setCurrentIndex(window.model.index(row))
+
+    window.stitch_panorama_action.trigger()
+
+    assert told == ["Choose the photos to stitch in the grid: two or more that overlap."]
+    assert merge.check_panorama([ids["a.jpg"], ids["c.dng"]]) == (
+        "c.dng is a RAW file, the others are not"
+    )
