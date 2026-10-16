@@ -146,6 +146,27 @@ def encode_files(folder, paths, threads=None):
     return results
 
 
+# In the query worker process: the text half stays loaded between searches. Loading
+# its tokenizer holds the GIL for most of a second, which on a thread of the app's
+# own process stops the UI too
+_query_encoder = None
+
+
+def encode_texts(folder, queries):
+    """For a worker process: the vectors of `queries`, one row each."""
+    global _query_encoder
+    if _query_encoder is None or _query_encoder.folder != folder:
+        # Two threads: a query is short, and indexing may be using the rest
+        _query_encoder = Encoder(folder, threads=2)
+    return _query_encoder.texts(queries)
+
+
+def forget_texts():
+    """For the query worker process: let go of the text half (the model was deleted)."""
+    global _query_encoder
+    _query_encoder = None
+
+
 def _lower_priority():
     try:
         os.nice(10)

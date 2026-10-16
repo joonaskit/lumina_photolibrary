@@ -9,11 +9,13 @@ from lumina.core.metadata import Metadata, MetadataUnavailable
 
 class FakeExifTool:
     """Says every photo is from a 90D taken on 2022-05-09, except: a name in `models`
-    gets that camera, a path in `broken` fails, and after `dies_after` batches it stops.
+    gets that camera, a name in `warnings` that warning, a path in `broken` fails, and
+    after `dies_after` batches it stops. The file type is the name's extension.
     `delay` seconds per batch make a scan slow enough to stop in the middle."""
 
     calls = []
     models = {}
+    warnings = {}
     delay = 0.0
     # Whether a scan asked for the lowest priority, as the last one did
     gentle = False
@@ -35,7 +37,13 @@ class FakeExifTool:
             return PhotoError(path, "File format error")
         name = path.rsplit("/", 1)[-1]
         model = FakeExifTool.models.get(name, "Canon EOS 90D")
-        return Metadata(captured=datetime(2022, 5, 9, 21, 3), model=model, lens="EF-S55-250mm")
+        return Metadata(
+            captured=datetime(2022, 5, 9, 21, 3),
+            model=model,
+            lens="EF-S55-250mm",
+            file_type=name.rsplit(".", 1)[-1].upper(),
+            warning=FakeExifTool.warnings.get(name),
+        )
 
     def set_gentle(self, on=True):
         FakeExifTool.gentle = on
@@ -45,7 +53,7 @@ class FakeExifTool:
 
     @classmethod
     def reset(cls):
-        cls.calls, cls.models, cls.delay, cls.gentle = [], {}, 0.0, False
+        cls.calls, cls.models, cls.warnings, cls.delay, cls.gentle = [], {}, {}, 0.0, False
 
 
 def colour_vector(colour):

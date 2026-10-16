@@ -7,9 +7,10 @@ It runs on a thread of its own and encodes in a worker process of its own at low
 priority, apart from the scans, so a drive plugged in is scanned at once, not
 after hours of indexing. A quit in the middle leaves it queued for the next start.
 
-Searches run on one thread that keeps the vectors in memory (core/search.py) and
-the text half of the model loaded. The newest search wins: an older one's results
-are dropped.
+Searches run on one thread that keeps the vectors in memory (core/search.py). The
+words of a search are encoded in a worker process that keeps the text half of the
+model loaded; the first search loads it, which takes a second or two. The newest
+search wins: an older one's results are dropped.
 """
 
 import threading
@@ -64,6 +65,8 @@ class SearchService(QObject):
         self._again = False
         self._removing = False
         self._generation = 0
+        # Whether a search has loaded the text half of the model yet
+        self._text_loaded = False
         self._searcher = _Searcher(library.path, self.folder, encode_text)
         # Kept for the tests, which wait for them
         self.download_future = self.index_future = self.remove_future = None
@@ -145,6 +148,7 @@ class SearchService(QObject):
 
     def _removed(self):
         self._removing = False
+        self._text_loaded = False
         # The text model the searches keep loaded goes too
         workers.submit(
             self._searcher.forget_model,
@@ -244,27 +248,42 @@ class SearchService(QObject):
     def search_text(self, text, photos, on_done):
         """`on_done([(photo, cosine)])` with `photos` (the grid's rows) that match
         `text`, best first, unless a newer search was asked for by then."""
-        self._submit(self._searcher.text, text, photos, on_done)
+
+        def done(result):
+            self._text_loaded = True
+            on_done(result)
+
+        self._submit(self._searcher.text, text, photos, done, failed=on_done)
+
+    def is_text_loaded(self):
+        """Whether the text half of the model is loaded, so a search is quick; until the
+        first search comes back, it is not."""
+        return self._text_loaded
 
     def similar(self, content_id, photos, on_done):
         """As search_text, for the photos most like the one with `content_id`, itself
         first. No results when it has no vector yet."""
         self._submit(self._searcher.similar, content_id, photos, on_done)
 
-    def _submit(self, fn, query, photos, on_done):
+    def _submit(self, fn, query, photos, on_done, failed=None):
         self._generation += 1
         generation = self._generation
+        failed = failed or on_done
 
         def done(result):
             if generation == self._generation:
                 on_done(result)
+
+        def error(_error):
+            if generation == self._generation:
+                failed([])
 
         workers.submit(
             fn,
             query,
             photos,
             on_done=done,
-            on_error=lambda _error: done([]),
+            on_error=error,
             owner=self,
             process=workers.SEARCH,
         )
@@ -279,7 +298,6 @@ class _Searcher:
         self._encode_text = encode_text
         self.index = searching.Index()
         self._library = None
-        self._encoder = None
 
     def text(self, text, photos):
         if not text.strip():
@@ -288,14 +306,12 @@ class _Searcher:
         if self._encode_text is not None:
             query = self._encode_text(text)
         else:
-            if self._encoder is None:
-                # Two threads: a query is short, and indexing may be using the rest
-                self._encoder = embed.Encoder(self.folder, threads=2)
-            query = self._encoder.texts([text])[0]
+            query = workers.call(workers.QUERY, embed.encode_texts, self.folder, [text])[0]
         return self.index.rank(photos, query, floor=searching.text_floor())
 
     def forget_model(self):
-        self._encoder = None
+        if self._encode_text is None:
+            workers.call(workers.QUERY, embed.forget_texts)
 
     def similar(self, content_id, photos):
         self._refresh()

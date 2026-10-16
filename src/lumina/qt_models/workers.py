@@ -51,6 +51,9 @@ DEVELOP = "develop"
 # One process for indexing for search, at low priority, keeping the model loaded
 # between batches (core/embed.py); it never holds up thumbnails or a render
 EMBED = "embed"
+# One process for the text half of the model, which a search's words are encoded by,
+# kept loaded between searches (core/embed.py)
+QUERY = "query"
 # One thread for indexing jobs, which wait on EMBED for hours, and one for searches,
 # so neither waits behind a scan or the grid's reads
 INDEXING = "indexing"
@@ -59,7 +62,7 @@ SEARCH = "search"
 CACHE = "cache"
 # One thread for walking a library folder to watch it
 WATCH = "watch"
-_NAMED_PROCESSES = {DEVELOP, EMBED}
+_NAMED_PROCESSES = {DEVELOP, EMBED, QUERY}
 
 
 def _the_relay():

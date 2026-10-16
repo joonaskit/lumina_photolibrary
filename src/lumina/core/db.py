@@ -17,6 +17,8 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
+from lumina.core import metadata
+
 # Steps of `metadata_state`
 PENDING, READ, FAILED = 0, 1, 2
 # A job's `state`
@@ -186,8 +188,20 @@ def _migrate_5(db):
     )
 
 
+def _migrate_6(db):
+    db.executescript(
+        """
+        -- exiftool's warning when it says the raw data may be damaged (metadata's
+        -- damage_warning), or NULL. Read with the details; the CR3s read before it are
+        -- read again by the next scan, so that those damaged already are found
+        ALTER TABLE photos ADD COLUMN damage_warning TEXT;
+        UPDATE photos SET metadata_state = 0 WHERE metadata_state = 1 AND file_type = 'CR3';
+        """
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
-_MIGRATIONS = [_migrate_1, _migrate_2, _migrate_3, _migrate_4, _migrate_5]
+_MIGRATIONS = [_migrate_1, _migrate_2, _migrate_3, _migrate_4, _migrate_5, _migrate_6]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
 
@@ -224,6 +238,8 @@ class PhotoRow:
     edit: str | None = None
     flag: int = UNFLAGGED
     rating: int = 0
+    # exiftool's warning that the raw data may be damaged, or None
+    damage_warning: str | None = None
 
 
 @dataclass(frozen=True)
@@ -416,7 +432,7 @@ class Library:
                 "UPDATE photos SET metadata_state = 1, metadata_error = NULL, content_id = ?, "
                 "captured = ?, captured_offset = ?, make = ?, model = ?, lens = ?, "
                 "focal_length = ?, aperture = ?, exposure_time = ?, iso = ?, orientation = ?, "
-                "latitude = ?, longitude = ?, file_type = ? WHERE id = ?",
+                "latitude = ?, longitude = ?, file_type = ?, damage_warning = ? WHERE id = ?",
                 [(cid, *_metadata_columns(data), photo) for photo, cid, data in read],
             )
             self.db.executemany(
@@ -445,13 +461,16 @@ class Library:
         where, args = _where(shown or Filter())
         rows = self.db.execute(
             "SELECT p.id, v.key, p.path, p.content_id, p.available, "
-            "COALESCE(p.captured, p.file_time) AS taken, e.params, p.flag, p.rating "
+            "COALESCE(p.captured, p.file_time) AS taken, e.params, p.flag, p.rating, "
+            "p.damage_warning "
             f"FROM photos p JOIN volumes v ON v.id = p.volume_id "
             "LEFT JOIN edits e ON e.photo_id = p.id AND e.copy = 0 "
             f"{where} ORDER BY taken, p.path",
             args,
         )
-        return [PhotoRow(r[0], r[1], r[2], r[3], bool(r[4]), r[5], r[6], r[7], r[8]) for r in rows]
+        return [
+            PhotoRow(r[0], r[1], r[2], r[3], bool(r[4]), r[5], r[6], r[7], r[8], r[9]) for r in rows
+        ]
 
     def photo(self, photo_id):
         row = self.db.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
@@ -762,6 +781,7 @@ def _metadata_columns(data):
         data.latitude,
         data.longitude,
         data.file_type,
+        metadata.damage_warning(data),
     )
 
 

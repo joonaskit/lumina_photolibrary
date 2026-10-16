@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 from conftest import TIMEOUT
 from fakes import FakeEncoder, encode_colour_text, install_model
@@ -17,7 +19,7 @@ def model_root(tmp_path):
 def open_window(qtbot, make_service, wait_idle, model_root, drive):
     made = []
 
-    def open_(installed=True):
+    def open_(installed=True, encode_text=encode_colour_text):
         if installed:
             install_model(model_root)
         service = make_service(start=False)
@@ -26,7 +28,7 @@ def open_window(qtbot, make_service, wait_idle, model_root, drive):
             service,
             model_root,
             encode=lambda _folder, paths: encoder(paths),
-            encode_text=encode_colour_text,
+            encode_text=encode_text,
         )
         made.append(search)
         window = MainWindow(service, search)
@@ -67,6 +69,32 @@ def test_a_text_search_ranks_the_grid_and_says_so(qtbot, open_window):
 
     assert names(window)[0] == "b.jpg"
     assert window.status.text() == "3 photos match “green”"
+
+
+def test_the_first_search_says_it_loads_the_model_and_later_ones_do_not(qtbot, open_window):
+    release = threading.Event()
+
+    def slow_first(text):
+        # The first search waits as one loading the model does
+        release.wait(TIMEOUT / 1000)
+        return encode_colour_text(text)
+
+    window = open_window(encode_text=slow_first)
+    window.search_field.edit.setText("green")
+    window.search_field.edit.returnPressed.emit()
+    qtbot.waitUntil(lambda: window.model.is_loading(), timeout=TIMEOUT)
+    assert window.status.text() == "Loading the search model…"
+    release.set()
+    qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
+    assert names(window)[0] == "b.jpg"
+
+    release.clear()
+    window.search_field.edit.setText("red")
+    window.search_field.edit.returnPressed.emit()
+    qtbot.waitUntil(lambda: window.model.is_loading(), timeout=TIMEOUT)
+    assert window.status.text() == "Searching…"
+    release.set()
+    qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
 
 
 def test_typing_searches_after_a_pause(qtbot, open_window):

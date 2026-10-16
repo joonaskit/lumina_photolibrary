@@ -19,6 +19,10 @@ from lumina.core.edit.pipeline import srgb_decode
 from lumina.core.errors import PhotoError
 
 PROXY_PIXELS = 2_000_000
+# Raw values this far under the black level (a share of the white level) are not noise
+# or an exposure: they are garbage. A healthy file has none, a damaged one 1 to 38 %.
+DAMAGE_MARGIN = 1 / 40
+DAMAGE_SHARE = 0.001
 
 
 def load_linear(path, half=False):
@@ -33,6 +37,12 @@ def load_linear(path, half=False):
 def _raw_linear(path, half=False):
     try:
         with rawpy.imread(str(path)) as file:
+            if _damaged(file):
+                raise PhotoError(
+                    path,
+                    "the raw data is damaged. The camera's JPEG preview is fine; "
+                    "copy the file from the card again",
+                )
             # postprocess() turns the image by the file's flip itself
             return file.postprocess(
                 gamma=(1, 1),
@@ -44,6 +54,14 @@ def _raw_linear(path, half=False):
             )
     except (rawpy.LibRawError, OSError, ValueError) as error:
         raise PhotoError(path, f"cannot decode RAW ({error})") from error
+
+
+def _damaged(file):
+    """Whether the raw values of `file` (an open rawpy file) are damaged: some are far
+    below the black level, which no exposure produces. Reads, never repairs."""
+    values = file.raw_image_visible
+    floor = min(file.black_level_per_channel) - DAMAGE_MARGIN * file.white_level
+    return np.count_nonzero(values < floor) > DAMAGE_SHARE * values.size
 
 
 def _image_linear(path):

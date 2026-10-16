@@ -29,6 +29,7 @@ from lumina.integration import style
 from lumina.qt_models.develop import DevelopSession
 from lumina.qt_models.library import NewerParams
 from lumina.qt_models.library_model import (
+    DAMAGE_ROLE,
     DIMMED_ROLE,
     FLAG_ROLE,
     PICKED,
@@ -40,7 +41,7 @@ from lumina.qt_models.library_model import (
     LibraryModel,
 )
 from lumina.qt_models.previews import PreviewLoader
-from lumina.ui import flags, settings, stars
+from lumina.ui import damage, flags, settings, stars
 from lumina.ui.develop_view import DevelopView
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.filters import FilterBar
@@ -91,14 +92,16 @@ class _CellDelegate(QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         """The cell, greyed out for a dimmed thumbs-down photo, its flag's badge on the
-        photo's bottom right corner and its stars on the bottom left."""
+        photo's bottom right corner, its stars on the bottom left and a warning on the
+        top right when its raw data may be damaged."""
         painter.save()
         if index.data(DIMMED_ROLE):
             painter.setOpacity(DIMMED_OPACITY)
         super().paint(painter, option, index)
         painter.restore()
         flag, rating = index.data(FLAG_ROLE), index.data(RATING_ROLE)
-        if flag not in flags.COLOURS and not rating:
+        damaged = index.data(DAMAGE_ROLE)
+        if flag not in flags.COLOURS and not rating and not damaged:
             return
         item = QStyleOptionViewItem(option)
         self.initStyleOption(item, index)
@@ -112,6 +115,8 @@ class _CellDelegate(QStyledItemDelegate):
         if flag in flags.COLOURS:
             flags.paint_badge(painter, photo, flag)
         stars.paint_stars(painter, photo, rating or 0)
+        if damaged:
+            damage.paint_badge(painter, photo)
 
 
 class MainWindow(QMainWindow):
@@ -1390,13 +1395,16 @@ class MainWindow(QMainWindow):
                 zoom = f"{round(view.zoom() * 100)} %"
                 if self._zoom_loading(view):
                     zoom += ", loading full size…" if view is self.viewer else ", rendering…"
-            parts = (f"{row + 1} of {count}", zoom, flag, rated, details, where)
+            damaged = "Raw data may be damaged" if self.model.damage(row) else None
+            parts = (f"{row + 1} of {count}", zoom, flag, rated, damaged, details, where)
             text = "  ·  ".join(part for part in parts if part)
         else:
             text = f"{count} photo" + ("" if count == 1 else "s")
             search = self.model.search
             if search is not None and self.model.is_loading():
                 text = "Searching…"
+                if search.kind != SIMILAR and self.search and not self.search.is_text_loaded():
+                    text = "Loading the search model…"
             elif search is not None and search.kind == SIMILAR:
                 text = (
                     f"{text} like {search.label}"
