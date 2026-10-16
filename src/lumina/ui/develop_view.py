@@ -828,11 +828,9 @@ class DevelopView(QWidget):
         self.crop_button.setToolTip("Set the crop on the photo (C); Enter accepts, Escape cancels")
         self.crop_button.toggled.connect(self.set_cropping)
         self.reset_crop = QPushButton("Reset Crop")
-        self.reset_crop.setToolTip("No crop and no straightening")
+        self.reset_crop.setToolTip("No crop")
         self.reset_crop.clicked.connect(
-            lambda: self.session.commit(
-                self.session.params.with_changes(crop=Crop(), straighten=0.0)
-            )
+            lambda: self.session.commit(self.session.params.with_changes(crop=Crop()))
         )
         row.addWidget(self.crop_button)
         row.addWidget(self.reset_crop)
