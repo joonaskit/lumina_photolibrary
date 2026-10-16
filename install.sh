@@ -17,6 +17,12 @@ if ! command -v exiftool >/dev/null; then
     sudo dnf install -y perl-Image-ExifTool
 fi
 
+# Lens corrections use lensfun's data (/usr/share/lensfun); without it they are left out
+if [ ! -d /usr/share/lensfun ]; then
+    echo "Installing lensfun with dnf"
+    sudo dnf install -y lensfun
+fi
+
 # PyPI's PySide6, not the distribution's: the two must not meet in one environment
 # (see CLAUDE.md), so this venv does not see the system's site packages
 if command -v uv >/dev/null; then

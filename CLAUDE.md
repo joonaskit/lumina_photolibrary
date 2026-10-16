@@ -8,7 +8,7 @@ The sibling project `../filehouse` uses the same stack and conventions; look the
 
 - Python 3.12+, **PySide6 with Qt Widgets** (not Qt Quick/QML)
 - **rawpy (LibRaw)** for RAW, **pillow-heif** (libheif) for HEIC and HEIF, **exiftool** (`-stay_open`) for metadata
-- **numpy** for the edit pipeline, **OpenCV** (`opencv-python-headless`) for the blurs and filters of local contrast, sharpening and noise reduction, **onnxruntime** for CLIP/SigLIP
+- **numpy** for the edit pipeline, **lensfun**'s XML data (read by us, not linked; `/usr/share/lensfun`) for lens corrections, **OpenCV** (`opencv-python-headless`) for the blurs and filters of local contrast, sharpening and noise reduction, **onnxruntime** for CLIP/SigLIP
 - **SQLite** for metadata, edits and search vectors (float16 blobs, searched with numpy; no vector store)
 - pytest for `core/`, pytest-qt for the few UI tests, ruff for lint and format
 
@@ -17,7 +17,7 @@ The sibling project `../filehouse` uses the same stack and conventions; look the
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-sudo dnf install perl-Image-ExifTool   # metadata; its tests skip without it
+sudo dnf install perl-Image-ExifTool lensfun   # metadata; lens corrections; their tests skip without them
 pip install -e '.[dev]'     # PySide6-Essentials, rawpy, numpy, Pillow, opencv, onnxruntime, tokenizers
 
 lumina [PATH...]           # run the app, opening folders and photos; without one it opens the last folder
@@ -28,7 +28,7 @@ pytest tests/core           # no display needed
 pytest tests/ui             # runs offscreen
 ```
 
-Every push runs `ruff` and `pytest` on GitHub (`.github/workflows/tests.yml`). The tests run in a `fedora:44` container with Fedora's exiftool, with Python 3.12 and 3.14, as an ordinary user; `LUMINA_REQUIRE_EXIFTOOL=1` makes a test that needs exiftool fail there instead of skipping. The checks must pass before a pull request can be merged into `main`.
+Every push runs `ruff` and `pytest` on GitHub (`.github/workflows/tests.yml`). The tests run in a `fedora:44` container with Fedora's exiftool, with Python 3.12 and 3.14, as an ordinary user; `LUMINA_REQUIRE_EXIFTOOL=1` and `LUMINA_REQUIRE_LENSFUN=1` make a test that needs exiftool or lensfun's data fail there instead of skipping. The checks must pass before a pull request can be merged into `main`.
 
 Real camera files go in the git-ignored `tests/samples/` (or `$LUMINA_SAMPLES`): `tests/core/test_samples.py` runs on them and skips without them. Everything else uses the tiny DNGs `tests/rawfiles.py` writes. Likewise the search model (785 MB): `tests/core/test_embed.py` uses it from `$LUMINA_MODELS` (a models folder, as `$XDG_DATA_HOME/lumina/models`) and skips without it; everything else uses `FakeEncoder` from `tests/fakes.py`.
 

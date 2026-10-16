@@ -3,11 +3,13 @@
 The image comes in as linear light in sRGB primaries (16-bit integers, or floats
 in [0, 1]) and every step works on linear floats until the output encoding:
 
-1. Geometry: quarter turns, mirroring, straightening and crop. Done first, as every
-   later step treats each pixel on its own: cropping first gives the same result for
-   less work. Straightening turns the photo about its centre and scales it just
-   enough to fill the frame, so no empty corners show; the crop is then taken of
-   that, and only the pixels inside it are sampled.
+1. Geometry: quarter turns, mirroring, the lens corrections, straightening and crop. Done
+   first, as every later step treats each pixel on its own: cropping first gives the same
+   result for less work. Straightening turns the photo about its centre and scales it just
+   enough to fill the frame, so no empty corners show; the crop is then taken of that, and
+   only the pixels inside it are sampled. The lens's distortion and chromatic aberration
+   are a resampling with the straightening (one pass), its vignetting a gain on the
+   samples (see lenscorrect.py).
 2. White balance and exposure: one gain per channel.
 3. Tone: the Basic controls, the curves and the matte. They act on sRGB-encoded
    values, where curves feel as they do in other editors; the whole step, encode,
@@ -41,6 +43,7 @@ from lumina.core.edit import (
     effects,
     grading,
     hsl,
+    lenscorrect,
     sharpen,
 )
 from lumina.core.edit import detail as detail_steps
@@ -230,6 +233,12 @@ def geometry(image, params, region=None):
         x0, y0, x1, y1 = region
         left, right = left + x0, min(right, left + x1)
         top, bottom = top + y0, min(bottom, top + y1)
+    correction = params.lens.correction()
+    if correction is not None:
+        turn = None
+        if params.straighten:
+            turn = (params.straighten, straighten_scale(width, height, params.straighten))
+        return lenscorrect.resample(image, correction, (top, bottom, left, right), turn)
     if params.straighten == 0:
         return image[top:bottom, left:right]
     return _straightened(image, params.straighten, (top, bottom, left, right))
@@ -285,6 +294,12 @@ def _straightened(image, degrees, box):
     return out
 
 
+def frame_size(width, height, params):
+    """The size of a source of `width` x `height` once turned: the frame the lens
+    corrections are made in."""
+    return (height, width) if params.rotate % 2 else (width, height)
+
+
 def output_size(width, height, params):
     """The size `render` gives for a source of `width` x `height`."""
     if params.rotate % 2:
@@ -322,6 +337,7 @@ def render(image, params, bits=8, tile_rows=512, full=None, region=None, haze=No
     if bits not in (8, 16):
         raise ValueError(f"bits must be 8 or 16, not {bits}")
     width, height = output_size(image.shape[1], image.shape[0], params)
+    frame = frame_size(image.shape[1], image.shape[0], params)
     wanted = region = _clipped(region, width, height)
     plan = _plan(params, (height, width), _scale(image, params, full))
     detailed = plan is not None and plan.detail is not None
@@ -330,7 +346,7 @@ def render(image, params, bits=8, tile_rows=512, full=None, region=None, haze=No
     view = geometry(image, params, None if region == (0, 0, width, height) else region)
     origin = (region[1], region[0])
     out = np.empty((view.shape[0], view.shape[1], 3), dtype=np.uint8 if bits == 8 else np.uint16)
-    gains, tone, desaturation = _per_pixel(view.dtype, params)
+    gains, tone, desaturation = _per_pixel(view.dtype, params, frame)
     step = max(1, tile_rows or view.shape[0])
     if detailed:
         if haze is not None:
@@ -371,9 +387,13 @@ def _with_halo(region, detail, width, height):
     return left, top, right, bottom
 
 
-def _per_pixel(dtype, params):
-    """The gains and tone LUTs that every pixel goes through, and the shadows' desaturation."""
-    gains = channel_gains(params)
+def _per_pixel(dtype, params, frame):
+    """The gains and tone LUTs that every pixel goes through, and the shadows' desaturation.
+    `frame` is the (width, height) of the turned photo the lens corrections were made in:
+    they leave the light vignetting brings up divided by their `headroom`, put back here."""
+    gains = channel_gains(params) * np.float32(
+        lenscorrect.headroom(params.lens.correction(), *frame)
+    )
     if dtype == np.uint16:
         gains = gains / np.float32(65535.0)
     # The tone LUT spans [0, tone_range] in linear light: scaled to [0, 1] with the gains
@@ -389,7 +409,8 @@ def haze_analysis(image, params):
     if params.presence.dehaze == 0:
         return None
     view = geometry(image, params)
-    gains, tone, desaturation = _per_pixel(view.dtype, params)
+    frame = frame_size(image.shape[1], image.shape[0], params)
+    gains, tone, desaturation = _per_pixel(view.dtype, params, frame)
     plan = _plan(params, view.shape[:2])
     stage = _first_pass(view, gains, tone, desaturation, plan, view.shape[0], (0, 0))
     return dehaze.analyse(stage, params.presence.dehaze)
