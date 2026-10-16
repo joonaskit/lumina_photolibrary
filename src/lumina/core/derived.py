@@ -118,16 +118,22 @@ def finish_result(part):
         os.close(fd)
 
 
-def place(part, folder, stem):
-    """`part` put in place as `stem`.tif in `folder`, or -2, -3 and so on: the first name
-    no file has. A name is claimed by creating it exclusively, so a file that appears
-    meanwhile is never written over. Returns the path."""
+def place(part, folder, stem, suffix=".tif", same=None):
+    """`part` put in place as `stem` + `suffix` in `folder`, or -2, -3 and so on: the
+    first name no file has. A name is claimed by creating it exclusively, so a file that
+    appears meanwhile is never written over. Returns the path.
+
+    With `same(path)`, a file already there for which it is true is taken as the result:
+    `part` is removed and that file's path returned."""
     for number in range(1, 10000):
-        name = f"{stem}.tif" if number == 1 else f"{stem}-{number}.tif"
+        name = f"{stem}{suffix}" if number == 1 else f"{stem}-{number}{suffix}"
         destination = os.path.join(folder, name)
         try:
             claim = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         except FileExistsError:
+            if same is not None and same(destination):
+                remove(part)
+                return destination
             continue
         os.close(claim)
         try:
@@ -137,7 +143,7 @@ def place(part, folder, stem):
             remove(destination)
             raise
         return destination
-    raise PhotoError(os.path.join(folder, stem + ".tif"), "every name for it is taken")
+    raise PhotoError(os.path.join(folder, stem + suffix), "every name for it is taken")
 
 
 def remove(path):

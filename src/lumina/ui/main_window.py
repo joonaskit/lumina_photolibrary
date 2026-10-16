@@ -48,7 +48,8 @@ from lumina.ui.filters import FilterBar
 from lumina.ui.grid_size import NAMES as GRID_SIZE_NAMES
 from lumina.ui.grid_size import GridSizeSwitch
 from lumina.ui.image_view import ImageView
-from lumina.ui.job_status import JobStatus, merge_status
+from lumina.ui.import_dialog import ImportDialog
+from lumina.ui.job_status import JobStatus, import_status, merge_status
 from lumina.ui.merge_dialog import MergeDialog, PanoramaDialog
 from lumina.ui.preset_dialog import CopyDialog
 from lumina.ui.quick_view import QuickView
@@ -122,13 +123,15 @@ class _CellDelegate(QStyledItemDelegate):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, service, search=None, merge=None, parent=None):
+    def __init__(self, service, search=None, merge=None, importer=None, parent=None):
         """`search` is the SearchService; without one there is no search. `merge` is the
-        MergeService; without one there are no merges."""
+        MergeService; without one there are no merges. `importer` is the ImportService;
+        without one there is no importing."""
         super().__init__(parent)
         self.service = service
         self.search = search
         self.merge = merge
+        self.importer = importer
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(style.app_icon())
         self.resize(style.px(1280), style.px(820))
@@ -163,6 +166,8 @@ class MainWindow(QMainWindow):
         self.sidebar = Sidebar()
         self.sidebar.selected.connect(self._on_folder_selected)
         self.sidebar.add_requested.connect(self.choose_folder)
+        self.sidebar.import_requested.connect(self.import_photos)
+        self.sidebar.set_import_shown(importer is not None)
         self.sidebar.rescan_requested.connect(service.rescan)
         self.sidebar.rescan_all_requested.connect(service.rescan)
         self.sidebar.remove_requested.connect(self.remove_folder)
@@ -239,6 +244,12 @@ class MainWindow(QMainWindow):
         if merge is not None:
             self.merge_status.cancel_requested.connect(merge.cancel)
             merge.job_changed.connect(self.merge_status.show_status)
+        self.import_status = import_status()
+        self.statusBar().addPermanentWidget(self.import_status)
+        if importer is not None:
+            self.import_status.cancel_requested.connect(importer.cancel)
+            importer.job_changed.connect(self.import_status.show_status)
+            importer.card_arrived.connect(self._on_card_arrived)
         self.statusBar().setSizeGripEnabled(False)
 
         self.search_status = SearchStatus()
@@ -287,6 +298,11 @@ class MainWindow(QMainWindow):
         self.add_action.triggered.connect(self.choose_folder)
         # A key only: the button is the sidebar's, under the folders it adds to
         self.addAction(self.add_action)
+        self.import_action = QAction("Import Photos…", self)
+        self.import_action.setShortcut(QKeySequence("Ctrl+I"))
+        self.import_action.setToolTip("Copy photos from a memory card into the library (Ctrl+I)")
+        self.import_action.triggered.connect(lambda: self.import_photos())
+        self.addAction(self.import_action)
         self.preferences_action = QAction("Settings", self)
         self.preferences_action.setShortcut(QKeySequence("Ctrl+,"))
         self.preferences_action.setToolTip("Settings (Ctrl+,)")
@@ -533,6 +549,10 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.addStretch(1)
         row.addWidget(button)
+        if self.importer is not None:
+            importing = QPushButton("Import from a Card…")
+            importing.clicked.connect(lambda: self.import_photos())
+            row.addWidget(importing)
         row.addStretch(1)
         layout.addWidget(heading)
         layout.addSpacing(style.px(6))
@@ -669,6 +689,41 @@ class MainWindow(QMainWindow):
         settings.set_last_folder(os.path.dirname(os.path.realpath(path)))
         self.sidebar.select(folder)
         return folder
+
+    # Importing from a card
+
+    def import_photos(self, card=None):
+        """Ask what to import from a card (`card`, or the first one connected) and where
+        to, then queue the import. A folder chosen that is not in the library is added."""
+        if self.importer is None:
+            return
+        dialog = ImportDialog(self.importer, self.service.folders(), card, self)
+        accepted = dialog.exec() == ImportDialog.DialogCode.Accepted
+        dialog.deleteLater()
+        if not accepted:
+            return
+        destination = dialog.destination()
+        folder = self.service.folder_holding(destination)
+        if folder is None:
+            folder = self.add_folder(destination)
+            if folder is None:
+                return
+        try:
+            self.importer.import_photos(
+                dialog.chosen(),
+                destination,
+                dialog.layout_name(),
+                dialog.naming(),
+                dialog.backup(),
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "Cannot Import", str(error))
+            return
+        self.sidebar.select(folder)
+
+    def _on_card_arrived(self, path):
+        name = os.path.basename(path.rstrip("/")) or path
+        self.statusBar().showMessage(f"Memory card “{name}” connected: Ctrl+I to import", 15000)
 
     # Opening from outside: the file manager, or a second `lumina PATH`
 

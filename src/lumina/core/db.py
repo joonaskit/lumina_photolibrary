@@ -234,6 +234,37 @@ def _migrate_7(db):
     )
 
 
+def _migrate_8(db):
+    db.executescript(
+        """
+        -- The photos an import job copies (core/importing.py), one row each, so a quit
+        -- or a crash resumes where it was. Where it comes from (a volume, a card, and
+        -- the path from its root) and goes to (a folder by volume and path from the
+        -- root, the name wanted there, and a second folder for a backup copy, or NULL).
+        -- `state`: 0 to copy, 1 copied, 2 failed; `path` is where the copy was put.
+        -- The content ids of those copied are how a card is known to be imported before
+        CREATE TABLE import_items (
+            id INTEGER PRIMARY KEY,
+            job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            source_volume_id INTEGER NOT NULL REFERENCES volumes(id),
+            source_path TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            content_id TEXT,
+            volume_id INTEGER NOT NULL REFERENCES volumes(id),
+            folder TEXT NOT NULL,
+            name TEXT NOT NULL,
+            backup_volume_id INTEGER REFERENCES volumes(id),
+            backup_folder TEXT,
+            state INTEGER NOT NULL DEFAULT 0,
+            path TEXT,
+            message TEXT
+        );
+        CREATE INDEX import_items_job ON import_items (job_id, state);
+        CREATE INDEX import_items_content ON import_items (content_id, state);
+        """
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
 _MIGRATIONS = [
     _migrate_1,
@@ -243,6 +274,7 @@ _MIGRATIONS = [
     _migrate_5,
     _migrate_6,
     _migrate_7,
+    _migrate_8,
 ]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -297,6 +329,31 @@ class Job:
     failures: int
     # The derived photo a merge job makes, or None
     derived_id: int | None = None
+
+
+# An import item's `state`
+TO_COPY, COPIED, NOT_COPIED = 0, 1, 2
+
+
+@dataclass(frozen=True)
+class ImportItem:
+    """A photo to copy into the library: from where (a volume key and the path from its
+    root), to which folder (the same) under which name, and to a backup folder too, or
+    not (None)."""
+
+    source_key: str
+    source_path: str
+    size: int
+    content_id: str | None
+    key: str
+    folder: str
+    name: str
+    backup_key: str | None = None
+    backup_folder: str | None = None
+    # Set when read back from the database
+    id: int | None = None
+    state: int = TO_COPY
+    path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -405,6 +462,12 @@ class Library:
                 if folder.volume_key == key and folder.id != new and _inside(folder.path, path):
                     self.db.execute(
                         "UPDATE photos SET folder_id = ? WHERE folder_id = ?", (new, folder.id)
+                    )
+                    # Its scans are the new folder's scan; other jobs (a merge, an
+                    # import) still put their photos there, now in the new folder
+                    self.db.execute(
+                        "UPDATE jobs SET folder_id = ? WHERE folder_id = ? AND kind != 'scan'",
+                        (new, folder.id),
                     )
                     self.db.execute("DELETE FROM jobs WHERE folder_id = ?", (folder.id,))
                     self.db.execute("DELETE FROM folders WHERE id = ?", (folder.id,))
@@ -816,6 +879,84 @@ class Library:
             "SELECT id FROM jobs WHERE state IN (?, ?) ORDER BY id", UNFINISHED
         ).fetchall()
         return [self.job(row[0]) for row in rows]
+
+    # Imports
+
+    def add_import_job(self, folder_id, items):
+        """An import job that copies `items` (ImportItem, in order) into the library
+        folder `folder_id` (whose scan then finds them), queued: in one transaction.
+        Returns the job's id."""
+        now = time.time()
+        # Before the transaction: volume_id() commits one of its own
+        keys = {item.source_key for item in items} | {item.key for item in items}
+        keys |= {item.backup_key for item in items if item.backup_key}
+        ids = {key: self.volume_id(key) for key in keys}
+        with self.db:
+            job = self.db.execute(
+                "INSERT INTO jobs (kind, folder_id, state, total, created_at, updated_at) "
+                "VALUES ('import', ?, ?, ?, ?, ?)",
+                (folder_id, QUEUED, len(items), now, now),
+            ).lastrowid
+            self.db.executemany(
+                "INSERT INTO import_items (job_id, source_volume_id, source_path, size, "
+                "content_id, volume_id, folder, name, backup_volume_id, backup_folder) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        job,
+                        ids[item.source_key],
+                        item.source_path.strip("/"),
+                        item.size,
+                        item.content_id,
+                        ids[item.key],
+                        item.folder.strip("/"),
+                        item.name,
+                        ids.get(item.backup_key),
+                        item.backup_folder.strip("/") if item.backup_key else None,
+                    )
+                    for item in items
+                ],
+            )
+        return job
+
+    def import_items(self, job_id, state=None):
+        """The ImportItems of import job `job_id`, in order; only those in `state`, with one."""
+        where, args = ("AND i.state = ?", (job_id, state)) if state is not None else ("", (job_id,))
+        rows = self.db.execute(
+            "SELECT s.key, i.source_path, i.size, i.content_id, v.key, i.folder, i.name, "
+            "b.key, i.backup_folder, i.id, i.state, i.path FROM import_items i "
+            "JOIN volumes s ON s.id = i.source_volume_id JOIN volumes v ON v.id = i.volume_id "
+            f"LEFT JOIN volumes b ON b.id = i.backup_volume_id WHERE i.job_id = ? {where} "
+            "ORDER BY i.id",
+            args,
+        )
+        return [ImportItem(*row) for row in rows]
+
+    def set_import_item(self, item_id, state, path=None, message=None):
+        """An item copied (COPIED, to `path` from its volume's root) or not (NOT_COPIED,
+        with why)."""
+        with self.db:
+            self.db.execute(
+                "UPDATE import_items SET state = ?, path = ?, message = ? WHERE id = ?",
+                (state, path.strip("/") if path else None, message, item_id),
+            )
+
+    def imported(self, content_ids):
+        """Those of `content_ids` that are in the library or were imported before: a photo
+        imported and later removed from its folder is still not new."""
+        ids = [cid for cid in set(content_ids) if cid]
+        found = set()
+        for start in range(0, len(ids), 500):
+            part = ids[start : start + 500]
+            marks = ", ".join("?" * len(part))
+            rows = self.db.execute(
+                f"SELECT content_id FROM photos WHERE content_id IN ({marks}) "
+                f"UNION SELECT content_id FROM import_items WHERE content_id IN ({marks}) "
+                "AND state = ?",
+                (*part, *part, COPIED),
+            )
+            found.update(row[0] for row in rows)
+        return found
 
     # Derived photos
 

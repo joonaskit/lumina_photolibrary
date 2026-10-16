@@ -241,6 +241,12 @@ class LibraryService(QObject):
             return None, None
         return self.db.folder_holding(*where), self.db.photo_at(*where)
 
+    def folder_holding(self, path):
+        """The id of the library folder that is the folder at `path` or has it inside, or
+        None when no folder of the library does."""
+        where = volumes.locate(os.path.realpath(path), self.mounts)
+        return self.db.folder_holding(*where) if where is not None else None
+
     def photo_details(self, photo_id):
         """Everything the library knows of one photo, as a dict, or None."""
         return self.db.photo(photo_id)

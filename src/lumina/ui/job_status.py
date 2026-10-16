@@ -5,7 +5,7 @@ from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QToolButton, QWidget
 
 from lumina.integration import style
-from lumina.qt_models import library, merge
+from lumina.qt_models import importing, library, merge
 
 # How long the end of a job stays in the status bar
 _KEEP_MS = 10000
@@ -141,3 +141,25 @@ def describe_merge(status):
     if status.state == library.CANCELLED:
         return f"Stopped {doing.lower()} {name}{more}"
     return (status.message or f"Could not {verb} {name}") + more
+
+
+def import_status():
+    """A JobStatus for imports."""
+    return JobStatus(
+        words=describe_import, counted=(importing.COPYING,), cancel_tip="Stop importing"
+    )
+
+
+def describe_import(status):
+    """An ImportStatus in words, for the status bar."""
+    name = status.name
+    more = f"  ·  {status.queued} more waiting" if status.queued else ""
+    if status.state == library.QUEUED or (status.state == library.RUNNING and not status.phase):
+        return (status.message or f"Waiting to import into {name}") + more
+    if status.state == library.RUNNING:
+        return f"Importing into {name}: {status.done} of {status.total}{more}"
+    if status.state == library.CANCELLED:
+        return f"Stopped importing into {name}{more}"
+    if status.state == library.DONE:
+        return f"{status.message or 'Imported'} into {name}{more}"
+    return (status.message or f"Could not import into {name}") + more
