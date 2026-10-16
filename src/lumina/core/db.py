@@ -476,6 +476,26 @@ class Library:
         row = self.db.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
         return dict(row) if row is not None else None
 
+    def photo_at(self, key, path):
+        """The id of the photo at `path` (from the root) of volume `key`, or None."""
+        row = self.db.execute(
+            "SELECT p.id FROM photos p JOIN volumes v ON v.id = p.volume_id "
+            "WHERE v.key = ? AND p.path = ?",
+            (key, path.strip("/")),
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    def folder_holding(self, key, path):
+        """The id of the library folder that is `path` (from the root) of volume `key`,
+        or has it inside, the deepest of them; None when none does."""
+        path = path.strip("/")
+        found = [
+            folder
+            for folder in self.folders()
+            if folder.volume_key == key and (folder.path == path or _inside(path, folder.path))
+        ]
+        return max(found, key=lambda folder: len(folder.path)).id if found else None
+
     def choices(self, folder_id=None):
         """The years, cameras and lenses there are, to filter by: within a folder, or all."""
         where, args = ("WHERE folder_id = ?", (folder_id,)) if folder_id is not None else ("", ())

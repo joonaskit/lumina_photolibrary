@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from lumina import APP_ID
 from lumina.integration import style, theme
+from lumina.integration.single_instance import SingleInstance
 from lumina.integration.theme_watcher import ThemeWatcher
 from lumina.qt_models import workers
 from lumina.qt_models.library import LibraryService, NewerDatabase
@@ -31,7 +32,8 @@ def use_desktop_dialogs(environ=os.environ, platform=sys.platform):
         environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
 
 
-def run(folder=None):
+def run(paths=()):
+    """`paths`: folders to add and photos to open, from the command line or the file manager."""
     use_desktop_dialogs()
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP_ID)
@@ -47,6 +49,13 @@ def run(folder=None):
     collector.start()
     # Let Ctrl+C in a terminal end the app
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    # One Lumina per user: a running one is handed the paths, and this start ends before
+    # it opens the database a second time
+    instance = SingleInstance(parent=app)
+    if instance.forward(paths):
+        return 0
+    instance.listen()
 
     # The same look as filehouse: the shell's theme.json over the same defaults, followed
     # while the app runs
@@ -70,9 +79,15 @@ def run(folder=None):
     app.aboutToQuit.connect(workers.shutdown)
 
     window = MainWindow(service, search)
-    window.show()
+    instance.opened.connect(lambda wanted: _open(window, wanted))
     service.start()
     search.start()
-    if folder:
-        window.add_folder(folder)
+    _open(window, paths)
     return app.exec()
+
+
+def _open(window, paths):
+    """Show the paths asked for, or the window itself when nothing else shows."""
+    window.open_paths(paths)
+    if not paths or not (window.isVisible() or window.quick_views):
+        window.present()

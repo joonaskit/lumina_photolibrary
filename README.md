@@ -14,7 +14,7 @@ On Fedora, from a clone:
 ./install.sh
 ```
 
-It makes a venv with what the app needs, installs exiftool with dnf if it is missing, puts `lumina` in `~/.local/bin`, and adds Lumina with its icon to the app launcher. Run it again after pulling to update. Then start Lumina from the launcher, or `lumina [FOLDER]` from a terminal.
+It makes a venv with what the app needs, installs exiftool with dnf if it is missing, puts `lumina` in `~/.local/bin`, and adds Lumina with its icon to the app launcher. Run it again after pulling to update. Then start Lumina from the launcher, or `lumina [PATH...]` from a terminal.
 
 For development, the tests and the linter:
 

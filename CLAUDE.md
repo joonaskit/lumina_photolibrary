@@ -20,7 +20,7 @@ source .venv/bin/activate
 sudo dnf install perl-Image-ExifTool   # metadata; its tests skip without it
 pip install -e '.[dev]'     # PySide6-Essentials, rawpy, numpy, Pillow, opencv, onnxruntime, tokenizers
 
-lumina [FOLDER]             # run the app; without a folder it opens the last one
+lumina [PATH...]           # run the app, opening folders and photos; without one it opens the last folder
 ./install.sh                # lumina on PATH, launcher entry and icon (data/, icons/)
 ruff check . && ruff format --check .
 pytest                      # all tests

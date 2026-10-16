@@ -299,6 +299,12 @@ Display colour management (monitor ICC) and output profiles (sRGB, Display P3, A
 - **Crop** shows the whole photo: the zoom is put away and zoom is off while it is on, and comes back (as it was) on leaving. Escape: cancels the crop, then back to fitted, then out. Stepping to the next photo keeps the zoom; coming in from the grid starts fitted.
 - **Not yet**: a part while a control moves (it would take about as long as a proxy, a part of a view being a megapixel or two, and would show the detail steps live); a margin around the part, so a pan shows no scaled-up edge before the next part comes; the zoom in steps under 100 % renders from a copy that takes about a second to make.
 
+**Opening from the file manager (#43).** `lumina PATH...` takes folders and photos, as paths or `file://` URLs (`app.local_path`); the launcher entry has `Exec=lumina %F` and a `MimeType=` of the types the library reads (a test keeps them in step with `images.PHOTO_EXTENSIONS`).
+- **One instance per user** (`integration/single_instance.py`): a local socket named for the user. A second `lumina [PATH...]` hands its paths to the running one as a line of JSON and ends before it opens the database; with no paths the running window comes forward. A socket left by a crash is taken over.
+- **A photo of a library folder** opens in the viewer (`MainWindow.open_photo`); if the folder is being scanned just now, it opens as the grid gets the photo. A folder is added and shown.
+- **A photo outside the library: ask once** (decision for #43, options (a) of the issue). It opens in a window of its own (`ui/quick_view.py`, zoomable, nothing kept for it: no flags, rating or edit) with "Add folder to library" and "Not now". The library is not changed unless the user says yes; then the folder is added, scanned, and the photo opens in the viewer. With only such windows open the main window stays hidden.
+- **Not yet**: "Show in folder" from the grid (`org.freedesktop.FileManager1`), and the AppImage's own desktop file (#37).
+
 ## Risks
 
 - Python render speed on 24–45 MP images: mitigated by proxy rendering and cached stages, GPU shader as fallback.

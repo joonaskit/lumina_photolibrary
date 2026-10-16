@@ -50,3 +50,47 @@ def test_the_icon_draws_at_the_smallest_size(qapp):
 
     # The tile fills the middle: not an empty or broken drawing
     assert image.pixelColor(8, 8).alpha() == 255
+
+
+def test_the_launcher_takes_files_and_names_the_types_the_library_reads():
+    from lumina.core import images
+
+    desktop = entry()
+
+    # %F: the file manager's selection, as paths
+    assert "%F" in desktop["Exec"].split() or "%U" in desktop["Exec"].split()
+    types = [t for t in desktop["MimeType"].split(";") if t]
+    assert len(types) == len(set(types))
+    mimes = mimetypes_by_extension()
+    # Every type is one of an extension the library reads
+    for mime in types:
+        assert {ext for ext, name in mimes.items() if name == mime} & images.PHOTO_EXTENSIONS, mime
+    # ... and every extension the library reads has its type listed
+    for extension in images.PHOTO_EXTENSIONS:
+        assert mimes[extension] in types, extension
+
+
+def mimetypes_by_extension():
+    """Extension -> shared-mime-info type, for what the library reads. Written out: the
+    system's database differs between machines (and has none in the CI container)."""
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".tif": "image/tiff",
+        ".tiff": "image/tiff",
+        ".webp": "image/webp",
+        ".heic": "image/heic",
+        ".heif": "image/heif",
+        ".dng": "image/x-adobe-dng",
+        ".cr2": "image/x-canon-cr2",
+        ".cr3": "image/x-canon-cr3",
+        ".crw": "image/x-canon-crw",
+        ".raf": "image/x-fuji-raf",
+        ".nef": "image/x-nikon-nef",
+        ".nrw": "image/x-nikon-nrw",
+        ".orf": "image/x-olympus-orf",
+        ".rw2": "image/x-panasonic-rw2",
+        ".pef": "image/x-pentax-pef",
+        ".arw": "image/x-sony-arw",
+    }
