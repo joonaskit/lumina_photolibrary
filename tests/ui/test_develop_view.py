@@ -20,7 +20,7 @@ from lumina.qt_models.develop import (
     Vignette,
     Wheel,
 )
-from lumina.ui import develop_view
+from lumina.ui import develop_view, settings
 from lumina.ui.controls import ValueSlider
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.export_dialog import ExportDialog
@@ -941,3 +941,74 @@ def test_a_saved_preset_can_keep_sharpening_and_noise_reduction(qtbot, window, m
 
     assert window.session.params == look
     settled(qtbot, window)
+
+
+# The sections of the panel: order, hidden, folded
+
+
+def panel_order(view):
+    root = view._panel.layout()
+    names = {id(section): name for name, section in view._sections.items()}
+    return [
+        names[id(w)]
+        for w in map(lambda i: root.itemAt(i).widget(), range(root.count()))
+        if w and id(w) in names
+    ]
+
+
+def test_the_panel_follows_the_stored_order_and_hidden_sections(qtbot, window):
+    view = window.develop
+    assert tuple(panel_order(view)) == develop_view.SECTION_NAMES
+
+    settings.set_develop_order(["matte", "light", "bogus"])
+    settings.set_hidden_sections(["hsl"])
+    view.arrange()
+    order = panel_order(view)
+    # Unknown names go, the ones left out come back at their place in the default order
+    # A section left out follows the one before it in the default order
+    assert order[:3] == ["matte", "effects", "crop"]
+    assert order.index("presence") == order.index("light") + 1
+    assert "bogus" not in order and len(order) == len(develop_view.SECTION_NAMES)
+    assert view._sections["hsl"].isHidden()
+    assert not view._sections["light"].isHidden()
+
+    settings.reset_develop_panel()
+    view.arrange()
+    assert tuple(panel_order(view)) == develop_view.SECTION_NAMES
+    assert not view._sections["hsl"].isHidden()
+
+
+def test_a_hidden_section_keeps_its_values_in_the_edit(qtbot, window):
+    open_editor(qtbot, window)
+    view = window.develop
+    settings.set_hidden_sections(["light"])
+    view.arrange()
+    window.session.commit(window.session.params.with_changes(exposure=1.5))
+    assert view._sections["light"].isHidden()
+    assert window.session.params.exposure == 1.5
+    assert view.exposure.value() == 1.5
+
+
+def test_a_section_folds_and_the_fold_is_remembered(qtbot, window):
+    view = window.develop
+    section = view._sections["matte"]
+    section.header.click()
+    assert section.collapsed and section.content.isHidden()
+    assert settings.collapsed_sections() == {"matte"}
+    section.header.click()
+    assert not section.collapsed
+    assert settings.collapsed_sections() == set()
+
+    settings.set_collapsed_sections(["effects", "hsl"])
+    view.arrange()
+    assert view._sections["effects"].collapsed and view._sections["hsl"].collapsed
+    assert not view._sections["matte"].collapsed
+    # Applying what is stored does not rewrite it
+    assert settings.collapsed_sections() == {"effects", "hsl"}
+
+
+def test_merged_order_puts_a_new_section_at_its_place():
+    default = ("a", "b", "c", "d")
+    assert settings.merged_order(["d", "a", "c", "x"], default) == ["d", "a", "b", "c"]
+    assert settings.merged_order([], default) == list(default)
+    assert settings.merged_order(["c", "a", "a"], default) == ["c", "d", "a", "b"]

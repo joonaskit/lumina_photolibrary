@@ -554,10 +554,11 @@ def _stylesheet():
         #sidebar QListWidget::item:selected {{
             background: {selected}; color: {colors["textPrimary"]};
         }}
-        #heading {{
+        #heading, #sectionHeader {{
             color: {colors["textSecondary"]}; font-size: {small_font}px; font-weight: 600;
             padding: {gap(4)}px {gap(8)}px;
         }}
+        #sectionHeader {{ text-align: left; }}
 
         /* The arrow sits inside the rounded box, in the padding, not in a square
            button of the platform style's own */

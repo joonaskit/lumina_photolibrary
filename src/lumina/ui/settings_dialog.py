@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from lumina.integration import style
 from lumina.ui import settings
+from lumina.ui.develop_view import SECTION_NAMES, SECTIONS
 
 _DENSITIES = (("comfortable", "Comfortable"), ("compact", "Compact"))
 # After the limit was last changed, so that spinning it down does not delete on the way
@@ -73,6 +76,35 @@ class SettingsDialog(QDialog):
             self._note(
                 "In the viewer, after a thumbs up or down or a rating; not after clearing "
                 "one, and never in the Develop view."
+            )
+        )
+
+        self.sections = QListWidget()
+        self.sections.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.sections.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.sections.setFixedHeight(style.px(180))
+        self._fill_sections()
+        self.sections.itemChanged.connect(self._save_sections)
+        self.sections.model().rowsMoved.connect(self._save_sections)
+        self.move_up = QPushButton("Up")
+        self.move_up.clicked.connect(lambda: self._move_section(-1))
+        self.move_down = QPushButton("Down")
+        self.move_down.clicked.connect(lambda: self._move_section(1))
+        self.reset_sections = QPushButton("Default Order")
+        self.reset_sections.clicked.connect(self._reset_sections)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.move_up)
+        buttons.addWidget(self.move_down)
+        buttons.addStretch(1)
+        buttons.addWidget(self.reset_sections)
+        layout.addWidget(self._heading("Develop panel"))
+        layout.addWidget(self.sections)
+        layout.addLayout(buttons)
+        layout.addWidget(
+            self._note(
+                "Drag the sections, or use Up and Down, to put them in your order; untick "
+                "one to leave it off the panel. A section left off keeps its values: it is "
+                "still part of the edit, of presets, and of copied settings."
             )
         )
 
@@ -150,6 +182,47 @@ class SettingsDialog(QDialog):
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.reject)
         layout.addWidget(close)
+
+    def _fill_sections(self):
+        titles = dict(SECTIONS)
+        hidden = settings.hidden_sections()
+        self.sections.blockSignals(True)
+        self.sections.clear()
+        for name in settings.develop_order(SECTION_NAMES):
+            item = QListWidgetItem(titles[name].capitalize())
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            item.setFlags(
+                (item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsDropEnabled
+            )
+            item.setCheckState(Qt.CheckState.Unchecked if name in hidden else Qt.CheckState.Checked)
+            self.sections.addItem(item)
+        self.sections.blockSignals(False)
+
+    def _save_sections(self, *_args):
+        items = [self.sections.item(row) for row in range(self.sections.count())]
+        names = [item.data(Qt.ItemDataRole.UserRole) for item in items]
+        settings.set_develop_order(names)
+        settings.set_hidden_sections(
+            [
+                item.data(Qt.ItemDataRole.UserRole)
+                for item in items
+                if item.checkState() != Qt.CheckState.Checked
+            ]
+        )
+
+    def _move_section(self, step):
+        row = self.sections.currentRow()
+        target = row + step
+        if row < 0 or not 0 <= target < self.sections.count():
+            return
+        item = self.sections.takeItem(row)
+        self.sections.insertItem(target, item)
+        self.sections.setCurrentRow(target)
+        self._save_sections()
+
+    def _reset_sections(self):
+        settings.reset_develop_panel()
+        self._fill_sections()
 
     def _heading(self, text):
         label = QLabel(text)

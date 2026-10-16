@@ -152,3 +152,58 @@ def advance_after_flag():
 
 def set_advance_after_flag(on):
     _settings().setValue("viewer/advance_after_flag", bool(on))
+
+
+def merged_order(stored, default):
+    """The order of the Develop panel's sections: `stored` (names, in the user's order)
+    without those that are no more, and a section that is new at its place in
+    `default`: after the one before it there."""
+    order = []
+    for name in stored:
+        if name in default and name not in order:
+            order.append(name)
+    for index, name in enumerate(default):
+        if name in order:
+            continue
+        before = next((n for n in reversed(default[:index]) if n in order), None)
+        order.insert(0 if before is None else order.index(before) + 1, name)
+    return order
+
+
+def _names(key):
+    value = _settings().value(key)
+    return [name for name in value.split(",") if name] if isinstance(value, str) else []
+
+
+def develop_order(default):
+    """The Develop panel's sections (`default` is their names in the default order) in
+    the order the user chose."""
+    return merged_order(_names("develop/section_order"), tuple(default))
+
+
+def set_develop_order(order):
+    _settings().setValue("develop/section_order", ",".join(order))
+
+
+def hidden_sections():
+    """The names of the Develop panel's sections the user hid; they stay in the edit."""
+    return set(_names("develop/hidden_sections"))
+
+
+def set_hidden_sections(names):
+    _settings().setValue("develop/hidden_sections", ",".join(sorted(names)))
+
+
+def collapsed_sections():
+    """The names of the Develop panel's sections folded on the panel."""
+    return set(_names("develop/collapsed_sections"))
+
+
+def set_collapsed_sections(names):
+    _settings().setValue("develop/collapsed_sections", ",".join(sorted(names)))
+
+
+def reset_develop_panel():
+    """Back to the default order with every section shown (folding is kept)."""
+    _settings().remove("develop/section_order")
+    _settings().remove("develop/hidden_sections")

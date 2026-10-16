@@ -605,6 +605,7 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.search, self.service, self)
         dialog.exec()
         dialog.deleteLater()
+        self.develop.arrange()
 
     # Folders
 
