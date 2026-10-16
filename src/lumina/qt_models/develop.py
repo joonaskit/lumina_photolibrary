@@ -47,6 +47,7 @@ Grain = _params.Grain
 Grading = _params.Grading
 Curves = _params.Curves
 Matte = _params.Matte
+Perspective = _params.Perspective
 Crop = _params.Crop
 Lens = _params.Lens
 LENS = _params.LENS

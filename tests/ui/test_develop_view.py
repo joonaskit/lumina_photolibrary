@@ -15,6 +15,7 @@ from lumina.qt_models.develop import (
     Hsl,
     NoiseReduction,
     Params,
+    Perspective,
     Presence,
     Sharpening,
     Vignette,
