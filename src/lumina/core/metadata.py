@@ -304,6 +304,17 @@ def _metadata(entry):
     )
 
 
+def damage_warning(data):
+    """exiftool's warning when it says the raw data of the photo `data` (a Metadata) may
+    be damaged, or None. In a CR3 copied badly from the card the CTMD record is cut
+    short ("Truncated CTMD record", "Short CTMD record"); the camera's JPEG preview,
+    stored apart, still looks fine. Not proof: the Develop view checks the raw data."""
+    warning = data.warning
+    if data.file_type == "CR3" and warning and "CTMD" in warning:
+        return warning
+    return None
+
+
 def _captured(entry):
     for name in ("SubSecDateTimeOriginal", "DateTimeOriginal", "CreateDate"):
         moment = parse_date(entry.get(name), entry.get("OffsetTimeOriginal"))

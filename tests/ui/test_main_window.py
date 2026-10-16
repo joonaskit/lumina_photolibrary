@@ -3,7 +3,9 @@ from fakes import FakeExifTool
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QMessageBox, QToolButton
+from rawfiles import make_dng
 
+from lumina.qt_models.library_model import DAMAGE_ROLE
 from lumina.ui import settings
 from lumina.ui.main_window import MainWindow, describe_photo
 
@@ -123,6 +125,31 @@ def test_photos_on_an_unplugged_drive_keep_their_thumbnails(qtbot, service, driv
     assert "not connected" in folder_item.toolTip()
     window.show_photo(0)
     assert "(not connected)" in window.status.text()
+
+
+def test_a_photo_exiftool_warns_of_damage_in_is_marked_in_the_grid(qtbot, service, drive):
+    make_dng(drive / "Photos" / "d.cr3", preview="jpeg", preview_size=(240, 160))
+    FakeExifTool.warnings = {"d.cr3": "Truncated CTMD record"}
+    window = open_window(qtbot, service)
+    add_and_wait(qtbot, window, drive / "Photos")
+    names = [window.model.name(row) for row in range(window.model.rowCount())]
+    damaged, fine = names.index("d.cr3"), names.index("a.jpg")
+
+    def data(row, role):
+        return window.model.data(window.model.index(row), role)
+
+    assert "Truncated CTMD record" in data(damaged, DAMAGE_ROLE)
+    assert "may be damaged" in data(damaged, Qt.ItemDataRole.ToolTipRole)
+    assert data(fine, DAMAGE_ROLE) is None
+    assert "damaged" not in data(fine, Qt.ItemDataRole.ToolTipRole)
+    # The badge is drawn without trouble
+    ask_for_thumbnails(window)
+    qtbot.waitUntil(lambda: window.model.thumbnail_pixmap(damaged) is not None, timeout=TIMEOUT)
+    assert not window.grid.grab().isNull()
+    window.show_photo(damaged)
+    assert "Raw data may be damaged" in window.status.text()
+    window.show_photo(fine)
+    assert "damaged" not in window.status.text()
 
 
 def test_removing_a_folder_asks_first(qtbot, service, drive, monkeypatch):

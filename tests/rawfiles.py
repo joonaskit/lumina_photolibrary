@@ -71,10 +71,10 @@ def _camera_tags(orientation):
     ]
 
 
-def _raw_entries(tiff, subfile_type):
+def _raw_entries(tiff, subfile_type, black, level):
     width, height = RAW_SIZE
     # A flat grey mosaic is enough: the tests look at sizes and the preview's colours
-    data = struct.pack(f"<{width * height}H", *([1500] * (width * height)))
+    data = struct.pack(f"<{width * height}H", *([level] * (width * height)))
     return [
         (254, _LONG, [subfile_type]),
         (256, _LONG, [width]),
@@ -89,7 +89,7 @@ def _raw_entries(tiff, subfile_type):
         (284, _SHORT, [1]),
         (33421, _SHORT, [2, 2]),
         (33422, _BYTE, [0, 1, 1, 2]),
-        (50714, _LONG, [0]),
+        (50714, _LONG, [black]),
         (50717, _LONG, [4095]),
     ]
 
@@ -101,15 +101,17 @@ def preview_image(size):
     return image
 
 
-def make_dng(path, preview=None, orientation=1, preview_size=(96, 64)):
+def make_dng(path, preview=None, orientation=1, preview_size=(96, 64), black=0, level=1500):
     """A DNG at `path`. `preview` is None, "jpeg" or "bitmap": with one, IFD 0 is the
-    preview and the raw image is its sub-IFD, as cameras and converters write them."""
+    preview and the raw image is its sub-IFD, as cameras and converters write them.
+    The raw values are all `level` over a black level of `black`; a `level` far under
+    `black` is what damaged raw data looks like."""
     tiff = _Tiff()
     if preview is None:
-        first = tiff.ifd(_raw_entries(tiff, 0) + _camera_tags(orientation))
+        first = tiff.ifd(_raw_entries(tiff, 0, black, level) + _camera_tags(orientation))
         path.write_bytes(tiff.finish(first))
         return path
-    raw_ifd = tiff.ifd(_raw_entries(tiff, 0))
+    raw_ifd = tiff.ifd(_raw_entries(tiff, 0, black, level))
     image = preview_image(preview_size)
     if preview == "jpeg":
         out = io.BytesIO()

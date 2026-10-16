@@ -97,7 +97,7 @@ def test_the_model_finds_a_colour_in_english_and_finnish(colours, query, colour)
 
     blobs = embed.encode_files(folder, list(colours.values()))
     vectors = embed.from_blobs(blobs)
-    text = embed._encoder.texts([query])[0]
+    text = embed.encode_texts(folder, [query])[0]
 
     assert list(colours)[int(np.argmax(vectors @ text))] == colour
     assert np.allclose(np.linalg.norm(vectors, axis=1), 1, atol=1e-2)

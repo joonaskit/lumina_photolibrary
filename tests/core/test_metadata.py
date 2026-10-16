@@ -33,6 +33,18 @@ def test_no_date_or_an_unset_clock_is_none(value):
     assert parse_date(value) is None
 
 
+def test_a_cut_short_ctmd_record_in_a_cr3_says_the_raw_data_may_be_damaged():
+    def warning(file_type, text):
+        return metadata.damage_warning(metadata.Metadata(file_type=file_type, warning=text))
+
+    assert warning("CR3", "Truncated CTMD record") == "Truncated CTMD record"
+    assert warning("CR3", "Short CTMD record") == "Short CTMD record"
+    # Other warnings, other files and none say nothing of the raw data
+    assert warning("CR3", "Bad MakerNotes offset") is None
+    assert warning("JPEG", "Truncated CTMD record") is None
+    assert warning("CR3", None) is None
+
+
 def test_a_missing_exiftool_is_reported(monkeypatch):
     monkeypatch.setattr(metadata.shutil, "which", lambda _name: None)
 

@@ -178,6 +178,46 @@ def test_a_library_from_schema_1_is_brought_up_to_date_with_its_data(tmp_path, m
         assert photo.flag == dbm.UNFLAGGED
 
 
+def test_a_library_from_schema_5_reads_its_cr3s_again_to_find_damage(tmp_path, monkeypatch):
+    path = tmp_path / "library.sqlite3"
+    monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:5])
+    monkeypatch.setattr(dbm, "SCHEMA_VERSION", 5)
+    with Library(path) as old:
+        volume = old.volume_id("uuid:A")
+        folder = old.add_folder("uuid:A", "p")
+        ids = add_photos(old, folder, volume, ["p/a.cr3", "p/b.jpg", "p/c.cr3"])
+        # As schema 5 wrote details: a CR3 and a JPEG read, a CR3 that failed
+        with old.db:
+            old.db.executemany(
+                "UPDATE photos SET metadata_state = ?, file_type = ?, model = ? WHERE id = ?",
+                [
+                    (1, "CR3", "Canon EOS 90D", ids["p/a.cr3"]),
+                    (1, "JPEG", None, ids["p/b.jpg"]),
+                    (2, None, None, ids["p/c.cr3"]),
+                ],
+            )
+    monkeypatch.undo()
+
+    with Library(path) as library:
+        # Only the CR3 read before is read again; what was known of it stays meanwhile
+        assert library.pending_metadata(folder, 10) == [(ids["p/a.cr3"], "p/a.cr3")]
+        assert library.photo(ids["p/a.cr3"])["model"] == "Canon EOS 90D"
+        assert all(photo.damage_warning is None for photo in library.photos())
+
+
+def test_a_warning_of_damage_is_kept_and_goes_when_the_file_reads_clean(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    photo = add_photos(library, folder, volume, ["p/a.cr3"])["p/a.cr3"]
+
+    damaged = Metadata(file_type="CR3", warning="Truncated CTMD record")
+    library.write_metadata(read=[(photo, "1", damaged)])
+    assert library.photos()[0].damage_warning == "Truncated CTMD record"
+
+    library.write_metadata(read=[(photo, "2", Metadata(file_type="CR3"))])
+    assert library.photos()[0].damage_warning is None
+
+
 def test_edits_and_virtual_copies(library):
     volume = library.volume_id("uuid:A")
     folder = library.add_folder("uuid:A", "p")

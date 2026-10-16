@@ -73,6 +73,22 @@ def test_a_first_scan_finds_the_photos_and_reads_their_details(library, drive):
     assert job.message == "3 photos, 3 new"
 
 
+def test_a_cr3_exiftool_warns_of_damage_in_is_marked_and_left_as_it_was(library, drive):
+    path = drive / "Photos" / "d.cr3"
+    path.write_bytes(b"not really a CR3")
+    FakeExifTool.warnings["d.cr3"] = "Truncated CTMD record"
+    folder = add(library, drive)
+
+    state, job = run(library, folder, mounted(drive))
+
+    # Not an error: the photo is listed, with what exiftool said
+    assert state == dbm.DONE and job.failures == 0
+    warnings = {p.path: p.damage_warning for p in library.photos()}
+    assert warnings["Photos/d.cr3"] == "Truncated CTMD record"
+    assert warnings["Photos/a.jpg"] is None
+    assert path.read_bytes() == b"not really a CR3"
+
+
 def test_unchanged_photos_are_not_read_again(library, drive):
     folder = add(library, drive)
     run(library, folder, mounted(drive))

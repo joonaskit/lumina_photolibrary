@@ -37,6 +37,8 @@ FLAG_ROLE = Qt.ItemDataRole.UserRole + 3
 DIMMED_ROLE = Qt.ItemDataRole.UserRole + 4
 # The photo's stars, 0 to 5
 RATING_ROLE = Qt.ItemDataRole.UserRole + 5
+# What is known of damage to the photo's raw data, as a sentence, or None
+DAMAGE_ROLE = Qt.ItemDataRole.UserRole + 6
 
 # What becomes of thumbs-down photos when no flag filter is chosen
 SHOW, DIM, HIDE = "show", "dim", "hide"
@@ -363,6 +365,10 @@ class LibraryModel(QAbstractListModel):
     def rating(self, row):
         return self._rows[row].rating
 
+    def damage(self, row):
+        """What is known of damage to the raw data of `row`'s photo, or None."""
+        return damage_text(self._rows[row].damage_warning)
+
     def toggle_flag(self, rows, flag):
         """Give the photos of `rows` `flag`; when they all have it already, clear it, as
         pressing the key again does. Returns the flag given, or None for no change."""
@@ -470,6 +476,8 @@ class LibraryModel(QAbstractListModel):
             return photo.flag
         if role == RATING_ROLE:
             return photo.rating
+        if role == DAMAGE_ROLE:
+            return damage_text(photo.damage_warning)
         if role == DIMMED_ROLE:
             return photo.flag == REJECTED and self.rejected != SHOW and self.flag_filter != REJECTED
         path = self.path(index.row())
@@ -477,9 +485,11 @@ class LibraryModel(QAbstractListModel):
             return self.thumbnails.icon(self._key(photo), path, photo.content_id, photo.edit)
         if role == Qt.ItemDataRole.ToolTipRole:
             if path is None:
-                return f"{photo.path}\nOn a drive that is not connected"
-            error = self.thumbnails.error(self._key(photo))
-            return f"{path}\n{error}" if error else path
+                lines = [photo.path, "On a drive that is not connected"]
+            else:
+                lines = [path, self.thumbnails.error(self._key(photo))]
+            lines.append(damage_text(photo.damage_warning))
+            return "\n".join(line for line in lines if line)
         if role == PATH_ROLE:
             return path
         return None
@@ -548,3 +558,14 @@ def _runs(numbers):
 def _query(path, shown):
     with dbm.Library(path) as library:
         return library.photos(shown)
+
+
+def damage_text(warning):
+    """What the grid's tooltip and the status bar say of exiftool's `warning` that the
+    raw data may be damaged; None without one."""
+    if not warning:
+        return None
+    return (
+        f"The raw data may be damaged (exiftool: {warning}). The thumbnail is the "
+        "camera's JPEG preview, which is stored apart; copy the file from the card again."
+    )

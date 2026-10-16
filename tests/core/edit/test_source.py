@@ -35,6 +35,17 @@ def test_a_raw_file_is_decoded_in_full_and_upright(tmp_path):
     assert turned.shape[:2] == (width, height)
 
 
+def test_damaged_raw_data_is_an_error_naming_the_file(tmp_path):
+    # Values 900 under the black level: no exposure makes those
+    for preview in (None, "jpeg"):
+        path = make_dng(tmp_path / f"{preview}.dng", preview=preview, black=1000, level=100)
+        with pytest.raises(PhotoError, match="damaged") as error:
+            source.load_linear(path)
+        assert error.value.path == str(path)
+    # The same black level with healthy values decodes
+    assert source.load_linear(make_dng(tmp_path / "ok.dng", black=1000, level=1500)).size
+
+
 def test_a_broken_file_is_an_error_naming_it(tmp_path):
     for name in ("broken.jpg", "broken.CR3"):
         path = tmp_path / name
