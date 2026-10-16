@@ -239,3 +239,28 @@ def panorama_crop():
 def set_panorama_choices(projection, crop):
     _settings().setValue("panorama/projection", projection)
     _settings().setValue("panorama/crop", bool(crop))
+
+
+def import_choices():
+    """What the last import was asked for: {"destination": a folder or "", "layout",
+    "naming", "backup": a folder or "", "backup_on": bool}. By year and day, names as
+    on the card, no backup at first."""
+    stored = _settings()
+    layout = stored.value("import/layout")
+    naming = stored.value("import/naming")
+    return {
+        "destination": stored.value("import/destination", "") or "",
+        "layout": layout if layout in ("year-day", "year-month", "day", "none") else "year-day",
+        "naming": naming if naming in ("original", "date") else "original",
+        "backup": stored.value("import/backup", "") or "",
+        "backup_on": stored.value("import/backup_on", False) in (True, "true"),
+    }
+
+
+def set_import_choices(destination, layout, naming, backup, backup_on):
+    stored = _settings()
+    stored.setValue("import/destination", destination)
+    stored.setValue("import/layout", layout)
+    stored.setValue("import/naming", naming)
+    stored.setValue("import/backup", backup or "")
+    stored.setValue("import/backup_on", bool(backup_on))

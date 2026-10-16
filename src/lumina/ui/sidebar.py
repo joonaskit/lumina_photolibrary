@@ -23,6 +23,7 @@ class Sidebar(QFrame):
     # The folder id chosen, or None for all photos
     selected = Signal(object)
     add_requested = Signal()
+    import_requested = Signal()
     rescan_requested = Signal(int)
     rescan_all_requested = Signal()
     remove_requested = Signal(int)
@@ -50,6 +51,15 @@ class Sidebar(QFrame):
         self.add_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.add_button.setIconSize(QSize(style.px(18), style.px(18)))
         layout.addWidget(self.add_button)
+        self.import_action = QAction("Import…", self)
+        self.import_action.setToolTip("Copy photos from a memory card into the library (Ctrl+I)")
+        self.import_action.triggered.connect(self.import_requested)
+        self.import_button = QToolButton()
+        self.import_button.setDefaultAction(self.import_action)
+        self.import_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.import_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.import_button.setIconSize(QSize(style.px(18), style.px(18)))
+        layout.addWidget(self.import_button)
         style.follow_density(self, lambda: self._fit(layout))
         self._folders = []
         self._draw_icons()
@@ -81,6 +91,9 @@ class Sidebar(QFrame):
         self.list.setCurrentItem(current)
         self.list.blockSignals(False)
 
+    def set_import_shown(self, shown):
+        self.import_button.setVisible(shown)
+
     def current_folder(self):
         item = self.list.currentItem()
         return item.data(FOLDER_ROLE) if item is not None else None
@@ -111,6 +124,7 @@ class Sidebar(QFrame):
     def _fit(self, layout):
         layout.setSpacing(style.gap(4))
         self.add_button.setFixedHeight(style.row_height())
+        self.import_button.setFixedHeight(style.row_height())
 
     def _draw_icons(self):
         connected = {f.id: f.connected for f in self._folders}
@@ -124,3 +138,4 @@ class Sidebar(QFrame):
             else:
                 item.setIcon(style.icon("drive-removable-media", "folder", colour="textSecondary"))
         self.add_action.setIcon(style.icon("list-add", "folder-new"))
+        self.import_action.setIcon(style.icon("document-import", "media-flash", "camera-photo"))

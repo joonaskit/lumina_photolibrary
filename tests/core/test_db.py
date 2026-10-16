@@ -250,6 +250,81 @@ def test_a_library_from_schema_6_gets_derived_photos_and_keeps_its_jobs(tmp_path
         assert library.derived(library.job(job).derived_id).sources[0].path == "p/a.cr3"
 
 
+def an_import(library, folder, **item):
+    fields = dict(
+        source_key="uuid:CARD",
+        source_path="DCIM/100CANON/IMG_0001.CR3",
+        size=10,
+        content_id="cid-1",
+        key="uuid:A",
+        folder="p/2026",
+        name="IMG_0001.CR3",
+    )
+    return library.add_import_job(folder, [dbm.ImportItem(**(fields | item))])
+
+
+def test_an_import_job_keeps_its_photos_to_copy_in_order(library):
+    folder = library.add_folder("uuid:A", "p")
+
+    job = an_import(library, folder, backup_key="uuid:B", backup_folder="/copies/2026/")
+
+    record = library.job(job)
+    assert (record.kind, record.state, record.total, record.folder_id) == (
+        "import",
+        dbm.QUEUED,
+        1,
+        folder,
+    )
+    [item] = library.import_items(job)
+    assert (item.source_key, item.source_path, item.key, item.folder, item.name) == (
+        "uuid:CARD",
+        "DCIM/100CANON/IMG_0001.CR3",
+        "uuid:A",
+        "p/2026",
+        "IMG_0001.CR3",
+    )
+    assert (item.backup_key, item.backup_folder, item.state) == ("uuid:B", "copies/2026", 0)
+    library.set_import_item(item.id, dbm.COPIED, path="/p/2026/IMG_0001.CR3")
+    assert library.import_items(job, dbm.TO_COPY) == []
+    assert library.import_items(job)[0].path == "p/2026/IMG_0001.CR3"
+
+
+def test_a_photo_is_imported_once_copied_or_in_the_library(library):
+    folder = library.add_folder("uuid:A", "p")
+    job = an_import(library, folder)
+    assert library.imported(["cid-1", "cid-2", None]) == set()
+
+    library.set_import_item(library.import_items(job)[0].id, dbm.COPIED, path="p/a.cr3")
+    ids = add_photos(library, folder, library.volume_id("uuid:A"), ["p/b.jpg"])
+    library.write_metadata(read=[(ids["p/b.jpg"], "cid-2", Metadata())])
+
+    assert library.imported(["cid-1", "cid-2", "cid-3"]) == {"cid-1", "cid-2"}
+
+
+def test_a_folder_around_another_takes_its_import_and_drops_its_scan(library):
+    inner = library.add_folder("uuid:A", "p/2026")
+    library.add_job("scan", inner)
+    job = an_import(library, inner)
+
+    outer = library.add_folder("uuid:A", "p")
+
+    assert [(j.kind, j.folder_id) for j in library.unfinished_jobs()] == [("import", outer)]
+    assert len(library.import_items(job)) == 1
+
+
+def test_a_library_from_schema_7_gets_imports(tmp_path, monkeypatch):
+    path = tmp_path / "library.sqlite3"
+    monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:7])
+    monkeypatch.setattr(dbm, "SCHEMA_VERSION", 7)
+    with Library(path) as old:
+        folder = old.add_folder("uuid:A", "p")
+    monkeypatch.undo()
+
+    with Library(path) as library:
+        job = an_import(library, folder)
+        assert library.import_items(job)[0].name == "IMG_0001.CR3"
+
+
 def test_a_warning_of_damage_is_kept_and_goes_when_the_file_reads_clean(library):
     volume = library.volume_id("uuid:A")
     folder = library.add_folder("uuid:A", "p")
