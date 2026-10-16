@@ -3,12 +3,16 @@
 The image comes in as linear light in sRGB primaries (16-bit integers, or floats
 in [0, 1]) and every step works on linear floats until the output encoding:
 
-1. Geometry: quarter turns, mirroring, straightening and crop. Done first, as every
-   later step treats each pixel on its own: cropping first gives the same result for
-   less work. Straightening turns the photo about its centre and scales it just
-   enough to fill the frame, so no empty corners show; the crop is then taken of
-   that, and only the pixels inside it are sampled.
-2. White balance and exposure: one gain per channel.
+1. Geometry: quarter turns, mirroring, the lens corrections, straightening and crop. Done
+   first, as every later step treats each pixel on its own: cropping first gives the same
+   result for less work. Straightening turns the photo about its centre and scales it just
+   enough to fill the frame, so no empty corners show; the crop is then taken of that, and
+   only the pixels inside it are sampled. The lens's distortion and chromatic aberration
+   are a resampling with the straightening (one pass), its vignetting a gain on the
+   samples (see lenscorrect.py).
+2. Colour, white balance and exposure: for a RAW file (`camera`), the camera's colours
+   through the edit's profile (colour_profile.py) with the white balance and exposure
+   folded into its matrix; for a photo in sRGB, one gain per channel.
 3. Tone: the Basic controls, the curves and the matte. They act on sRGB-encoded
    values, where curves feel as they do in other editors; the whole step, encode,
    Basic curve, RGB curve, channel curve, matte, decode, is a function of one value
@@ -35,12 +39,14 @@ import numpy as np
 from lumina.core.edit import (
     basic,
     colour,
+    colour_profile,
     curves,
     dehaze,
     denoise,
     effects,
     grading,
     hsl,
+    lenscorrect,
     sharpen,
 )
 from lumina.core.edit import detail as detail_steps
@@ -230,6 +236,12 @@ def geometry(image, params, region=None):
         x0, y0, x1, y1 = region
         left, right = left + x0, min(right, left + x1)
         top, bottom = top + y0, min(bottom, top + y1)
+    correction = params.lens.correction()
+    if correction is not None:
+        turn = None
+        if params.straighten:
+            turn = (params.straighten, straighten_scale(width, height, params.straighten))
+        return lenscorrect.resample(image, correction, (top, bottom, left, right), turn)
     if params.straighten == 0:
         return image[top:bottom, left:right]
     return _straightened(image, params.straighten, (top, bottom, left, right))
@@ -285,6 +297,12 @@ def _straightened(image, degrees, box):
     return out
 
 
+def frame_size(width, height, params):
+    """The size of a source of `width` x `height` once turned: the frame the lens
+    corrections are made in."""
+    return (height, width) if params.rotate % 2 else (width, height)
+
+
 def output_size(width, height, params):
     """The size `render` gives for a source of `width` x `height`."""
     if params.rotate % 2:
@@ -296,9 +314,10 @@ def output_size(width, height, params):
 # The whole
 
 
-def render(image, params, bits=8, tile_rows=512, full=None, region=None, haze=None):
+def render(image, params, bits=8, tile_rows=512, full=None, region=None, haze=None, camera=None):
     """`image` (H x W x 3 linear: uint16, or float32 in [0, 1]) rendered with `params`
-    to H' x W' x 3 sRGB, uint8 for `bits` 8 or uint16 for 16.
+    to H' x W' x 3 sRGB, uint8 for `bits` 8 or uint16 for 16. `image` is in sRGB, or with
+    `camera` (a RAW file's `colour_profile.CameraColour`) in that camera's colours.
 
     Works `tile_rows` rows at a time, so a full-resolution render never holds more
     than one tile as floats. 8 bits go through LUTs (fast, for the screen); 16 bits
@@ -322,6 +341,7 @@ def render(image, params, bits=8, tile_rows=512, full=None, region=None, haze=No
     if bits not in (8, 16):
         raise ValueError(f"bits must be 8 or 16, not {bits}")
     width, height = output_size(image.shape[1], image.shape[0], params)
+    frame = frame_size(image.shape[1], image.shape[0], params)
     wanted = region = _clipped(region, width, height)
     plan = _plan(params, (height, width), _scale(image, params, full))
     detailed = plan is not None and plan.detail is not None
@@ -330,15 +350,15 @@ def render(image, params, bits=8, tile_rows=512, full=None, region=None, haze=No
     view = geometry(image, params, None if region == (0, 0, width, height) else region)
     origin = (region[1], region[0])
     out = np.empty((view.shape[0], view.shape[1], 3), dtype=np.uint8 if bits == 8 else np.uint16)
-    gains, tone, desaturation = _per_pixel(view.dtype, params)
+    into, tone, desaturation = _per_pixel(view.dtype, params, frame, camera)
     step = max(1, tile_rows or view.shape[0])
     if detailed:
         if haze is not None:
             haze = replace(haze, size=(height, width))
-        _render_in_two_passes(view, gains, tone, desaturation, plan, out, step, origin, haze)
+        _render_in_two_passes(view, into, tone, desaturation, plan, out, step, origin, haze)
     else:
         for start in range(0, view.shape[0], step):
-            tile = view[start : start + step].astype(np.float32) * gains
+            tile = into(view[start : start + step])
             out[start : start + step] = _render_tile(
                 tile, tone, desaturation, plan, bits, (origin[0] + start, origin[1])
             )
@@ -371,27 +391,72 @@ def _with_halo(region, detail, width, height):
     return left, top, right, bottom
 
 
-def _per_pixel(dtype, params):
-    """The gains and tone LUTs that every pixel goes through, and the shadows' desaturation."""
-    gains = channel_gains(params)
+class _Into:
+    """What a tile of the source becomes before the tone step: floats of linear sRGB,
+    scaled to the tone LUT's [0, 1]. For a photo in sRGB, a gain per channel; for a RAW
+    file, its profile's matrix with the white balance and exposure folded in, and the
+    profile's table after it (colour_profile.py)."""
+
+    def __init__(self, gains, matrix=None, table=None, after=1.0):
+        self.gains = gains
+        self.matrix = None if matrix is None else np.ascontiguousarray(matrix.T, np.float32)
+        self.table = table
+        self.after = np.float32(after)
+
+    def __call__(self, rows):
+        tile = rows.astype(np.float32)
+        if self.matrix is None:
+            tile *= self.gains
+            return tile
+        tile = tile @ self.matrix
+        if self.table is None:
+            return tile
+        np.clip(tile, 0.0, 1.0, out=tile)
+        tile = colour_profile.lookup(self.table, tile)
+        tile *= self.after
+        return tile
+
+
+def _per_pixel(dtype, params, frame, camera=None):
+    """What every pixel goes through before the tone step (`_Into`), the tone LUTs and the
+    shadows' desaturation. `frame` is the (width, height) of the turned photo the lens
+    corrections were made in: they leave the light vignetting brings up divided by their
+    `headroom`, put back here."""
+    scale = np.float32(lenscorrect.headroom(params.lens.correction(), *frame))
     if dtype == np.uint16:
-        gains = gains / np.float32(65535.0)
+        scale = scale / np.float32(65535.0)
     # The tone LUT spans [0, tone_range] in linear light: scaled to [0, 1] with the gains
-    gains = gains / np.float32(tone_range(params))
+    span = np.float32(tone_range(params))
     tone = None if _is_tone_identity(params) else tone_luts(params)
-    return gains, tone, params.matte.shadow_desaturation
+    gains = channel_gains(params)
+    if camera is None:
+        into = _Into(gains * scale / span)
+    else:
+        transform = colour_profile.prepare(params.profile.id, camera)
+        if transform.lut is None:
+            # LibRaw's matrix to sRGB, then the gains there
+            into = _Into(None, np.diag(gains * scale / span) @ transform.matrix)
+        else:
+            # The gains act as they would in sRGB, on ProPhoto colours; the table clips at
+            # its white, so the tone range is made after it
+            in_prophoto = (
+                colour_profile.SRGB_TO_PROPHOTO @ np.diag(gains) @ colour_profile.PROPHOTO_TO_SRGB
+            )
+            into = _Into(None, scale * in_prophoto @ transform.matrix, transform.lut, 1 / span)
+    return into, tone, params.matte.shadow_desaturation
 
 
-def haze_analysis(image, params):
+def haze_analysis(image, params, camera=None):
     """What dehaze measures of the whole photo, from `image`, a copy of it (the proxy):
     for rendering a part of it with `render(region=..., haze=...)`. None when dehaze is
     not in use."""
     if params.presence.dehaze == 0:
         return None
     view = geometry(image, params)
-    gains, tone, desaturation = _per_pixel(view.dtype, params)
+    frame = frame_size(image.shape[1], image.shape[0], params)
+    into, tone, desaturation = _per_pixel(view.dtype, params, frame, camera)
     plan = _plan(params, view.shape[:2])
-    stage = _first_pass(view, gains, tone, desaturation, plan, view.shape[0], (0, 0))
+    stage = _first_pass(view, into, tone, desaturation, plan, view.shape[0], (0, 0))
     return dehaze.analyse(stage, params.presence.dehaze)
 
 
@@ -538,14 +603,14 @@ def _adjust(encoded, first, size, coloured, finishing):
                 effects.grain_rows(rows, row, size, grain, first_column)
 
 
-def _first_pass(view, gains, tone, desaturation, plan, step, origin):
+def _first_pass(view, into, tone, desaturation, plan, step, origin):
     """What treats each pixel on its own, kept as 16-bit sRGB. The exact tables, for 8
     bits too, so that a photo looks the same at either. `origin` is where `view` starts in
     the photo (row, column)."""
     height, width = view.shape[:2]
     stage = np.empty((height, width, 3), dtype=np.uint16)
     for start in range(0, height, step):
-        tile = view[start : start + step].astype(np.float32) * gains
+        tile = into(view[start : start + step])
         np.clip(tile, 0.0, 1.0, out=tile)
         _tone_step(tile, tone, desaturation, 16)
         encoded = _encoded(tile)
@@ -555,14 +620,14 @@ def _first_pass(view, gains, tone, desaturation, plan, step, origin):
     return stage
 
 
-def _render_in_two_passes(view, gains, tone, desaturation, plan, out, step, origin, haze):
+def _render_in_two_passes(view, into, tone, desaturation, plan, out, step, origin, haze):
     """`render` for a photo with steps that need the pixels around each one: see there.
     `view` starts at `origin` (row, column) of the photo; `haze` is the measure of the
     whole photo's haze, or None to measure `view`."""
     height = view.shape[0]
     bits = 8 if out.dtype == np.uint8 else 16
     detail = plan.detail
-    stage = _first_pass(view, gains, tone, desaturation, plan, step, origin)
+    stage = _first_pass(view, into, tone, desaturation, plan, step, origin)
     analysis = haze
     if analysis is None and detail.dehaze:
         analysis = dehaze.analyse(stage, detail.dehaze)

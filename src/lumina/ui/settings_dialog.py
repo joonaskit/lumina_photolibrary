@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from lumina.integration import style
+from lumina.qt_models import develop
 from lumina.qt_models.backups import (
     BEFORE_MIGRATION,
     BEFORE_RESTORE,
@@ -178,6 +179,31 @@ class SettingsDialog(QDialog):
                 "still part of the edit, of presets, and of copied settings."
             )
         )
+
+        self.profile_folders = QListWidget()
+        self.profile_folders.setObjectName("settingsList")
+        self.profile_folders.addItems(settings.profile_folders())
+        self.profile_folders.currentRowChanged.connect(self._show_profile_buttons)
+        self.add_profile_folder = QPushButton("Add Folder…")
+        self.add_profile_folder.clicked.connect(self.choose_profile_folder)
+        self.remove_profile_folder = QPushButton("Remove")
+        self.remove_profile_folder.clicked.connect(self.remove_chosen_profile_folder)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.add_profile_folder)
+        buttons.addWidget(self.remove_profile_folder)
+        buttons.addStretch(1)
+        layout.addWidget(self._heading("Camera profiles"))
+        layout.addWidget(self.profile_folders)
+        layout.addLayout(buttons)
+        looked_in = ", ".join(os.fspath(f) for f in develop.PROFILE_FOLDERS())
+        layout.addWidget(
+            self._note(
+                "Folders of DCP camera profiles (Adobe's, from a camera maker, your own). "
+                "A new edit of a RAW file starts with the first profile for its camera, "
+                f"after these from: {looked_in}. Without one it gets Lumina Standard."
+            )
+        )
+        self._show_profile_buttons()
 
         if library is not None:
             layout = page("Library")
@@ -423,6 +449,30 @@ class SettingsDialog(QDialog):
         settings.set_backups_kept(self.keep_daily.value(), self.keep_weekly.value())
         self.backups.keep_daily = self.keep_daily.value()
         self.backups.keep_weekly = self.keep_weekly.value()
+
+    def _show_profile_buttons(self, *_row):
+        self.remove_profile_folder.setEnabled(self.profile_folders.currentRow() >= 0)
+
+    def choose_profile_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Folder of Camera Profiles")
+        if folder:
+            self.add_profile_folder_path(folder)
+
+    def add_profile_folder_path(self, folder):
+        folders = settings.profile_folders()
+        if folder not in folders:
+            settings.set_profile_folders([*folders, folder])
+            self.profile_folders.addItem(folder)
+
+    def remove_chosen_profile_folder(self):
+        row = self.profile_folders.currentRow()
+        if row < 0:
+            return
+        folders = settings.profile_folders()
+        del folders[row]
+        settings.set_profile_folders(folders)
+        self.profile_folders.takeItem(row)
+        self._show_profile_buttons()
 
     def _fill_sections(self):
         titles = dict(SECTIONS)

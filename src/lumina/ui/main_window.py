@@ -156,6 +156,7 @@ class MainWindow(QMainWindow):
         # Where the Develop view was opened from, to go back to
         self._develop_from = _GRID
         self.session = DevelopSession(service, self)
+        self.session.profile_folders = settings.profile_folders
         self.session.history_changed.connect(self._update_history)
         self.session.exported.connect(self._on_exported)
         self.session.export_exists.connect(self._on_export_exists)
@@ -280,8 +281,9 @@ class MainWindow(QMainWindow):
 
         service.folders_changed.connect(self._refresh_folders)
         service.job_changed.connect(self.job_status.show_status)
-        service.job_ended.connect(lambda _status: self._refresh_choices())
-        service.job_ended.connect(lambda _status: self._open_arrived(scanned=True))
+        # A method, not a lambda: the connection goes with the window, and a scan that ends
+        # after the window is closed does not reach its deleted widgets
+        service.job_ended.connect(self._on_job_ended)
         # Rows a scan wrote arrive as inserted; a load that ends has all there is
         self.model.rowsInserted.connect(lambda: self._open_arrived())
         self.model.loading_changed.connect(
@@ -291,6 +293,10 @@ class MainWindow(QMainWindow):
         self._draw_icons()
         style.themed.changed.connect(self._draw_icons)
         self._refresh_folders(select=settings.selected_folder())
+
+    def _on_job_ended(self, _status):
+        self._refresh_choices()
+        self._open_arrived(scanned=True)
 
     # Building
 
@@ -1460,6 +1466,9 @@ class MainWindow(QMainWindow):
         if self.pages.currentIndex() == _DEVELOP:
             if self.develop.is_cropping():
                 self.develop.cancel_crop()
+                return
+            if self.develop.is_picking():
+                self.develop.cancel_picking()
                 return
             if self.develop.image.is_zoomed():
                 self.develop.image.reset_zoom()

@@ -68,9 +68,11 @@ def export(
     replace=False,
     should_stop=lambda: False,
     linear=None,
+    camera=None,
 ):
     """Render `source_path` with `params` and write it to `destination`. `linear` is the
-    decoded source if the caller has it (the editor does). Returns the destination.
+    decoded source if the caller has it, with its `camera` colours for a RAW file (see
+    source.load_for_edit). Returns the destination.
 
     Raises ExportExists, ExportCancelled, or PhotoError naming the file that failed."""
     options = options or ExportOptions()
@@ -86,13 +88,13 @@ def export(
 
     check_stop()
     if linear is None:
-        linear = source.load_linear(source_path)
+        linear, camera = source.load_for_edit(source_path)
     check_stop()
     full = (linear.shape[1], linear.shape[0])
     if options.max_side:
         linear = source.fitted(linear, params, options.max_side)
     check_stop()
-    pixels = pipeline.render(linear, params, bits=options.bits, full=full)
+    pixels = pipeline.render(linear, params, bits=options.bits, full=full, camera=camera)
     check_stop()
     _write(pixels, destination, options, replace, source_path, check_stop)
     return destination

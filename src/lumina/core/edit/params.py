@@ -15,8 +15,9 @@ import json
 from dataclasses import dataclass, field, replace
 
 from lumina.core.edit import curves
+from lumina.core.edit.lenscorrect import Correction, LensProfile
 
-VERSION = 8
+VERSION = 10
 
 # Ranges, in the units the pipeline uses
 EXPOSURE = (-5.0, 5.0)  # stops
@@ -44,6 +45,7 @@ MATTE_BLACK = (0.0, 0.5)  # how far black is raised, as a share of white
 MATTE_WHITE = (0.0, 0.5)  # how far white is lowered
 DESATURATION = (0.0, 1.0)
 STRAIGHTEN = (-45.0, 45.0)  # degrees, clockwise
+LENS = (0.0, 100.0)  # how much of a lens correction to make: see lenscorrect.py
 CHANNELS = ("rgb", "red", "green", "blue")
 BASIC_FIELDS = ("contrast", "highlights", "shadows", "whites", "blacks")
 PRESENCE_FIELDS = ("texture", "clarity", "dehaze")
@@ -224,6 +226,40 @@ class Matte:
 
 
 @dataclass(frozen=True)
+class ColourProfile:
+    # How a RAW file's camera colours become the photo's (colour_profile.py): "libraw"
+    # (LibRaw's matrix, as before profiles), "standard" (Lumina's look) or a stored camera
+    # profile's id (dcp.store); `name` is for showing it. A photo in sRGB has no use for it
+    id: str = "libraw"
+    name: str = ""
+
+
+@dataclass(frozen=True)
+class Lens:
+    # The lens's corrections (lenscorrect.py): off, or on with the lens's `profile` (the
+    # numbers for this focal length and aperture, kept here so the edit renders the same
+    # whatever the lens database says later) and how much of each to make, 0 to 100
+    enabled: bool = False
+    distortion: float = 100.0
+    vignetting: float = 100.0
+    aberration: float = 100.0
+    profile: LensProfile | None = None
+
+    def is_identity(self):
+        # Nothing to correct with, or nothing asked for
+        return not self.enabled or self.profile is None
+
+    def correction(self):
+        """The `lenscorrect.Correction` to make, or None for none."""
+        if self.is_identity():
+            return None
+        correction = Correction(
+            self.profile, self.distortion / 100, self.vignetting / 100, self.aberration / 100
+        )
+        return None if correction.is_identity() else correction
+
+
+@dataclass(frozen=True)
 class Crop:
     # Of the photo after the quarter turns, as shares of its width and height
     left: float = 0.0
@@ -253,6 +289,8 @@ class Params:
     matte: Matte = field(default_factory=Matte)
     vignette: Vignette = field(default_factory=Vignette)
     grain: Grain = field(default_factory=Grain)
+    lens: Lens = field(default_factory=Lens)
+    profile: ColourProfile = field(default_factory=ColourProfile)
     # Quarter turns clockwise, 0 to 3; then mirrored left to right and top to bottom;
     # then turned by `straighten` degrees clockwise, scaled to fill the frame; then cropped
     rotate: int = 0
@@ -310,6 +348,14 @@ class Params:
                 "feather": float(self.vignette.feather),
             },
             "grain": {"amount": float(self.grain.amount), "size": float(self.grain.size)},
+            "lens": {
+                "enabled": self.lens.enabled,
+                "distortion": float(self.lens.distortion),
+                "vignetting": float(self.lens.vignetting),
+                "aberration": float(self.lens.aberration),
+                "profile": None if self.lens.profile is None else self.lens.profile.to_dict(),
+            },
+            "profile": {"id": self.profile.id, "name": self.profile.name},
             "rotate": self.rotate,
             "flip": {"horizontal": self.flip_horizontal, "vertical": self.flip_vertical},
             "straighten": float(self.straighten),
@@ -393,6 +439,8 @@ def from_dict(data):
     grading = _section(data, "grading")
     vignette = _section(data, "vignette")
     grain = _section(data, "grain")
+    lens = _section(data, "lens")
+    profile = _section(data, "profile")
     curve_data = _section(data, "curves")
     matte = _section(data, "matte")
     crop = _section(data, "crop")
@@ -463,6 +511,17 @@ def from_dict(data):
             amount=_number(grain.get("amount"), 0.0, PERCENT),
             size=_number(grain.get("size"), DEFAULT_GRAIN_SIZE, PERCENT),
         ),
+        lens=Lens(
+            enabled=lens.get("enabled") is True,
+            distortion=_number(lens.get("distortion"), 100.0, LENS),
+            vignetting=_number(lens.get("vignetting"), 100.0, LENS),
+            aberration=_number(lens.get("aberration"), 100.0, LENS),
+            profile=LensProfile.from_dict(lens.get("profile")),
+        ),
+        profile=ColourProfile(
+            id=_profile_id(profile.get("id")),
+            name=profile.get("name") if isinstance(profile.get("name"), str) else "",
+        ),
         rotate=rotate % 4 if isinstance(rotate, int) and not isinstance(rotate, bool) else 0,
         flip_horizontal=flip.get("horizontal") is True,
         flip_vertical=flip.get("vertical") is True,
@@ -530,7 +589,36 @@ def _to_8(data):
     }
 
 
-_MIGRATIONS = {1: _to_2, 2: _to_3, 3: _to_4, 4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8}
+def _to_9(data):
+    # Version 9 added lens corrections: off, as every edit before it was made without
+    return {
+        "lens": {
+            "enabled": False,
+            "distortion": 100.0,
+            "vignetting": 100.0,
+            "aberration": 100.0,
+            "profile": None,
+        },
+        **data,
+    }
+
+
+def _to_10(data):
+    # Version 10 added camera profiles: LibRaw's colours, which every edit before had
+    return {"profile": {"id": "libraw", "name": ""}, **data}
+
+
+_MIGRATIONS = {
+    1: _to_2,
+    2: _to_3,
+    3: _to_4,
+    4: _to_5,
+    5: _to_6,
+    6: _to_7,
+    7: _to_8,
+    8: _to_9,
+    9: _to_10,
+}
 
 
 def migrate(data):
@@ -546,6 +634,15 @@ def migrate(data):
         version += 1
         data["version"] = version
     return data
+
+
+def _profile_id(value):
+    # A built-in name or a store id; anything else is LibRaw's, which always renders
+    if value in ("libraw", "standard"):
+        return value
+    if isinstance(value, str) and len(value) == 16 and all(c in "0123456789abcdef" for c in value):
+        return value
+    return "libraw"
 
 
 def _section(data, name):

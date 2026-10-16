@@ -14,14 +14,15 @@ On Fedora, from a clone:
 ./install.sh
 ```
 
-It makes a venv with what the app needs, installs exiftool with dnf if it is missing, puts `lumina` in `~/.local/bin`, and adds Lumina with its icon to the app launcher. Run it again after pulling to update. Then start Lumina from the launcher, or `lumina [PATH...]` from a terminal.
+It makes a venv with what the app needs, installs exiftool and lensfun (the lens database) with dnf if they are missing, puts `lumina` in `~/.local/bin`, and adds Lumina with its icon to the app launcher. Run it again after pulling to update. Then start Lumina from the launcher, or `lumina [PATH...]` from a terminal.
 
 For development, the tests and the linter:
 
 ```sh
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
-sudo dnf install perl-Image-ExifTool   # for metadata
+sudo dnf install perl-Image-ExifTool lensfun   # for metadata, and lens corrections
+sudo dnf install rawtherapee   # optional: its camera profiles (DCP), used by new edits
 lumina ~/Pictures
 ```
 

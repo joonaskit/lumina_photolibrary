@@ -15,9 +15,11 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QInputDialog,
+    QLabel,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -35,6 +37,7 @@ from lumina.ui.controls import ValueSlider
 from lumina.ui.crop_frame import dragged, dragged_to_ratio, reshaped
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.image_view import ImageView
+from lumina.ui.lens_dialog import LensDialog
 from lumina.ui.preset_dialog import PresetDialog
 from lumina.ui.ratio_dialog import RatioDialog
 
@@ -68,6 +71,7 @@ _ASPECTS = (
 # hide them (ui/settings.py, the settings window) and collapse them on the panel
 SECTIONS = (
     ("presets", "PRESETS"),
+    ("profile", "PROFILE"),
     ("light", "LIGHT"),
     ("curve", "TONE CURVE"),
     ("presence", "PRESENCE"),
@@ -79,10 +83,19 @@ SECTIONS = (
     ("grading", "COLOUR GRADING"),
     ("matte", "MATTE"),
     ("effects", "EFFECTS"),
+    ("lens", "LENS"),
     ("crop", "CROP & ROTATE"),
     ("settings", "SETTINGS"),
 )
 SECTION_NAMES = tuple(name for name, _title in SECTIONS)
+# What to click next while making a profile from a colour target
+_CHECKER_HELP = (
+    "Click the middle of the dark skin patch (top left, the target read as printed).",
+    "Now the bluish green patch (top right).",
+    "Now the black patch (bottom right).",
+    "Now the white patch (bottom left).",
+    "Check the squares sit inside the patches, then Make Profile. Click again to start over.",
+)
 # How many squares the grid shown while straightening makes along the photo's short side
 _GRID = 8
 
@@ -166,6 +179,8 @@ class CropImageView(ImageView):
     # The crop while it is dragged, and when let go
     crop_moved = Signal(object)
     crop_committed = Signal(object)
+    # Points picked on the photo (fractions of it, x and y): how many there are now
+    picked = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent, zoomable=True)
@@ -179,7 +194,21 @@ class CropImageView(ImageView):
         self.ratio = self.aspect = None
         self.grid = False
         self.before = False
+        # While picking: how many points are wanted, and those picked so far
+        self.picking = 0
+        self.points = []
         self.setMouseTracking(True)
+
+    def start_picking(self, count):
+        """Pick `count` points on the photo with clicks (`picked` follows them)."""
+        self.picking, self.points = count, []
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.update()
+
+    def stop_picking(self):
+        self.picking, self.points = 0, []
+        self.unsetCursor()
+        self.update()
 
     def set_constraint(self, ratio, aspect):
         """Hold the crop to `ratio` (None: free) on a photo of `aspect`."""
@@ -256,12 +285,44 @@ class CropImageView(ImageView):
         painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
 
     def paint_over(self, painter, target):
+        if self.picking:
+            self._paint_points(painter, target)
         if self.grid:
             self._paint_grid(painter, target)
         if self.cropping:
             self._paint_crop(painter, target)
         if self.before:
             self._paint_label(painter, target, "Original")
+
+    def _paint_points(self, painter, target):
+        """The points picked, and once there are four the 24 patches they make."""
+        line = QColor(style.color("textPrimary"))
+        halo = QColor(style.color("background"))
+        places = [
+            QPointF(target.left() + x * target.width(), target.top() + y * target.height())
+            for x, y in self.points
+        ]
+        if len(self.points) == 4:
+            pixels = [(p.x(), p.y()) for p in places]
+            centres = develop.patch_centres(pixels)
+            spacing = min(
+                abs(centres[1][0] - centres[0][0]) + abs(centres[1][1] - centres[0][1]),
+                abs(centres[6][0] - centres[0][0]) + abs(centres[6][1] - centres[0][1]),
+            )
+            half = max(2.0, spacing * develop.CHECKER_SAMPLE_SHARE / 2)
+            for x, y in centres:
+                square = QRectF(x - half, y - half, 2 * half, 2 * half)
+                painter.setPen(QPen(halo, 3))
+                painter.drawRect(square)
+                painter.setPen(QPen(line, 1))
+                painter.drawRect(square)
+        radius = style.px(5)
+        for index, place in enumerate(places):
+            painter.setPen(QPen(halo, 3))
+            painter.drawEllipse(place, radius, radius)
+            painter.setPen(QPen(line, 1))
+            painter.drawEllipse(place, radius, radius)
+            painter.drawText(place + QPointF(radius + 2, -radius), str(index + 1))
 
     def _paint_crop(self, painter, target):
         frame = self._frame(target)
@@ -319,6 +380,20 @@ class CropImageView(ImageView):
         return None
 
     def mousePressEvent(self, event):
+        if self.picking and event.button() == Qt.MouseButton.LeftButton:
+            target = self.image_rect()
+            if target is not None and target.contains(event.position()):
+                if len(self.points) == self.picking:
+                    self.points = []
+                self.points.append(
+                    (
+                        (event.position().x() - target.left()) / target.width(),
+                        (event.position().y() - target.top()) / target.height(),
+                    )
+                )
+                self.update()
+                self.picked.emit(len(self.points))
+            return
         if not self.cropping or event.button() != Qt.MouseButton.LeftButton:
             return super().mousePressEvent(event)
         part = self._hit(event.position())
@@ -412,6 +487,12 @@ class DevelopView(QWidget):
         session.params_changed.connect(self._show_params)
         session.before_changed.connect(self.image.set_before)
         session.opened.connect(lambda *_size: self._sync_constraint())
+        session.lens_changed.connect(self._show_lens)
+        session.opened.connect(lambda *_size: session.request_profiles())
+        session.profiles_ready.connect(self._fill_profiles)
+        session.profile_made.connect(self._on_profile_made)
+        session.profile_busy_changed.connect(lambda _busy: self._show_profile())
+        self.image.picked.connect(self._on_picked)
         session.image_ready.connect(self._on_image)
         session.region_ready.connect(self.image.set_detail)
         # The part of the photo at the zoom is asked for when the zoom or the place has
@@ -660,6 +741,86 @@ class DevelopView(QWidget):
             ),
         }
 
+        layout = self._begin(root, "profile", "PROFILE")
+        self.profile_choice = QComboBox()
+        self.profile_choice.setToolTip(
+            "How the camera's colours become the photo's: Lumina's look, LibRaw's neutral "
+            "colours, or a camera profile (DCP)"
+        )
+        self.profile_choice.activated.connect(self._on_profile_chosen)
+        layout.addWidget(self.profile_choice)
+        row = QHBoxLayout()
+        self.profile_add = QPushButton("Add…")
+        self.profile_add.setToolTip("Use a camera profile (.dcp) from a file")
+        self.profile_add.clicked.connect(self._add_profile)
+        self.profile_fit = QPushButton("From Camera JPEGs")
+        self.profile_fit.setToolTip(
+            "Make a profile of the camera's own look from its RAW files in the library and "
+            "the JPEGs inside them"
+        )
+        self.profile_fit.clicked.connect(lambda: self.session.fit_camera_look())
+        row.addWidget(self.profile_add)
+        row.addWidget(self.profile_fit, 1)
+        layout.addLayout(row)
+        row = QHBoxLayout()
+        self.checker_button = QPushButton("Colour Checker…")
+        self.checker_button.setCheckable(True)
+        self.checker_button.setToolTip(
+            "Make a profile for this light from this photo of a ColorChecker: click the "
+            "middle of its four corner patches"
+        )
+        self.checker_button.toggled.connect(self._on_checker_toggled)
+        self.checker_make = QPushButton("Make Profile")
+        self.checker_make.setEnabled(False)
+        self.checker_make.setVisible(False)
+        self.checker_make.clicked.connect(self._make_checker_profile)
+        row.addWidget(self.checker_button, 1)
+        row.addWidget(self.checker_make)
+        layout.addLayout(row)
+        self.checker_linear = QCheckBox("Linear tone (for reproduction)")
+        self.checker_linear.setToolTip(
+            "The profile keeps the tones as the camera recorded them, without Lumina's curve"
+        )
+        self.checker_linear.setVisible(False)
+        layout.addWidget(self.checker_linear)
+        self.profile_note = QLabel()
+        self.profile_note.setWordWrap(True)
+        self.profile_note.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        layout.addWidget(self.profile_note)
+        self._profile_message = ""
+
+        layout = self._begin(root, "lens", "LENS")
+        self.lens_on = QCheckBox("Correct for the lens")
+        self.lens_on.clicked.connect(self._on_lens_toggled)
+        layout.addWidget(self.lens_on)
+        row = QHBoxLayout()
+        self.lens_name = QLabel()
+        self.lens_name.setWordWrap(True)
+        self.lens_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lens_choose = QPushButton("Choose…")
+        self.lens_choose.setToolTip("Correct as another lens that fits this camera")
+        self.lens_choose.clicked.connect(self._choose_lens)
+        row.addWidget(self.lens_name, 1)
+        row.addWidget(self.lens_choose)
+        layout.addLayout(row)
+        self.lens = {
+            name: self._slider(
+                layout,
+                title,
+                *develop.LENS,
+                step=1,
+                decimals=0,
+                unit="%",
+                field=f"lens.{name}",
+                default=100.0,
+            )
+            for name, title in (
+                ("distortion", "Distortion"),
+                ("vignetting", "Vignetting"),
+                ("aberration", "Colour fringes"),
+            )
+        }
+
         layout = self._begin(root, "crop", "CROP & ROTATE")
         row = QHBoxLayout()
         self.crop_button = QPushButton("Crop")
@@ -839,6 +1000,8 @@ class DevelopView(QWidget):
             return params.with_changes(vignette=replace(params.vignette, **{field[9:]: value}))
         if field.startswith("grain."):
             return params.with_changes(grain=replace(params.grain, **{field[6:]: value}))
+        if field.startswith("lens."):
+            return params.with_changes(lens=replace(params.lens, **{field[5:]: value}))
         if field.startswith("hsl."):
             band = self._chosen(self.band_group)
             changed = replace(getattr(params.hsl, band), **{field[4:]: value})
@@ -875,10 +1038,136 @@ class DevelopView(QWidget):
             slider.set_value(getattr(params.vignette, name))
         for name, slider in self.grain.items():
             slider.set_value(getattr(params.grain, name))
+        self._show_lens(params)
+        self._show_profile(params)
         self.straighten.set_value(params.straighten)
         self._show_curve()
         self.image.set_crop(params.crop)
         self._sync_constraint()
+
+    def _show_profile(self, params=None):
+        """The profile section: which profile, and whether there can be one."""
+        session = self.session
+        raw = session.is_raw()
+        busy = session.is_making_profile()
+        for widget in (self.profile_choice, self.profile_add, self.checker_button):
+            widget.setEnabled(raw and not busy)
+        self.profile_fit.setEnabled(raw and not busy)
+        name = session.profile_name()
+        index = self.profile_choice.findText(name)
+        if index < 0 and raw:
+            self.profile_choice.addItem(name, "current")
+            index = self.profile_choice.count() - 1
+        self.profile_choice.setCurrentIndex(index)
+        if not raw:
+            note = "Only RAW files have a camera profile."
+        elif busy:
+            note = "Making the profile…"
+        elif self.checker_button.isChecked():
+            note = _CHECKER_HELP[min(len(self.image.points), 4)]
+        else:
+            note = self._profile_message
+        self.profile_note.setText(note)
+        # No gap under the buttons when there is nothing to say
+        self.profile_note.setVisible(bool(note))
+
+    def _fill_profiles(self, choices):
+        self.profile_choice.blockSignals(True)
+        self.profile_choice.clear()
+        for name, key in choices:
+            self.profile_choice.addItem(name, key)
+        self.profile_choice.blockSignals(False)
+        self._show_profile()
+
+    def _on_profile_chosen(self, index):
+        key = self.profile_choice.itemData(index)
+        if key not in (None, "current"):
+            self._profile_message = ""
+            self.session.choose_profile(key, self.profile_choice.itemText(index))
+
+    def _add_profile(self):
+        path, _filter = QFileDialog.getOpenFileName(
+            self, "Use a Camera Profile", "", "Camera profiles (*.dcp *.DCP)"
+        )
+        if path:
+            self.session.choose_profile(path)
+
+    def _on_checker_toggled(self, on):
+        self.checker_make.setVisible(on)
+        self.checker_linear.setVisible(on)
+        self.checker_make.setEnabled(False)
+        if on:
+            self.set_cropping(False)
+            self.image.start_picking(4)
+        else:
+            self.image.stop_picking()
+        self._show_profile()
+
+    def _on_picked(self, count):
+        self.checker_make.setEnabled(count == 4)
+        self._show_profile()
+
+    def _make_checker_profile(self):
+        points = list(self.image.points)
+        self.checker_button.setChecked(False)
+        self.session.make_checker_profile(points, self.checker_linear.isChecked())
+
+    def _on_profile_made(self, message):
+        self._profile_message = message
+        self.session.request_profiles()
+
+    def is_picking(self):
+        return self.checker_button.isChecked()
+
+    def cancel_picking(self):
+        self.checker_button.setChecked(False)
+
+    def _show_lens(self, params=None):
+        """The lens section: on or off, which lens, and the amounts."""
+        params = params if isinstance(params, develop.Params) else self.session.params
+        session = self.session
+        usable = params.lens.profile is not None or session.detected_lens() is not None
+        self.lens_on.setEnabled(usable)
+        self.lens_on.setChecked(params.lens.enabled and params.lens.profile is not None)
+        for name, slider in self.lens.items():
+            slider.set_value(getattr(params.lens, name))
+            slider.setEnabled(params.lens.enabled and params.lens.profile is not None)
+        name = session.lens_name()
+        state = session.lens_state()
+        if name is not None:
+            self.lens_name.setText(name)
+        else:
+            self.lens_name.setText(
+                {
+                    "waiting": "Looking for the lens…",
+                    "unknown": "No profile for this lens",
+                    "no data": "No lens database found: install lensfun",
+                }.get(state, "")
+            )
+        self.lens_name.setToolTip(name or "")
+        self.lens_choose.setEnabled(state != "no data" and state != "waiting")
+
+    def _on_lens_toggled(self, on):
+        params = self.session.params
+        profile = params.lens.profile or self.session.detected_lens()
+        self.session.commit(
+            params.with_changes(lens=replace(params.lens, enabled=on, profile=profile))
+        )
+
+    def _choose_lens(self):
+        self.session.lenses_ready.connect(self._pick_lens)
+        self.session.request_lenses()
+
+    def _pick_lens(self, names):
+        self.session.lenses_ready.disconnect(self._pick_lens)
+        if not names:
+            QMessageBox.information(
+                self, "Choose Lens", "No lens in the database is known to fit this camera."
+            )
+            return
+        dialog = LensDialog(names, self.session.lens_name(), self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.chosen():
+            self.session.choose_lens(dialog.chosen())
 
     def _show_mixers(self, params=None):
         """The sliders of the band and the range chosen, and blending and balance."""

@@ -214,20 +214,23 @@ def test_a_folder_too_large_to_watch_is_named_in_the_settings(qtbot, service, dr
 def test_the_develop_panel_order_and_hidden_sections_are_kept_as_they_are_changed(qtbot):
     dialog = SettingsDialog()
     qtbot.addWidget(dialog)
-    names = [dialog.sections.item(r).data(Qt.ItemDataRole.UserRole) for r in range(14)]
+    names = [
+        dialog.sections.item(r).data(Qt.ItemDataRole.UserRole)
+        for r in range(len(develop_view.SECTION_NAMES))
+    ]
     assert tuple(names) == develop_view.SECTION_NAMES
 
-    # Presets, Light, Tone curve ...: the third goes up past the second
-    dialog.sections.setCurrentRow(2)
+    # Presets, Profile, Light, Tone curve ...: the curve goes up past Light
+    dialog.sections.setCurrentRow(3)
     dialog.move_up.click()
     dialog.sections.item(0).setCheckState(Qt.CheckState.Unchecked)
     order = settings.develop_order(develop_view.SECTION_NAMES)
-    assert order[:3] == ["presets", "curve", "light"]
+    assert order[:4] == ["presets", "profile", "curve", "light"]
     assert settings.hidden_sections() == {"presets"}
 
     again = SettingsDialog()
     qtbot.addWidget(again)
-    assert again.sections.item(1).data(Qt.ItemDataRole.UserRole) == "curve"
+    assert again.sections.item(2).data(Qt.ItemDataRole.UserRole) == "curve"
     assert again.sections.item(0).checkState() == Qt.CheckState.Unchecked
 
     again.reset_sections.click()

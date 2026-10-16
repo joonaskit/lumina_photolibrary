@@ -81,8 +81,8 @@ def test_fit_never_grows():
 def test_the_source_is_decoded_once(tmp_path, monkeypatch):
     path = make_jpeg(tmp_path / "a.jpg")
     calls = []
-    real = source.load_linear
-    monkeypatch.setattr(source, "load_linear", lambda p: calls.append(p) or real(p))
+    real = source.load_for_edit
+    monkeypatch.setattr(source, "load_for_edit", lambda p: calls.append(p) or real(p))
     opened = source.EditSource(path)
 
     opened.full, opened.proxy, opened.full, opened.size()

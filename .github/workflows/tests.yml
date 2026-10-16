@@ -41,7 +41,7 @@ jobs:
       - name: Install what the app and its tests need
         run: >
           dnf install -y --setopt=install_weak_deps=False
-          git python${{ matrix.python-version }} perl-Image-ExifTool
+          git python${{ matrix.python-version }} perl-Image-ExifTool lensfun
           mesa-libEGL mesa-libGL libxkbcommon fontconfig dbus-libs dejavu-sans-fonts
 
       - uses: actions/checkout@v5
@@ -61,8 +61,8 @@ jobs:
           "
 
       # Offscreen, in a home of their own: tests/conftest.py sees to both. A test that
-      # needs exiftool fails here rather than being skipped
+      # needs exiftool or lensfun's data fails here rather than being skipped
       - name: Test
         run: >
-          runuser -u ci -- env HOME=/home/ci LUMINA_REQUIRE_EXIFTOOL=1
+          runuser -u ci -- env HOME=/home/ci LUMINA_REQUIRE_EXIFTOOL=1 LUMINA_REQUIRE_LENSFUN=1
           /home/ci/venv/bin/pytest -rs

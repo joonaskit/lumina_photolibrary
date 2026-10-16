@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from lumina.core import db as dbm
-from lumina.core import images, metadata, thumbs, volumes
+from lumina.core import images, lensdb, metadata, raw, thumbs, volumes
 from lumina.core import library as scanning
 from lumina.core.edit import params as _params
 from lumina.qt_models import workers
@@ -273,6 +273,34 @@ class LibraryService(QObject):
     def edit_json(self, photo_id):
         """The photo's edit as parameters JSON, or None."""
         return self.db.edit(photo_id)
+
+    def lens_shot(self, photo_id):
+        """How the photo was taken, as the lens database wants it (lensdb.Shot), or None."""
+        photo = self.db.photo(photo_id)
+        if photo is None:
+            return None
+        return lensdb.Shot(
+            photo["make"],
+            photo["model"],
+            photo["lens"],
+            photo["focal_length"],
+            photo["aperture"],
+        )
+
+    def raw_files_of(self, model, limit):
+        """Paths of up to `limit` connected RAW files of the camera `model`, spread over the
+        time they were taken."""
+        found = []
+        for row in self.db.photos(dbm.Filter(model=model)):
+            if not row.available:
+                continue
+            path = self.resolve(row.volume_key, row.path)
+            if path is not None and raw.is_raw(path) and os.path.exists(path):
+                found.append(os.fspath(path))
+        if len(found) > limit:
+            step = len(found) / limit
+            found = [found[int(i * step)] for i in range(limit)]
+        return found
 
     def save_edit(self, photo_id, params_json):
         """Store an edit (None: none, the original). The grid hears of it."""
