@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from lumina.integration import style
@@ -48,8 +50,22 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Settings")
         self.setMinimumWidth(style.px(460))
 
-        layout = QVBoxLayout(self)
-        style.follow_density(self, lambda: layout.setSpacing(style.gap(10)))
+        outer = QVBoxLayout(self)
+        style.follow_density(self, lambda: outer.setSpacing(style.gap(10)))
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs)
+        pages = []
+
+        def page(title):
+            """A tab; returns the layout for its settings."""
+            widget = QWidget()
+            made = QVBoxLayout(widget)
+            style.follow_density(widget, lambda: made.setSpacing(style.gap(10)))
+            self.tabs.addTab(widget, title)
+            pages.append(made)
+            return made
+
+        layout = page("General")
 
         self.density = QComboBox()
         for key, text in _DENSITIES:
@@ -79,10 +95,10 @@ class SettingsDialog(QDialog):
             )
         )
 
+        layout = page("Develop")
         self.sections = QListWidget()
         self.sections.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         self.sections.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.sections.setFixedHeight(style.px(180))
         self._fill_sections()
         self.sections.itemChanged.connect(self._save_sections)
         self.sections.model().rowsMoved.connect(self._save_sections)
@@ -109,6 +125,7 @@ class SettingsDialog(QDialog):
         )
 
         if library is not None:
+            layout = page("Library")
             self.gentle = QCheckBox("Scan large libraries gently")
             self.gentle.setChecked(settings.gentle_scans())
             self.gentle.toggled.connect(self._on_gentle_toggled)
@@ -159,6 +176,7 @@ class SettingsDialog(QDialog):
             self._show_usage()
 
         if search is not None:
+            layout = page("Search")
             self.model_state = QLabel()
             self.model_state.setWordWrap(True)
             self.model_folder = self._note(search.folder)
@@ -178,10 +196,11 @@ class SettingsDialog(QDialog):
             search.model_changed.connect(self._show_model)
             self._show_model()
 
-        layout.addStretch(1)
+        for made in pages:
+            made.addStretch(1)
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.reject)
-        layout.addWidget(close)
+        outer.addWidget(close)
 
     def _fill_sections(self):
         titles = dict(SECTIONS)
@@ -189,7 +208,7 @@ class SettingsDialog(QDialog):
         self.sections.blockSignals(True)
         self.sections.clear()
         for name in settings.develop_order(SECTION_NAMES):
-            item = QListWidgetItem(titles[name].capitalize())
+            item = QListWidgetItem(titles[name].capitalize().replace("Hsl", "HSL"))
             item.setData(Qt.ItemDataRole.UserRole, name)
             item.setFlags(
                 (item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsDropEnabled
