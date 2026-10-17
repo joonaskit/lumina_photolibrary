@@ -27,11 +27,18 @@ fi
 # (see CLAUDE.md), so this venv does not see the system's site packages
 if command -v uv >/dev/null; then
     uv venv --python python3 --allow-existing .venv
-    uv pip install --python .venv/bin/python -e .
+    pip_install() { uv pip install --python .venv/bin/python "$@"; }
 else
     [[ -x .venv/bin/python ]] || python3 -m venv .venv
-    .venv/bin/python -m pip install -e .
+    pip_install() { .venv/bin/python -m pip install "$@"; }
 fi
+# With python-gphoto2 (libgphoto2 in its wheel) for a camera on USB: tethering and
+# importing from it. Without a wheel for this machine the rest is installed and those
+# two say how to add it
+pip_install -e '.[tether]' || {
+    echo "warning: python-gphoto2 did not install, so a camera on USB will not be found" >&2
+    pip_install -e .
+}
 
 .venv/bin/python -c "import PySide6, rawpy, onnxruntime, pillow_heif" ||
     { echo "PySide6, rawpy, onnxruntime or pillow_heif is not importable from the venv" >&2; exit 1; }

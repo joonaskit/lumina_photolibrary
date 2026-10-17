@@ -31,13 +31,23 @@ def read(path):
     """When the photo at `path` was taken, or None when its first bytes don't say."""
     try:
         with open(path, "rb") as file:
-            start = file.read(16)
-            if start[:2] == b"\xff\xd8":
-                return _jpeg(file)
-            if start[:4] in (b"II*\x00", b"MM\x00*"):
-                return _tiff(file, 0)
-            if start[4:8] == b"ftyp":
-                return _cr3(file)
+            return read_file(file)
+    except OSError:
+        return None
+
+
+def read_file(file):
+    """When the photo in `file` (anything with seek and read, such as a camera's file read
+    in parts) was taken, or None."""
+    try:
+        start = file.read(16)
+        file.seek(0)
+        if start[:2] == b"\xff\xd8":
+            return _jpeg(file)
+        if start[:4] in (b"II*\x00", b"MM\x00*"):
+            return _tiff(file, 0)
+        if start[4:8] == b"ftyp":
+            return _cr3(file)
     except (OSError, ValueError, struct.error):
         return None
     return None

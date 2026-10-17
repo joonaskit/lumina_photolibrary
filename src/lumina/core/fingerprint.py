@@ -21,13 +21,18 @@ def content_id(path):
     """A 32-character hex id of the file at `path`. Raises PhotoError naming it."""
     try:
         with open(path, "rb") as file:
-            size = os.fstat(file.fileno()).st_size
-            digest = hashlib.sha256(_RECIPE)
-            digest.update(size.to_bytes(8, "little"))
-            digest.update(file.read(_CHUNK))
-            if size > _CHUNK:
-                file.seek(max(_CHUNK, size - _CHUNK))
-                digest.update(file.read(_CHUNK))
+            return content_id_of(file, os.fstat(file.fileno()).st_size)
     except OSError as error:
         raise PhotoError(path, f"cannot read ({error.strerror or error})") from error
+
+
+def content_id_of(file, size):
+    """The id of `file` (anything with seek and read, such as a camera's file read in
+    parts) of `size` bytes: the same as `content_id` of a copy of it."""
+    digest = hashlib.sha256(_RECIPE)
+    digest.update(size.to_bytes(8, "little"))
+    digest.update(file.read(_CHUNK))
+    if size > _CHUNK:
+        file.seek(max(_CHUNK, size - _CHUNK))
+        digest.update(file.read(_CHUNK))
     return digest.hexdigest()[:32]
