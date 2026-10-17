@@ -229,3 +229,63 @@ def test_a_click_on_the_badge_opens_and_closes_a_stack(qtbot, service, drive):
     far = window.grid.visualRect(index).bottomRight() - QPoint(2, 2)
     qtbot.mouseClick(window.grid.viewport(), Qt.MouseButton.LeftButton, pos=far)
     assert window.model.rowCount() == 1
+
+
+def give_vectors(service, window, vectors):
+    """Store a search vector for each photo shown, in the order of the grid."""
+    from lumina.core import db as dbm
+    from lumina.core import embed
+
+    with dbm.Library(service.path) as library:
+        library.write_embeddings(
+            embed.MODEL.name,
+            [
+                (row.content_id, embed.to_blob(vector))
+                for row, vector in zip(window.model.photo_rows(), vectors, strict=True)
+            ],
+        )
+
+
+def unit(*head):
+    from lumina.core import embed
+
+    vector = [0.0] * embed.DIMENSIONS
+    vector[: len(head)] = head
+    return vector
+
+
+def test_stack_bursts_stacks_photos_that_look_alike_and_leaves_the_others(qtbot, service, drive):
+    window = open_window(qtbot, service, drive / "Photos")
+    first = names(window)[:2]
+    give_vectors(service, window, [unit(1), unit(1), unit(0, 1)])
+
+    window.stack_bursts()
+
+    wait_for_rows(qtbot, window, 2)
+    assert names(window)[0] == first[0]
+    assert window.model.data(window.model.index(0), STACK_ROLE)[1] == 2
+    assert window.model.data(window.model.index(1), STACK_ROLE) is None
+    assert window.statusBar().currentMessage() == "Stacked 1 burst"
+
+
+def test_stack_bursts_without_vectors_stacks_nothing(qtbot, service, drive):
+    window = open_window(qtbot, service, drive / "Photos")
+
+    window.stack_bursts()
+
+    assert window.model.rowCount() == 3
+    assert window.statusBar().currentMessage() == "No bursts found"
+
+
+def test_stack_bursts_leaves_a_stack_made_by_hand_as_it_is(qtbot, service, drive):
+    window = open_window(qtbot, service, drive / "Photos")
+    give_vectors(service, window, [unit(1), unit(1), unit(1)])
+    stack_all(qtbot, window, (0, 1))
+    wait_for_rows(qtbot, window, 2)
+
+    window.stack_bursts()
+
+    # The third alone is no burst: the other two are stacked already
+    wait_for_rows(qtbot, window, 2)
+    assert window.model.data(window.model.index(0), STACK_ROLE)[1] == 2
+    assert window.statusBar().currentMessage() == "No bursts found"

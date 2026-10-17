@@ -548,6 +548,11 @@ class MainWindow(QMainWindow):
         self.unstack_action = QAction("Unstack", self)
         self.unstack_action.setShortcut(QKeySequence("Ctrl+Shift+G"))
         self.unstack_action.triggered.connect(self.unstack_photos)
+        self.stack_bursts_action = QAction("Stack Bursts", self)
+        self.stack_bursts_action.setToolTip(
+            "Stack shots taken a moment apart that look alike, the best on top"
+        )
+        self.stack_bursts_action.triggered.connect(self.stack_bursts)
         self.leave_stack_action = QAction("Remove from Stack", self)
         self.leave_stack_action.triggered.connect(self.leave_stack)
         self.toggle_stack_action = QAction("Expand or Collapse Stack", self)
@@ -558,6 +563,7 @@ class MainWindow(QMainWindow):
         self.stack_actions = (
             self.stack_action,
             self.unstack_action,
+            self.stack_bursts_action,
             self.leave_stack_action,
             self.toggle_stack_action,
             self.stack_top_action,
@@ -2260,6 +2266,9 @@ class MainWindow(QMainWindow):
         rows = self._stack_rows()
         stacked = [row for row in rows if self.model.stack(row) is not None]
         self.stack_action.setEnabled(len(rows) > 1)
+        self.stack_bursts_action.setEnabled(
+            self.pages.currentIndex() == _GRID and self.model.rowCount() > 1
+        )
         self.unstack_action.setEnabled(bool(stacked))
         self.leave_stack_action.setEnabled(bool(stacked))
         self.toggle_stack_action.setEnabled(bool(stacked))
@@ -2274,6 +2283,21 @@ class MainWindow(QMainWindow):
             return
         self.service.make_stack([self.model.photo_id(row) for row in rows])
         self.statusBar().showMessage(f"Stacked {len(rows)} photos", 4000)
+
+    def stack_bursts(self):
+        """Stack the bursts among the photos chosen, or among all those shown when fewer
+        than two are chosen."""
+        rows = self._stack_rows()
+        if len(rows) > 1:
+            ids = {self.model.photo_id(row) for row in rows}
+            photos = [p for p in self.model.photo_rows() if p.id in ids]
+        else:
+            photos = self.model.photo_rows()
+        made = self.service.stack_bursts(photos)
+        self.statusBar().showMessage(
+            f"Stacked {made} burst{'s' if made != 1 else ''}" if made else "No bursts found",
+            4000,
+        )
 
     def unstack_photos(self):
         """Take apart the stacks the photos chosen are in."""

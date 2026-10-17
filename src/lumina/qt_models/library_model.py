@@ -610,6 +610,10 @@ class LibraryModel(QAbstractListModel):
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self._rows)
 
+    def photo_rows(self):
+        """Every photo the filter shows, folded away by a collapsed stack or not."""
+        return list(self._all)
+
     def photo_id(self, row):
         return self._rows[row].id
 

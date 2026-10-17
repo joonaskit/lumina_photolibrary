@@ -17,8 +17,8 @@ from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from lumina.core import bursts, embed, images, lensdb, metadata, raw, thumbs, volumes
 from lumina.core import db as dbm
-from lumina.core import images, lensdb, metadata, raw, thumbs, volumes
 from lumina.core import library as scanning
 from lumina.core import sidecars as sidecarsm
 from lumina.core.edit import params as _params
@@ -491,6 +491,19 @@ class LibraryService(QObject):
         """Stack these photos, the first on top. Fewer than two make none."""
         if self.db.make_stack(photo_ids) is not None:
             self._stacks_changed()
+
+    def stack_bursts(self, rows):
+        """Stack the bursts among `rows` (PhotoRows): shots a moment apart that look alike,
+        the best on top (core/bursts.py). Photos already stacked stay as they are. Returns
+        how many stacks were made."""
+        vectors = self.db.vectors_of(embed.MODEL.name, [r.content_id for r in rows])
+        vectors = dict(zip(vectors, embed.from_blobs(list(vectors.values())), strict=True))
+        found = bursts.find(rows, vectors)
+        for group in found:
+            self.db.make_stack(group)
+        if found:
+            self._stacks_changed()
+        return len(found)
 
     def unstack(self, photo_ids):
         """Take apart the stacks these photos are in."""
