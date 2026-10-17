@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from lumina.core import bursts, embed, images, lensdb, metadata, raw, thumbs, volumes
+from lumina.core import bursts, embed, images, lensdb, metadata, raw, similar, thumbs, volumes
 from lumina.core import db as dbm
 from lumina.core import library as scanning
 from lumina.core import sidecars as sidecarsm
@@ -505,6 +505,20 @@ class LibraryService(QObject):
             self._stacks_changed()
         return len(found)
 
+    def find_similar(self, similarity, on_done, on_error):
+        """Look through the whole library, on a thread, for photos that look alike or are
+        copies of one file (core/similar.py), then `on_done([(exact, [PhotoRow, ...])])`,
+        the best photo of each group first, largest groups first."""
+        workers.submit(
+            _find_similar,
+            self.path,
+            similarity,
+            on_done=on_done,
+            on_error=on_error,
+            owner=self,
+            process=False,
+        )
+
     def unstack(self, photo_ids):
         """Take apart the stacks these photos are in."""
         self.db.unstack(photo_ids)
@@ -878,3 +892,20 @@ def _run_scan(
             # Stopped by a quit, not by the user: run again at the next start
             library.update_job(job_id, state=dbm.QUEUED, message=None)
         return state
+
+
+# For the UI: where the similarity setting starts
+SIMILAR_DEFAULT = similar.SIMILARITY
+
+
+def _find_similar(path, similarity):
+    """On a thread: the groups of photos in the library at `path` that are alike."""
+    with dbm.Library(path) as library:
+        rows = library.photos()
+        blobs = library.vectors_of(embed.MODEL.name, [r.content_id for r in rows])
+    vectors = dict(zip(blobs, embed.from_blobs(list(blobs.values())), strict=True))
+    by_id = {row.id: row for row in rows}
+    return [
+        (group.exact, [by_id[i] for i in group.ids])
+        for group in similar.find(rows, vectors, similarity)
+    ]
