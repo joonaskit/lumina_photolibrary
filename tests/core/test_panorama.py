@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from fakes import FakeExifTool
 from photos import make_jpeg
-from rawfiles import bracket_mosaic, make_dng, surroundings, view
+from rawfiles import bracket_mosaic, make_dng, surroundings, view, vignetted
 
 from lumina.core import db as dbm
 from lumina.core import library as scanning
@@ -49,12 +49,16 @@ def mounted(drive):
     return [Mount(DRIVE, str(drive), "/", "ext4", "/dev/sdz1", "Photos drive")]
 
 
-def shoot(folder, around, yaws=YAWS, stops=None, first=1):
-    """Frames as a camera turning writes them: IMG_0001.dng and on, left to right."""
+def shoot(folder, around, yaws=YAWS, stops=None, first=1, falloff=None):
+    """Frames as a camera turning writes them: IMG_0001.dng and on, left to right. With
+    `falloff` (a, b), through a lens that darkens the corners (rawfiles.vignetted)."""
     paths = []
     for i, yaw in enumerate(yaws):
         stop = stops[i] if stops else 0.0
-        mosaic = bracket_mosaic(view(around, yaw), stop)
+        light = view(around, yaw)
+        if falloff:
+            light = vignetted(light, falloff)
+        mosaic = bracket_mosaic(light, stop)
         paths.append(make_dng(folder / f"IMG_{first + i:04d}.dng", mosaic=mosaic))
     return paths
 
@@ -184,6 +188,138 @@ def test_frames_of_different_exposures_are_made_alike(library, drive, tmp_path, 
     # One brightness from left to right: no step where the frames meet
     columns = np.median(image[..., 1] / truth, axis=0)
     assert columns.max() / columns.min() < 1.1
+
+
+def test_darker_corners_do_not_show_as_bands_across_the_seams(library, drive, tmp_path, around):
+    # A lens a stop and a half darker in the corners: each frame is darker at its edges
+    shoot(drive / "Photos", around, falloff=(-0.6, -0.4))
+    ids = scanned(library, drive)
+
+    state, job = stitched(library, drive, ids, tmp_path)
+
+    assert state == dbm.DONE, job.message
+    image = light_of(drive / "Photos" / "IMG_0001-pano.tif")
+    score, truth = found_in(image, around)
+    assert score > 0.97
+    # As bright as the scene from the first column to the last (not darker at the ends,
+    # and no step where the frames meet)
+    columns = np.median(image[..., 1] / truth, axis=0)
+    assert columns.max() / columns.min() < 1.1
+    assert abs(np.median(columns) - 1) < 0.03
+
+
+def planned(folder, around, falloff):
+    """The plan made for frames shot through a lens with `falloff`."""
+    paths = [str(path) for path in shoot(folder, around, falloff=falloff)]
+    work = str(folder / "work")
+    os.makedirs(work)
+    for index, path in enumerate(paths):
+        panorama.decode_frame(path, index, work, None)
+    panorama.make_plan(work, len(paths), panorama.CYLINDRICAL, True, paths)
+    return panorama.load_plan(work)
+
+
+@pytest.mark.parametrize("falloff", [(-0.6, -0.4), (-0.3, 0.0)])
+def test_the_falloff_found_is_the_lens(tmp_path, around, falloff):
+    plan = planned(tmp_path, around, falloff)
+
+    a, b = plan["vignette"]
+    assert a == pytest.approx(falloff[0], abs=0.1) and b == pytest.approx(falloff[1], abs=0.1)
+    # The gains are not made to do the lens's work: all the frames were a stop alike
+    assert plan["gains"] == pytest.approx([1.0, 1.0, 1.0], abs=0.01)
+
+
+def test_frames_of_a_lens_that_keeps_the_light_are_not_corrected(tmp_path, around):
+    plan = planned(tmp_path, around, None)
+
+    a, b = plan["vignette"]
+    # A corner within 2 % of the middle
+    assert abs(a + b) < 0.02
+
+
+def test_a_falloff_no_lens_makes_is_left_out():
+    # Brighter towards the corners, or darkening more than 10 : 1, is not a lens
+    assert panorama._plausible((-0.5, -0.2))
+    assert panorama._plausible((-1.0, 0.4))
+    assert not panorama._plausible((0.2, 0.0))
+    assert not panorama._plausible((-1.0, 1.5))
+    assert not panorama._plausible((-3.0, 0.0))
+
+
+def previewed(folder, around, projection=panorama.CYLINDRICAL, crop=True, **options):
+    """The picture of a preview of frames shot in `folder`: (width, height, rows)."""
+    paths = [str(path) for path in shoot(folder, around, **options)]
+    work = str(folder / "preview")
+    os.makedirs(work)
+    for index, path in enumerate(paths):
+        panorama.preview_frame(path, index, work, paths[0])
+    return panorama.preview_plan(work, len(paths), projection, crop, paths)
+
+
+def test_a_preview_shows_the_panorama_before_it_is_made(library, drive, tmp_path, around):
+    width, height, rows = previewed(drive / "Photos", around)
+
+    assert len(rows) == width * height * 3
+    picture = np.frombuffer(rows, np.uint8).reshape(height, width, 3)
+    assert picture.min() > 0 and picture.max() > 100
+    # What the stitch makes, smaller: of the same shape, and the same scene
+    ids = scanned(library, drive)
+    stitched(library, drive, ids, tmp_path)
+    made = light_of(drive / "Photos" / "IMG_0001-pano.tif")
+    assert width / height == pytest.approx(made.shape[1] / made.shape[0], rel=0.03)
+    # (The picture is gamma-encoded, and of frames at half size: the scene's half size)
+    linear = ((picture[..., 1] / 255.0) ** 2.2).astype(np.float32)
+    half = cv2.resize(around, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+    assert found_in(np.dstack([linear] * 3), half)[0] > 0.9
+
+
+def test_a_preview_is_made_at_most_so_long(tmp_path, around, monkeypatch):
+    monkeypatch.setattr(panorama, "PREVIEW_SIDE", 200)
+
+    width, height, rows = previewed(tmp_path, around)
+
+    assert max(width, height) == 200 and len(rows) == width * height * 3
+
+
+def test_a_preview_takes_the_projection_and_the_crop(tmp_path, around):
+    def previewed_in(name, **options):
+        (tmp_path / name).mkdir()
+        return previewed(tmp_path / name, around, **options)
+
+    cylinder = previewed_in("a")
+    whole = previewed_in("b", crop=False)
+    plane = previewed_in("c", projection="perspective")
+
+    # The frames' corners curve away on a cylinder: more is kept without the crop
+    assert whole[1] > cylinder[1]
+    assert plane[0] > 1.5 * cylinder[0]
+
+
+def test_a_preview_names_the_photo_that_does_not_fit(tmp_path, around):
+    frames = [str(path) for path in shoot(tmp_path, around, yaws=(-35, 0, 35, 180))]
+    work = str(tmp_path / "preview")
+    os.makedirs(work)
+    for index, path in enumerate(frames):
+        panorama.preview_frame(path, index, work, frames[0])
+
+    with pytest.raises(panorama.PhotoError) as error:
+        panorama.preview_plan(work, 4, panorama.CYLINDRICAL, True, frames)
+
+    assert error.value.path == frames[3]
+    assert error.value.message.startswith("does not overlap the other photos")
+
+
+def test_a_preview_of_photos_of_other_sizes_says_so(tmp_path, around):
+    one = make_dng(tmp_path / "IMG_0001.dng", mosaic=bracket_mosaic(view(around, 0)))
+    other = make_dng(
+        tmp_path / "IMG_0002.dng", mosaic=bracket_mosaic(view(around, 20, size=(200, 160)))
+    )
+    work = str(tmp_path / "preview")
+    os.makedirs(work)
+    panorama.preview_frame(str(one), 0, work, str(one))
+
+    with pytest.raises(panorama.PhotoError, match="not of one size"):
+        panorama.preview_frame(str(other), 1, work, str(one))
 
 
 def test_without_the_crop_it_keeps_all_the_frames_cover(library, drive, tmp_path, around):

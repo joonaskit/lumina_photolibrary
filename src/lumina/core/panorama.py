@@ -43,7 +43,7 @@ import numpy as np
 from lumina.core import db as dbm
 from lumina.core import derived, raw
 from lumina.core.derived import finish_result, start_result
-from lumina.core.edit import source
+from lumina.core.edit import pipeline, source
 from lumina.core.errors import PhotoError
 
 PANORAMA = "panorama"
@@ -77,6 +77,17 @@ _WEIGHT_FLOOR = 1e-3
 # A frame's weight goes from all to none as its brightest channel goes from here to
 # there of white, in a frame that clips (a RAW file's or a JPEG's; not a merge's)
 _CLIP_FROM, _CLIP_AT = 0.80, 0.95
+# Vignetting is fitted over the pixels both of a pair have, in this many bins along how
+# much nearer the middle of one frame they are than of the other. It is held to a
+# falloff a lens can make: darker towards the corners, never by more than this (a share
+# of the light in the middle), and a little pulled to none where the overlaps say little
+_VIGNETTE_BINS = 8
+_VIGNETTE_LEAST = 0.1
+_VIGNETTE_PULL = 1.0
+# A preview is stitched from half-size decodes, as small as the copies the geometry is
+# found on, into at most this many pixels, and shown at most this long on its longest side
+PREVIEW_PIXELS = 3_000_000
+PREVIEW_SIDE = 1600
 # Rows stitched in one call, and the widest strip remapped at once (cv2.remap takes
 # fewer than 32767 columns)
 BAND = 128
@@ -199,9 +210,26 @@ def _roi(kind, scale, camera, width, height, margin=2):
     )
 
 
+def _radius2(x, y, width, height):
+    """How far the frame's points (`x`, `y`, in pixels of the full frame, `width` x
+    `height`) are from its middle, squared, 1 at a corner (and at most 2: what is
+    outside is not measured)."""
+    cx, cy = (width - 1) / 2, (height - 1) / 2
+    r2 = ((x - cx) ** 2 + (y - cy) ** 2) / (cx**2 + cy**2)
+    return np.minimum(r2, 2.0).astype(np.float32)
+
+
+def _falloff(r2, vignette):
+    """The light a lens keeps at `r2` (from _radius2), 1 in the middle, for the
+    `vignette` (a, b) found: exp(a r^2 + b r^4)."""
+    a, b = vignette
+    return np.exp(a * r2 + b * r2 * r2)
+
+
 def _warp(image, factor, kind, scale, camera, roi, size):
     """`image` (a frame `factor` of its full `size`, width x height, as floats) as the
-    result's pixels `roi` see it: (pixels, covered)."""
+    result's pixels `roi` see it: (pixels, covered, r2), r2 how far each is from the
+    frame's middle (_radius2)."""
     left, top, right, bottom = roi
     x, y, ahead = _to_frame(kind, scale, camera, np.arange(left, right), np.arange(top, bottom))
     width, height = size
@@ -211,7 +239,7 @@ def _warp(image, factor, kind, scale, camera, roi, size):
     sy = ((y + 0.5) * factor - 0.5).astype(np.float32)
     pixels = cv2.remap(image, sx, sy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
     pixels[~covered] = 0
-    return pixels, covered
+    return pixels, covered, _radius2(x, y, width, height)
 
 
 # The steps, in a worker process
@@ -242,37 +270,55 @@ def _save_json(path, data):
     os.replace(path + ".tmp", path)
 
 
-def decode_frame(path, index, work, white_balance):
+def decode_frame(path, index, work, white_balance, preview=False):
     """Decode frame `index` (the photo at `path`; a RAW file with `white_balance`, or the
     camera's when None) into the work folder `work`, with a copy of about WORK_PIXELS.
-    Frames after the first must be of its size. Raises PhotoError naming the file."""
+    Frames after the first must be of its size. Raises PhotoError naming the file.
+
+    For a preview the decode is at half size, and the frame kept is that copy: a
+    panorama of frames of a megapixel, planned and stitched as any other."""
     if raw.is_raw(path):
-        linear = source.raw_linear(path, white_balance=white_balance)
+        linear = source.raw_linear(path, half=preview, white_balance=white_balance)
     else:
-        linear = source.load_linear(path)
+        linear = source.load_linear(path, half=preview)
     height, width = linear.shape[:2]
     if index > 0:
         with open(_frame(work, 0, "frame") + ".json") as file:
-            wanted = json.load(file)["shape"]
+            first = json.load(file)
+        # (Work folders kept by an earlier version have the size only as "shape")
+        wanted = first.get("decoded", first["shape"])
         if [height, width] != wanted:
             raise PhotoError(
                 path,
-                f"is {width} x {height}, the other photos {wanted[1]} x {wanted[0]}: "
+                "is not of one size with the other photos"
+                if preview
+                else f"is {width} x {height}, the other photos {wanted[1]} x {wanted[0]}: "
                 "they are not of one size",
             )
     small = source.resize(linear, *source.fit(width, height, WORK_PIXELS), quality=False)
     _save(_frame(work, index, "small") + ".npy", small)
-    _save(_frame(work, index, "frame") + ".npy", linear)
     # What white is in the decode, and whether it clips there (a merge's does not)
     clips = linear.dtype == np.uint16
-    info = {"shape": [height, width], "white": 65535.0 if clips else 1.0, "clips": clips}
+    if preview:
+        # Resized, it is in [0, 1] (or a merge's light past it)
+        kept, white = small, 1.0
+    else:
+        kept, white = linear, 65535.0 if clips else 1.0
+    _save(_frame(work, index, "frame") + ".npy", kept)
+    info = {
+        "shape": list(kept.shape[:2]),
+        "decoded": [height, width],
+        "white": white,
+        "clips": clips,
+    }
     _save_json(_frame(work, index, "frame") + ".json", info)
 
 
-def make_plan(work, count, projection, crop, paths):
-    """Find how the `count` frames decoded in `work` go together, and keep it there.
-    Returns the result's (width, height). Raises PhotoError naming a frame that does not
-    fit with the others."""
+def make_plan(work, count, projection, crop, paths, max_pixels=None):
+    """Find how the `count` frames decoded in `work` go together, and keep it there. The
+    result is made smaller to be at most `max_pixels` (MAX_PIXELS). Returns the result's (width,
+    height). Raises PhotoError naming a frame that does not fit with the others."""
+    max_pixels = max_pixels or MAX_PIXELS
     infos, smalls = [], []
     for index in range(count):
         with open(_frame(work, index, "frame") + ".json") as file:
@@ -287,9 +333,9 @@ def make_plan(work, count, projection, crop, paths):
         while True:
             whole = _union([_roi(projection, scale, c, width, height, 0) for c in cameras])
             pixels = (whole[2] - whole[0]) * (whole[3] - whole[1])
-            if pixels <= MAX_PIXELS:
+            if pixels <= max_pixels:
                 break
-            scale *= math.sqrt(MAX_PIXELS / pixels) * 0.99
+            scale *= math.sqrt(max_pixels / pixels) * 0.99
         rois = [_roi(projection, scale, camera, width, height) for camera in cameras]
     except ValueError:
         raise PhotoError(
@@ -304,10 +350,10 @@ def make_plan(work, count, projection, crop, paths):
         for small, camera, roi in zip(smalls, cameras, seam_rois, strict=True)
     ]
     del smalls
-    gains = _gains(warped, seam_rois, [info["clips"] for info in infos])
-    seams = _seams(warped, seam_rois, gains)
+    gains, vignette = _gains(warped, seam_rois, [info["clips"] for info in infos])
+    seams = _seams(warped, seam_rois, gains, vignette)
     feather = max(1, round(_FEATHER * width * ratio))
-    for index, (seam, (_pixels, covered)) in enumerate(zip(seams, warped, strict=True)):
+    for index, (seam, (_pixels, covered, _r2)) in enumerate(zip(seams, warped, strict=True)):
         _save(_frame(work, index, "weight") + ".npy", _weight(seam, covered, feather))
     box = _covered_box(warped, seam_rois, ratio) if crop else whole
     if box is None:
@@ -320,6 +366,7 @@ def make_plan(work, count, projection, crop, paths):
         "rois": rois,
         "seam_rois": seam_rois,
         "gains": gains,
+        "vignette": list(vignette),
         "whites": [info["white"] for info in infos],
         "clips": [info["clips"] for info in infos],
         "shape": [height, width],
@@ -449,13 +496,20 @@ def _cut(array, roi, box):
 
 
 def _gains(warped, rois, clips):
-    """How much each frame is to be brightened to look as its neighbours, from the light
-    of the pixels each pair has well exposed where they overlap: [gain], their
-    geometric mean 1."""
+    """How much each frame is to be brightened to look as its neighbours, and the falloff
+    of the lens towards the corners they share, from the light of the pixels each pair
+    has well exposed where they overlap: ([gain], their geometric mean 1; (a, b) of
+    exp(a r^2 + b r^4), see _falloff, both 0 for none).
+
+    A pair's two frames see one light: gain_i L_i / f(r_i) = gain_j L_j / f(r_j), so
+    log gain_i - log gain_j - (log f(r_i) - log f(r_j)) = log (L_j / L_i), for the
+    medians over bins of the overlap, whose pixels are nearer the middle of one frame
+    or the other by different amounts. All the pairs together are solved by least
+    squares for the gains, a and b."""
     count = len(warped)
     luma = np.array([0.2126, 0.7152, 0.0722], np.float32)
-    lumas = [pixels @ luma for pixels, _covered in warped]
-    equations, sides = [], []
+    lumas = [pixels @ luma for pixels, _covered, _r2 in warped]
+    equations, sides, weights = [], [], []
     for i in range(count):
         for j in range(i + 1, count):
             box = _overlap(rois[i], rois[j])
@@ -468,29 +522,59 @@ def _gains(warped, rois, clips):
                 good &= a < _MEASURE_HIGH
             if clips[j]:
                 good &= b < _MEASURE_HIGH
-            if np.count_nonzero(good) < _MEASURE_LEAST:
+            measured = np.count_nonzero(good)
+            if measured < _MEASURE_LEAST:
                 continue
-            # gain_i a = gain_j b: log gain_i - log gain_j = log(b / a)
-            row = np.zeros(count)
-            row[i], row[j] = 1.0, -1.0
-            weight = math.sqrt(np.count_nonzero(good))
-            equations.append(row * weight)
-            sides.append(math.log(float(np.median(b[good] / a[good]))) * weight)
+            ratio = np.log(b[good] / a[good])
+            r2_i = _cut(warped[i][2], rois[i], box)[good].astype(np.float64)
+            r2_j = _cut(warped[j][2], rois[j], box)[good].astype(np.float64)
+            apart = r2_i - r2_j
+            bins = max(1, min(_VIGNETTE_BINS, measured // _MEASURE_LEAST))
+            for part in np.array_split(np.argsort(apart), bins):
+                row = np.zeros(count + 2)
+                row[i], row[j] = 1.0, -1.0
+                row[count] = -float(np.mean(apart[part]))
+                row[count + 1] = -float(np.mean(r2_i[part] ** 2 - r2_j[part] ** 2))
+                weight = math.sqrt(len(part))
+                equations.append(row * weight)
+                sides.append(float(np.median(ratio[part])) * weight)
+                weights.append(weight)
     # Their geometric mean 1, weighed as much as all the pairs
-    equations.append(np.ones(count) * max(1.0, sum(abs(row).max() for row in equations)))
-    sides.append(0.0)
-    logs = np.linalg.lstsq(np.array(equations), np.array(sides), rcond=None)[0]
-    return [float(math.exp(value)) for value in logs]
+    constraint = np.zeros(count + 2)
+    constraint[:count] = max(1.0, sum(weights))
+    equations = np.array(equations).reshape(-1, count + 2)
+    # The most terms of the falloff that a lens could have made
+    for terms in (2, 1, 0):
+        keep = [*range(count), *range(count, count + terms)]
+        pull = np.zeros((terms, count + terms))
+        pull[range(terms), range(count, count + terms)] = _VIGNETTE_PULL
+        matrix = np.vstack([equations[:, keep], constraint[keep], pull])
+        wanted = np.concatenate([sides, np.zeros(1 + terms)])
+        solution = np.linalg.lstsq(matrix, wanted, rcond=None)[0]
+        vignette = (*solution[count:], 0.0, 0.0)[:2]
+        if _plausible(vignette):
+            break
+    return [float(math.exp(value)) for value in solution[:count]], tuple(float(v) for v in vignette)
 
 
-def _seams(warped, rois, gains):
+def _plausible(vignette):
+    """Whether the falloff (a, b) is one a lens makes: no brighter anywhere out from the
+    middle than in it (the slope, a + 2 b r^2, never above 0 up to the corners), and
+    not under _VIGNETTE_LEAST of the middle's light at a corner."""
+    a, b = vignette
+    return a <= 0 and a + 2 * b <= 0 and a + b >= math.log(_VIGNETTE_LEAST)
+
+
+def _seams(warped, rois, gains, vignette):
     """Each frame's part of the result, by graph cut where frames overlap (OpenCV's
     GraphCutSeamFinder, on the colours gamma-encoded): [mask as uint8]."""
-    images = [
-        np.ascontiguousarray(np.sqrt(np.clip(pixels * np.float32(gain), 0.0, 1.0)) * 255)
-        for (pixels, _covered), gain in zip(warped, gains, strict=True)
-    ]
-    masks = [covered.astype(np.uint8) * 255 for _pixels, covered in warped]
+    images = []
+    for (pixels, _covered, r2), gain in zip(warped, gains, strict=True):
+        level = (gain / _falloff(r2, vignette)).astype(np.float32)
+        images.append(
+            np.ascontiguousarray(np.sqrt(np.clip(pixels * level[..., None], 0.0, 1.0)) * 255)
+        )
+    masks = [covered.astype(np.uint8) * 255 for _pixels, covered, _r2 in warped]
     corners = [(int(roi[0]), int(roi[1])) for roi in rois]
     finder = cv2.detail_GraphCutSeamFinder("COST_COLOR")
     found = finder.find(images, corners, masks)
@@ -513,7 +597,7 @@ def _covered_box(warped, rois, ratio):
     them inside), or None."""
     canvas = _union(rois)
     covered = np.zeros((canvas[3] - canvas[1], canvas[2] - canvas[0]), bool)
-    for (_pixels, mask), roi in zip(warped, rois, strict=True):
+    for (_pixels, mask, _r2), roi in zip(warped, rois, strict=True):
         _cut(covered, canvas, roi)[...] |= mask
     # Fewer pixels to search: a block counts when all of it is covered
     step = max(1, math.ceil(math.sqrt(covered.size / 200_000)))
@@ -557,11 +641,20 @@ def _largest_rectangle(mask):
 def stitch_rows(work, part, tags, first, last):
     """Rows `first` to `last` of the result, stitched from the frames in `work`, written
     to the result file `part` (laid out by `start_result`)."""
+    rows, width, height = render_rows(work, first, last)
+    derived.write_rows(part, width, height, tags, first, rows)
+    return last - first
+
+
+def render_rows(work, first, last):
+    """Rows `first` to `last` of the result planned in `work`, stitched from its frames:
+    (floats, rows x width x 3; the result's width; its height)."""
     plan = load_plan(work)
     left, top, right, bottom = plan["box"]
     width, height = right - left, bottom - top
     kind, scale, ratio = plan["projection"], plan["scale"], plan["ratio"]
     frame_height, frame_width = plan["shape"]
+    vignette = plan.get("vignette", (0.0, 0.0))
     rows = (top + first, top + last)
     total = np.zeros((last - first, width, 3), np.float32)
     weight = np.zeros((last - first, width), np.float32)
@@ -586,7 +679,7 @@ def stitch_rows(work, part, tags, first, last):
             x1 = min(frame_width, math.ceil(x[covered].max()) + 2)
             y0 = max(0, math.floor(y[covered].min()) - 1)
             y1 = min(frame_height, math.ceil(y[covered].max()) + 2)
-            window = np.asarray(frame[y0:y1, x0:x1], dtype=np.float32)
+            window = np.array(frame[y0:y1, x0:x1], dtype=np.float32)
             window *= level
             if plan["clips"][index]:
                 # 1 well under clipping, 0 at it: where another frame has the light a
@@ -600,6 +693,10 @@ def stitch_rows(work, part, tags, first, last):
                 cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_REPLICATE,
             )
+            if any(vignette):
+                # The lens darkened the corners: brought back to the middle's light
+                r2 = _radius2(x, y, frame_width, frame_height)
+                pixels /= _falloff(r2, vignette).astype(np.float32)[..., None]
             # The seam's weight, from its smaller copy
             seam_roi = plan["seam_rois"][index]
             su = np.broadcast_to((u * ratio - seam_roi[0]).astype(np.float32), x.shape)
@@ -633,8 +730,39 @@ def stitch_rows(work, part, tags, first, last):
     nothing = weight <= 0
     weight[nothing] = 1.0
     total /= weight[..., None]
-    derived.write_rows(part, width, height, tags, first, total)
-    return last - first
+    return total, width, height
+
+
+# A preview: the same, from frames a megapixel each
+
+
+def preview_frame(path, index, work, first):
+    """Decode frame `index` (the photo at `path`) for a preview into `work`, RAW files
+    with the white balance of the first photo, `first`'s."""
+    balance = source.camera_white_balance(first) if raw.is_raw(first) else None
+    decode_frame(path, index, work, balance, preview=True)
+
+
+def preview_plan(work, count, projection, crop, paths):
+    """Plan the `count` frames of a preview in `work` and stitch them: the picture, as
+    (width, height, bytes of 8-bit sRGB rows). Raises PhotoError as `make_plan` does."""
+    make_plan(work, count, projection, crop, paths, max_pixels=PREVIEW_PIXELS)
+    return preview_picture(work)
+
+
+def preview_picture(work):
+    """The panorama planned in `work` (from preview frames), at most PREVIEW_SIDE on its
+    longest side: (width, height, bytes of 8-bit sRGB rows)."""
+    width, height = plan_size(work)
+    image = np.zeros((height, width, 3), np.float32)
+    for first in range(0, height, BAND):
+        last = min(height, first + BAND)
+        image[first:last] = render_rows(work, first, last)[0]
+    if max(width, height) > PREVIEW_SIDE:
+        width, height = source.fit(width, height, side=PREVIEW_SIDE)
+        image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+    picture = np.round(pipeline.srgb_encode(image) * 255).astype(np.uint8)
+    return width, height, np.ascontiguousarray(picture).tobytes()
 
 
 # The job, on a thread
