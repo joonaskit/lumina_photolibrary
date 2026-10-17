@@ -556,6 +556,17 @@ class LibraryModel(QAbstractListModel):
         self._push_undo(field, before)
         return value
 
+    def flag_photos(self, photo_ids, flag):
+        """Give these photos `flag` (by id, whether the filter shows them or not), as one
+        change that can be undone. Returns how many changed."""
+        before = self.service.flags(photo_ids)
+        changes = {i: flag for i, was in before.items() if was != flag}
+        if not changes:
+            return 0
+        self._write("flag", changes)
+        self._push_undo("flag", {i: before[i] for i in changes})
+        return len(changes)
+
     def can_undo_flags(self):
         return bool(self._undo)
 
@@ -609,6 +620,10 @@ class LibraryModel(QAbstractListModel):
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self._rows)
+
+    def photo_rows(self):
+        """Every photo the filter shows, folded away by a collapsed stack or not."""
+        return list(self._all)
 
     def photo_id(self, row):
         return self._rows[row].id

@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 from lumina.integration import style
 from lumina.qt_models import tether as camera_service
 from lumina.qt_models.develop import DevelopSession
-from lumina.qt_models.library import NewerParams
+from lumina.qt_models.library import SIMILAR_DEFAULT, NewerParams
 from lumina.qt_models.library_model import (
     COPIES_ROLE,
     COPY_ROLE,
@@ -67,6 +67,7 @@ from lumina.ui.quick_view import QuickView
 from lumina.ui.search import SearchField, SearchStatus
 from lumina.ui.settings_dialog import SettingsDialog
 from lumina.ui.sidebar import Sidebar
+from lumina.ui.similar_dialog import SHOWN, SimilarDialog
 from lumina.ui.tether import TetherDialog, TetherStatus
 
 APP_NAME = "Lumina"
@@ -548,6 +549,19 @@ class MainWindow(QMainWindow):
         self.unstack_action = QAction("Unstack", self)
         self.unstack_action.setShortcut(QKeySequence("Ctrl+Shift+G"))
         self.unstack_action.triggered.connect(self.unstack_photos)
+        self.stack_bursts_action = QAction("Stack Bursts", self)
+        self.stack_bursts_action.setToolTip(
+            "Stack shots taken a moment apart that look alike, the best on top"
+        )
+        self.stack_bursts_action.triggered.connect(self.stack_bursts)
+        self.find_duplicates_action = QAction("Find Duplicates…", self)
+        self.find_duplicates_action.setToolTip(
+            "Look through the library for photos that look alike or are copies of one file"
+        )
+        self.find_duplicates_action.triggered.connect(self.find_duplicates)
+        self.addAction(self.find_duplicates_action)
+        self.similar_dialog = None
+        self._similar_scope = set()
         self.leave_stack_action = QAction("Remove from Stack", self)
         self.leave_stack_action.triggered.connect(self.leave_stack)
         self.toggle_stack_action = QAction("Expand or Collapse Stack", self)
@@ -558,10 +572,13 @@ class MainWindow(QMainWindow):
         self.stack_actions = (
             self.stack_action,
             self.unstack_action,
+            self.stack_bursts_action,
             self.leave_stack_action,
             self.toggle_stack_action,
             self.stack_top_action,
         )
+        # In the grid's menu with the stack actions, though not a thing done to the chosen
+        self.stack_menu_actions = (*self.stack_actions, self.find_duplicates_action)
         self.copy_actions = (
             self.make_copy_action,
             self.delete_copy_action,
@@ -1459,7 +1476,7 @@ class MainWindow(QMainWindow):
                 menu.addAction(self.delete_copy_action)
         if in_grid:
             menu.addSeparator()
-            for action in self.stack_actions:
+            for action in self.stack_menu_actions:
                 menu.addAction(action)
         menu.addSeparator()
         menu.addAction(self.copy_settings_action)
@@ -2260,6 +2277,9 @@ class MainWindow(QMainWindow):
         rows = self._stack_rows()
         stacked = [row for row in rows if self.model.stack(row) is not None]
         self.stack_action.setEnabled(len(rows) > 1)
+        self.stack_bursts_action.setEnabled(
+            self.pages.currentIndex() == _GRID and self.model.rowCount() > 1
+        )
         self.unstack_action.setEnabled(bool(stacked))
         self.leave_stack_action.setEnabled(bool(stacked))
         self.toggle_stack_action.setEnabled(bool(stacked))
@@ -2274,6 +2294,80 @@ class MainWindow(QMainWindow):
             return
         self.service.make_stack([self.model.photo_id(row) for row in rows])
         self.statusBar().showMessage(f"Stacked {len(rows)} photos", 4000)
+
+    def stack_bursts(self):
+        """Stack the bursts among the photos chosen, or among all those shown when fewer
+        than two are chosen."""
+        rows = self._stack_rows()
+        if len(rows) > 1:
+            ids = {self.model.photo_id(row) for row in rows}
+            photos = [p for p in self.model.photo_rows() if p.id in ids]
+        else:
+            photos = self.model.photo_rows()
+        made = self.service.stack_bursts(photos)
+        self.statusBar().showMessage(
+            f"Stacked {made} burst{'s' if made != 1 else ''}" if made else "No bursts found",
+            4000,
+        )
+
+    def find_duplicates(self):
+        """Open the list of photos across the library that look alike or are copies."""
+        if self.similar_dialog is None:
+            # What the grid shows now is what "here" means, whatever is shown later
+            self._similar_scope = {p.id for p in self.model.photo_rows()}
+            shown = None if self._shows_library() else self.title.text()
+            dialog = SimilarDialog(
+                lambda photo: self.service.resolve(photo.volume_key, photo.path),
+                SIMILAR_DEFAULT,
+                shown,
+                self,
+            )
+            dialog.search_requested.connect(self._search_similar)
+            dialog.stack_requested.connect(self._stack_similar)
+            dialog.reject_requested.connect(self._reject_similar)
+            dialog.finished.connect(lambda _result: setattr(self, "similar_dialog", None))
+            self.similar_dialog = dialog
+        self.similar_dialog.show()
+        self.similar_dialog.raise_()
+        self._search_similar(self.similar_dialog.similarity(), self.similar_dialog.scope())
+
+    def _shows_library(self):
+        """Whether the grid shows every photo, so there is no narrower place to look."""
+        return (
+            self.sidebar.current_folder() is None
+            and self.sidebar.current_collection() is None
+            and self.sidebar.current_import() is None
+            and self.model.filter == self.model.filter.__class__()
+        )
+
+    def _search_similar(self, similarity, scope):
+        dialog = self.similar_dialog
+        dialog.searching()
+        self.service.find_similar(
+            similarity,
+            self._similar_scope if scope == SHOWN else None,
+            lambda groups: self._similar_found(dialog, similarity, groups),
+            lambda error: dialog.failed(str(error)),
+        )
+
+    def _similar_found(self, dialog, similarity, groups):
+        # An answer to a slider position since moved is not the one wanted
+        if dialog is self.similar_dialog and similarity == dialog.similarity():
+            dialog.set_groups(groups)
+
+    def _stack_similar(self, groups):
+        """Stack each group chosen in the dialog (`groups`: lists of ids, best first)."""
+        for ids in groups:
+            self.service.make_stack(ids)
+        self.statusBar().showMessage(
+            f"Stacked {len(groups)} group{'s' if len(groups) != 1 else ''}", 4000
+        )
+
+    def _reject_similar(self, ids):
+        count = self.model.flag_photos(ids, REJECTED)
+        self.statusBar().showMessage(
+            f"Gave {count} photo{'s' if count != 1 else ''} a thumbs down", 4000
+        )
 
     def unstack_photos(self):
         """Take apart the stacks the photos chosen are in."""

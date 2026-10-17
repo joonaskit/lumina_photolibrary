@@ -1588,6 +1588,20 @@ class Library:
         ).fetchone()
         return row[0] if row is not None else None
 
+    def vectors_of(self, model, content_ids):
+        """{content_id: float16 blob} of those of `content_ids` that have a vector."""
+        ids = list(dict.fromkeys(content_ids))
+        found = {}
+        for start in range(0, len(ids), 500):
+            part = ids[start : start + 500]
+            rows = self.db.execute(
+                "SELECT content_id, vector FROM embeddings WHERE model = ? "
+                f"AND vector IS NOT NULL AND content_id IN ({', '.join('?' * len(part))})",
+                (model, *part),
+            )
+            found.update((row[0], row[1]) for row in rows)
+        return found
+
     # Jobs
 
     def add_job(self, kind, folder_id):
