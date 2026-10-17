@@ -13,6 +13,7 @@ the window (ui/settings.py).
 """
 
 import json
+import os
 import queue
 import threading
 
@@ -29,6 +30,8 @@ class HotFolder(QObject):
     changed = Signal()
     # A photo was taken in: its id, the newest of those written together
     arrived = Signal(int)
+    # Photos were taken in: [(photo id, path)]
+    taken = Signal(object)
     # A photo could not be read: its path and why
     failed = Signal(str, str)
     # Tethering ended by itself: why (the folder was removed, its drive unplugged, it
@@ -86,6 +89,14 @@ class HotFolder(QObject):
             self._run()
         self.changed.emit()
         self._check()
+
+    def take(self, path):
+        """Look at the file `path` now, as if the watcher had told of it: for a program that
+        tells when it wrote one (a camera session)."""
+        if self._changes is None:
+            return
+        self._changes.put(os.path.dirname(path))
+        self._run()
 
     def stop(self):
         """Stop tethering; the folder goes back to being watched as the others are."""
@@ -166,6 +177,7 @@ class HotFolder(QObject):
             return
         self.count += len(added)
         self.changed.emit()
+        self.taken.emit(added)
         self.arrived.emit(added[-1][0])
 
     def _read(self, _added, failures):

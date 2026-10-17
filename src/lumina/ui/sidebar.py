@@ -68,6 +68,7 @@ class Sidebar(QFrame):
     selected = Signal(object)
     add_requested = Signal()
     import_requested = Signal()
+    camera_requested = Signal()
     rescan_requested = Signal(int)
     rescan_all_requested = Signal()
     remove_requested = Signal(int)
@@ -136,6 +137,16 @@ class Sidebar(QFrame):
         self.import_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.import_button.setIconSize(QSize(style.px(18), style.px(18)))
         layout.addWidget(self.import_button)
+        self.camera_action = QAction("Tether Camera…", self)
+        self.camera_action.setToolTip("Shoot with a camera connected by USB (Ctrl+T)")
+        self.camera_action.triggered.connect(self.camera_requested)
+        self.camera_button = QToolButton()
+        self.camera_button.setDefaultAction(self.camera_action)
+        self.camera_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.camera_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.camera_button.setIconSize(QSize(style.px(18), style.px(18)))
+        self.camera_button.hide()
+        layout.addWidget(self.camera_button)
         style.follow_density(self, lambda: self._fit(layout))
         self._folders = []
         self._tethered = None
@@ -316,6 +327,9 @@ class Sidebar(QFrame):
     def set_import_shown(self, shown):
         self.import_button.setVisible(shown)
 
+    def set_camera_shown(self, shown):
+        self.camera_button.setVisible(shown)
+
     def current_folder(self):
         """The id of the folder chosen; None for All Photos, and for a collection."""
         item = self.list.currentItem()
@@ -374,6 +388,7 @@ class Sidebar(QFrame):
         layout.setSpacing(style.gap(4))
         self.add_button.setFixedHeight(style.row_height())
         self.import_button.setFixedHeight(style.row_height())
+        self.camera_button.setFixedHeight(style.row_height())
 
     def _draw_icons(self):
         connected = {f.id: f.connected for f in self._folders}
@@ -401,3 +416,4 @@ class Sidebar(QFrame):
             )
         self.add_action.setIcon(style.icon("list-add", "folder-new"))
         self.import_action.setIcon(style.icon("document-import", "media-flash", "camera-photo"))
+        self.camera_action.setIcon(style.icon("camera-photo", "camera-web", "media-record"))

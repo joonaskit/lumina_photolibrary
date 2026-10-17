@@ -30,6 +30,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-qt", "ruff"]
+# Shooting with a camera on USB (#58): libgphoto2, in its wheel
+tether = ["gphoto2>=2.6"]
 
 [project.scripts]
 lumina = "lumina.app:main"

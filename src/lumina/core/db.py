@@ -355,6 +355,42 @@ def _migrate_11(db):
     )
 
 
+def _migrate_12(db):
+    db.executescript(
+        """
+        -- A session of shooting with a camera on USB (core/tether.py): the folder its
+        -- frames go in, from the volume's root, where the camera keeps them ('card' or
+        -- 'computer'), and the collection that gathers its photos
+        CREATE TABLE tether_sessions (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            volume_id INTEGER NOT NULL REFERENCES volumes(id),
+            folder TEXT NOT NULL,
+            keep TEXT NOT NULL,
+            collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL,
+            started_at REAL NOT NULL
+        );
+        -- A frame the camera told of, noted before it is fetched: one a crash or an
+        -- unplug cut short is fetched again from the card, or named as lost. `camera` is
+        -- its serial number; `name` what the frame was saved as in the session's folder
+        CREATE TABLE tether_items (
+            id INTEGER PRIMARY KEY,
+            session_id INTEGER NOT NULL REFERENCES tether_sessions(id) ON DELETE CASCADE,
+            camera TEXT NOT NULL,
+            camera_folder TEXT NOT NULL,
+            camera_name TEXT NOT NULL,
+            on_card INTEGER NOT NULL,
+            state INTEGER NOT NULL DEFAULT 0,
+            name TEXT,
+            message TEXT,
+            added_at REAL NOT NULL
+        );
+        CREATE INDEX tether_items_camera ON tether_items (camera, state);
+        CREATE INDEX tether_items_session ON tether_items (session_id, state);
+        """
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
 _MIGRATIONS = [
     _migrate_1,
@@ -368,6 +404,7 @@ _MIGRATIONS = [
     _migrate_9,
     _migrate_10,
     _migrate_11,
+    _migrate_12,
 ]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -483,6 +520,34 @@ class Source:
     content_id: str | None = None
 
 
+# A tethered camera's frame: still to fetch, saved, or not saved (with why)
+TETHER_PENDING, TETHER_SAVED, TETHER_FAILED = 0, 1, 2
+
+
+@dataclass(frozen=True)
+class TetherSession:
+    id: int
+    name: str
+    volume_key: str
+    folder: str
+    keep: str
+    collection_id: int | None
+    started_at: float
+
+
+@dataclass(frozen=True)
+class TetherItem:
+    id: int
+    session_id: int
+    camera: str
+    camera_folder: str
+    camera_name: str
+    on_card: bool
+    state: int
+    name: str | None
+    message: str | None
+
+
 @dataclass(frozen=True)
 class Derived:
     id: int
@@ -493,6 +558,16 @@ class Derived:
     # Where the result is, once written: a volume key and the path from its root
     volume_key: str | None
     path: str | None
+
+
+_TETHER_ITEM = (
+    "SELECT id, session_id, camera, camera_folder, camera_name, on_card, state, name, message "
+    "FROM tether_items"
+)
+
+
+def _tether_item(row):
+    return TetherItem(*row[:5], bool(row[5]), *row[6:])
 
 
 class Library:
@@ -1631,6 +1706,76 @@ class Library:
             self.db.execute(
                 "UPDATE import_items SET state = ?, path = ?, message = ? WHERE id = ?",
                 (state, path.strip("/") if path else None, message, item_id),
+            )
+
+    # Shooting tethered
+
+    def add_tether_session(self, name, volume_key, folder, keep, collection_id=None):
+        """A camera session whose frames go in `folder` (from the root) of the volume
+        `volume_key`. Returns its id."""
+        volume = self.volume_id(volume_key)
+        with self.db:
+            return self.db.execute(
+                "INSERT INTO tether_sessions (name, volume_id, folder, keep, collection_id, "
+                "started_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (name, volume, folder.strip("/"), keep, collection_id, time.time()),
+            ).lastrowid
+
+    def tether_session(self, session_id):
+        row = self.db.execute(
+            "SELECT s.id, s.name, v.key, s.folder, s.keep, s.collection_id, s.started_at "
+            "FROM tether_sessions s JOIN volumes v ON v.id = s.volume_id WHERE s.id = ?",
+            (session_id,),
+        ).fetchone()
+        return TetherSession(*row) if row is not None else None
+
+    def unfinished_tether_sessions(self):
+        """The TetherSessions with frames still to fetch: a crash or an unplug cut them
+        short."""
+        rows = self.db.execute(
+            "SELECT s.id, s.name, v.key, s.folder, s.keep, s.collection_id, s.started_at "
+            "FROM tether_sessions s JOIN volumes v ON v.id = s.volume_id WHERE EXISTS "
+            "(SELECT 1 FROM tether_items i WHERE i.session_id = s.id AND i.state = ?) "
+            "ORDER BY s.id",
+            (TETHER_PENDING,),
+        )
+        return [TetherSession(*row) for row in rows]
+
+    def add_tether_item(self, session_id, camera, camera_folder, camera_name, on_card):
+        """A frame the camera told of, before it is fetched. Returns its id."""
+        with self.db:
+            return self.db.execute(
+                "INSERT INTO tether_items (session_id, camera, camera_folder, camera_name, "
+                "on_card, added_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, camera, camera_folder, camera_name, int(on_card), time.time()),
+            ).lastrowid
+
+    def tether_item(self, item_id):
+        row = self.db.execute(f"{_TETHER_ITEM} WHERE id = ?", (item_id,)).fetchone()
+        return _tether_item(row) if row is not None else None
+
+    def tether_items(self, session_id, state=None):
+        """A session's TetherItems, in order; only those in `state`, with one."""
+        where, args = (
+            ("AND state = ?", (session_id, state)) if state is not None else ("", (session_id,))
+        )
+        rows = self.db.execute(f"{_TETHER_ITEM} WHERE session_id = ? {where} ORDER BY id", args)
+        return [_tether_item(row) for row in rows]
+
+    def pending_tether_items(self, camera):
+        """The frames of the camera `camera` (its serial number) still to fetch, in order."""
+        rows = self.db.execute(
+            f"{_TETHER_ITEM} WHERE camera = ? AND state = ? ORDER BY id", (camera, TETHER_PENDING)
+        )
+        return [_tether_item(row) for row in rows]
+
+    def set_tether_item(self, item_id, state, name=None, message=None):
+        """A frame saved (TETHER_SAVED, as `name` in its session's folder), not saved
+        (TETHER_FAILED, with why), or to fetch again (TETHER_PENDING)."""
+        with self.db:
+            self.db.execute(
+                "UPDATE tether_items SET state = ?, name = ?, message = ? WHERE id = ?",
+                (state, name, message, item_id),
             )
 
     def last_import(self):

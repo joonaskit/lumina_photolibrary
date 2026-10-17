@@ -121,3 +121,204 @@ COLOURS = {"red": (0.8, 0.15, 0.15), "green": (0.04, 0.8, 0.04), "blue": (0.1, 0
 
 def encode_colour_text(text):
     return colour_vector(COLOURS.get(text.lower(), (0.5, 0.5, 0.5)))
+
+
+class FakeCamera:
+    """A camera on USB as core/tether.py sees it, kept in the folder `root`, so a test
+    drives it from outside the process that has it (`shoot`, `unplug`, `make_busy`). Its
+    card is `root/card/DCIM/100CANON`, its memory `root/memory`; a shot goes where the
+    session set the capture target, and is told as an event once."""
+
+    CARD_FOLDER = "/store_00020001/DCIM/100CANON"
+
+    def __init__(self, root):
+        import os
+
+        self.root = os.fspath(root)
+        self._seen = 0
+        self._open = False
+
+    # Driven by the test
+
+    @classmethod
+    def shoot(cls, root, data, name=None):
+        """A frame, as from the camera's own button. Returns its name."""
+        import os
+
+        root = os.fspath(root)
+        card = cls._target(root) == "Memory card"
+        folder = (
+            os.path.join(root, "card", "DCIM", "100CANON") if card else os.path.join(root, "memory")
+        )
+        os.makedirs(folder, exist_ok=True)
+        count = len(cls._lines(root, "events"))
+        name = name or (f"IMG_{6000 + count:04d}.CR3" if card else f"capt{count:04d}.cr3")
+        with open(os.path.join(folder, name), "wb") as file:
+            file.write(data)
+        with open(os.path.join(root, "events"), "a") as file:
+            file.write(f"{cls.CARD_FOLDER if card else '/'}|{name}\n")
+        return name
+
+    @staticmethod
+    def unplug(root, unplugged=True):
+        FakeCamera._flag(root, "unplugged", unplugged)
+
+    @staticmethod
+    def make_busy(root, busy=True):
+        FakeCamera._flag(root, "busy", busy)
+
+    @staticmethod
+    def fail_fetching(root, failing=True):
+        FakeCamera._flag(root, "fail-fetch", failing)
+
+    @staticmethod
+    def unplug_while_fetching(root):
+        """The next fetch finds the camera unplugged."""
+        FakeCamera._flag(root, "unplug-on-fetch", True)
+
+    @classmethod
+    def log(cls, root, name):
+        """What the session did: "target", "set", "triggers" or "released" lines."""
+        return cls._lines(root, name)
+
+    # As core/tether.py uses it
+
+    def open(self):
+        from lumina.core import tether
+
+        if self._has("unplugged"):
+            raise tether.CameraError("No camera is connected", tether.NOT_FOUND)
+        if self._has("busy"):
+            raise tether.CameraError("Could not claim the USB device", tether.BUSY, "usb:001,002")
+        self._open = True
+        # Only what comes after it was opened is told
+        self._seen = len(self._lines(self.root, "events"))
+        return tether.CameraInfo("Fake EOS", "FAKE-1", "usb:001,002")
+
+    def close(self):
+        self._open = False
+
+    def settings(self):
+        from lumina.core import tether
+
+        self._check()
+        values = {"iso": "100", "shutterspeed": "1/125", "batterylevel": "56%"}
+        for line in self._lines(self.root, "set"):
+            name, value = line.split("=", 1)
+            values[name] = value
+        return {
+            "iso": tether.Setting("iso", "ISO Speed", values["iso"], ("Auto", "100", "200", "400")),
+            "shutterspeed": tether.Setting(
+                "shutterspeed", "Shutter Speed", values["shutterspeed"], ("1/60", "1/125")
+            ),
+            "batterylevel": tether.Setting(
+                "batterylevel", "Battery Level", values["batterylevel"], (), True
+            ),
+        }
+
+    def set(self, name, value):
+        from lumina.core import tether
+
+        self._check()
+        if name == "capturetarget":
+            self._write("target", value, mode="w")
+            return
+        setting = self.settings().get(name)
+        if setting is None or (setting.choices and value not in setting.choices):
+            raise tether.CameraError(f"{value} is not a value of {name}")
+        self._write("set", f"{name}={value}")
+
+    def wait(self, seconds):
+        import time
+
+        from lumina.core import tether
+
+        self._check()
+        lines = self._lines(self.root, "events")
+        if len(lines) <= self._seen:
+            time.sleep(seconds)
+            return []
+        frames = [tether.Frame(*line.split("|", 1)) for line in lines[self._seen :]]
+        self._seen = len(lines)
+        return frames
+
+    def fetch(self, frame):
+        from lumina.core import tether
+
+        self._check()
+        if self._has("unplug-on-fetch"):
+            FakeCamera._flag(self.root, "unplug-on-fetch", False)
+            FakeCamera.unplug(self.root)
+            raise tether.CameraError("The camera was disconnected", tether.GONE)
+        if self._has("fail-fetch"):
+            raise tether.CameraError("I/O problem reading the file")
+        try:
+            with open(self._file(frame), "rb") as file:
+                return file.read()
+        except OSError as error:
+            raise tether.CameraError(f"{frame.name}: not found ({error})") from error
+
+    def release(self, frame):
+        import os
+
+        self._check()
+        os.remove(self._file(frame))
+        self._write("released", frame.name)
+
+    def trigger(self, focus):
+        self._check()
+        self._write("triggers", "focus" if focus else "no focus")
+        FakeCamera.shoot(self.root, b"shot from the app " + bytes(str(focus), "ascii"))
+
+    # Inside
+
+    def _check(self):
+        from lumina.core import tether
+
+        if self._has("unplugged"):
+            raise tether.CameraError("The camera was disconnected", tether.GONE)
+
+    def _file(self, frame):
+        import os
+
+        if frame.on_card:
+            return os.path.join(self.root, "card", "DCIM", "100CANON", frame.name)
+        return os.path.join(self.root, "memory", frame.name)
+
+    def _has(self, name):
+        import os
+
+        return os.path.exists(os.path.join(self.root, name))
+
+    def _write(self, name, line, mode="a"):
+        import os
+
+        with open(os.path.join(self.root, name), mode) as file:
+            file.write(f"{line}\n")
+
+    @staticmethod
+    def _target(root):
+        lines = FakeCamera._lines(root, "target")
+        return lines[-1] if lines else "Internal RAM"
+
+    @staticmethod
+    def _lines(root, name):
+        import os
+
+        try:
+            with open(os.path.join(os.fspath(root), name)) as file:
+                text = file.read()
+        except FileNotFoundError:
+            return []
+        # Only whole lines: one may be being written
+        return text.split("\n")[:-1]
+
+    @staticmethod
+    def _flag(root, name, on):
+        import os
+
+        path = os.path.join(os.fspath(root), name)
+        if on:
+            open(path, "w").close()
+        elif os.path.exists(path):
+            os.remove(path)

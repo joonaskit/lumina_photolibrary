@@ -21,6 +21,7 @@ from lumina.qt_models.importing import ImportService
 from lumina.qt_models.library import LibraryService, NewerDatabase, NoBackup
 from lumina.qt_models.merge import MergeService
 from lumina.qt_models.search import SearchService
+from lumina.qt_models.tether import CameraService
 from lumina.ui import settings
 from lumina.ui.main_window import MainWindow
 from lumina.ui.settings_dialog import when_text
@@ -102,16 +103,20 @@ def run(paths=(), restore=None):
     merge = MergeService(service, parent=app)
     importer = ImportService(service, parent=app)
     tether = HotFolder(service, search, parent=app)
+    camera = CameraService(service, tether, parent=app)
     # A scan, indexing or a merge in progress stops and is queued for the next start
     app.aboutToQuit.connect(search.close)
     app.aboutToQuit.connect(merge.close)
     app.aboutToQuit.connect(importer.close)
+    app.aboutToQuit.connect(camera.close)
     app.aboutToQuit.connect(tether.close)
     app.aboutToQuit.connect(backups.close)
     app.aboutToQuit.connect(service.close)
     app.aboutToQuit.connect(workers.shutdown)
 
-    window = MainWindow(service, search, merge, importer, backups=backups, tether=tether)
+    window = MainWindow(
+        service, search, merge, importer, backups=backups, tether=tether, camera=camera
+    )
     backups.failed.connect(lambda text: window.statusBar().showMessage(text, 15000))
     instance.opened.connect(lambda wanted: _open(window, wanted))
     service.start()
