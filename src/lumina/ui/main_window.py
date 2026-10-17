@@ -1884,7 +1884,9 @@ class MainWindow(QMainWindow):
                 problem = "Choose the photos to stitch in the grid: two or more that overlap."
             QMessageBox.information(self, "Stitch Panorama", problem)
             return
-        dialog = PanoramaDialog(self.merge.panorama_frames(ids), parent=self)
+        dialog = PanoramaDialog(
+            self.merge.panorama_frames(ids), self.merge.preview_panorama(ids), parent=self
+        )
         if dialog.exec() != PanoramaDialog.DialogCode.Accepted:
             return
         try:
