@@ -194,3 +194,87 @@ def test_buttons_follow_the_shells_corners_as_its_rows_do(qapp, tmp_path):
         assert button_radius(1.0) == style.radius("medium")
     finally:
         style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
+
+
+def test_the_sidebars_buttons_are_as_round_as_its_rows(qapp, qtbot, tmp_path):
+    # Add Folder, Import and Tether Camera had a tool button's small radius under the
+    # folders' medium one; and they are a row tall, so not rounder than fits in it
+    from PySide6.QtWidgets import QFrame, QToolButton, QVBoxLayout
+
+    def sidebar_button(radii, density):
+        path = tmp_path / "theme.json"
+        path.write_text(json.dumps({"version": 1, "radius": radii}))
+        style.set_density(density)
+        style.apply(qapp, theme.load_theme(path))
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        qtbot.addWidget(sidebar)
+        button = QToolButton()
+        button.setText("Import…")
+        button.setFixedHeight(style.row_height())
+        button.setDown(True)
+        QVBoxLayout(sidebar).addWidget(button)
+        sidebar.resize(240, 80)
+        sidebar.show()
+        qtbot.waitExposed(sidebar)
+        shot = sidebar.grab().toImage()
+        corner = button.geometry().topLeft()
+        middle = corner + QPoint(2, button.height() // 2)
+        round_ = shot.pixelColor(corner) != shot.pixelColor(middle)
+        sidebar.close()
+        sheet = qapp.styleSheet()
+        start = sheet.index("#sidebar QToolButton {")
+        block = sheet[start : sheet.index("}", start)]
+        return int(block.split("border-radius: ")[1].split("px")[0]), round_
+
+    try:
+        for density in ("comfortable", "compact"):
+            for radii in (
+                {"small": 6, "medium": 10, "large": 14},
+                {"small": 12, "medium": 20, "large": 28},
+            ):
+                radius, round_ = sidebar_button(radii, density)
+                assert round_, (density, radii)
+                assert radius == min(style.radius("medium"), style.row_height() // 2)
+    finally:
+        style.set_density("comfortable")
+        style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
+
+
+def test_a_toolbar_groups_buttons_are_round_in_both_densities(qapp, qtbot, tmp_path):
+    # The radius was made for a button 2 pixels taller than it is (the group's border):
+    # more than half of it in the compact density, so Settings' hover was drawn square
+    from PySide6.QtWidgets import QFrame, QHBoxLayout, QToolButton
+
+    def round_(density):
+        style.set_density(density)
+        # The shell's Round corners at its 1.1 scale, as the author's
+        path = tmp_path / "theme.json"
+        radii = {"small": 9, "medium": 15, "large": 21}
+        path.write_text(json.dumps({"version": 1, "radius": radii, "scale": {"ui": 1.1}}))
+        style.apply(qapp, theme.load_theme(path))
+        group = QFrame()
+        group.setObjectName("group")
+        qtbot.addWidget(group)
+        layout = QHBoxLayout(group)
+        padding = style.group_padding()
+        layout.setContentsMargins(padding, padding, padding, padding)
+        group.setFixedHeight(style.row_height())
+        button = QToolButton()
+        button.setText("S")
+        button.setFixedSize(style.row_inner_height(), style.row_inner_height())
+        button.setDown(True)
+        layout.addWidget(button)
+        group.show()
+        qtbot.waitExposed(group)
+        shot = group.grab().toImage()
+        corner = button.geometry().topLeft() + QPoint(1, 1)
+        middle = button.geometry().topLeft() + QPoint(1, button.height() // 2)
+        group.close()
+        return shot.pixelColor(corner) != shot.pixelColor(middle)
+
+    try:
+        assert round_("comfortable") and round_("compact")
+    finally:
+        style.set_density("comfortable")
+        style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))

@@ -243,6 +243,12 @@ def overlay(alpha):
     return _rgba(color("textPrimary"), alpha)
 
 
+def deeper(name, share):
+    """A theme colour taken `share` of the way to black: a deep fill under light text."""
+    colour = color(name)
+    return QColor(*(round(part * (1 - share)) for part in colour.getRgb()[:3])).name()
+
+
 def tint(name, alpha):
     """A theme colour at `alpha`, for a stylesheet."""
     return _rgba(color(name), alpha)
@@ -431,11 +437,12 @@ def _stylesheet():
     boxed = _radius_for_text("medium", 4, border=1)
     hover, pressed, divider = overlay(0.08), overlay(0.14), overlay(_DIVIDER)
     selected = tint("accent", 0.22)
+    shutter_border = px(2)
+    shutter_radius = _radius_for_text("medium", 10, border=shutter_border)
     window, card, raised = (layer(name).name() for name in ("window", "card", "raised"))
     card_border = overlay(_CARD_BORDER)
     small_font = theme_reader.font_scaled(_theme, 11)
     row = _DENSITY_SIZES[_density]["row_height"]
-    group = _DENSITY_SIZES[_density]["group_padding"]
     return f"""
         QToolBar {{
             border: none; spacing: {gap(8)}px; padding: {gap(8)}px;
@@ -447,8 +454,11 @@ def _stylesheet():
             background: {card}; border: 1px solid {card_border}; border-radius: {large}px;
         }}
         #group {{ border-radius: {radius_within("large", row)}px; }}
+        /* As tall as row_inner_height(), less the group's border too: a radius made for
+           a button 2 pixels taller was more than half of it in the compact density, and
+           the hover was drawn square */
         #group QToolButton {{
-            border-radius: {radius_within("medium", row - 2 * group)}px;
+            border-radius: {min(radius("medium"), row_inner_height() // 2)}px;
             padding: {gap(3)}px;
         }}
 
@@ -474,6 +484,25 @@ def _stylesheet():
 
         QPushButton:checked {{ background: {selected}; }}
         QPushButton:disabled {{ color: {colors["textTertiary"]}; }}
+        /* The camera bar's Capture, a deep red, and Focus beside it, ringed in the
+           accent: larger than a button, the two the eye finds first */
+        QPushButton#shutter, QPushButton#focus {{
+            border: {shutter_border}px solid {colors["danger"]};
+            border-radius: {shutter_radius}px; padding: {gap(10)}px {gap(28)}px;
+        }}
+        QPushButton#shutter {{
+            background: {deeper("danger", 0.45)}; color: {colors["onAccent"]};
+            font-weight: 600;
+        }}
+        QPushButton#shutter:hover {{ background: {deeper("danger", 0.35)}; }}
+        QPushButton#shutter:pressed {{ background: {deeper("danger", 0.55)}; }}
+        QPushButton#focus {{ border-color: {colors["accent"]}; }}
+        /* An ordinary disabled button, as large; a solid border, as a translucent one
+           shows seams where it overlaps itself at the corners */
+        QPushButton#shutter:disabled, QPushButton#focus:disabled {{
+            background: {raised}; border-color: {raised}; color: {colors["textTertiary"]};
+        }}
+
         /* A button that reads as a link: "Reset Curve" */
         QPushButton#link {{
             background: transparent; padding: {gap(2)}px {gap(4)}px; color: {colors["accent"]};
@@ -554,6 +583,9 @@ def _stylesheet():
         #sidebar QListWidget::item:selected {{
             background: {selected}; color: {colors["textPrimary"]};
         }}
+        /* Add Folder, Import, Tether Camera: as round as the folders above them, and
+           row_height() tall, so no rounder than fits */
+        #sidebar QToolButton {{ border-radius: {radius_within("medium", row)}px; }}
         /* The settings window's tabs: pills over a rounded card, as the menus' items */
         QTabWidget::pane {{
             border: 1px solid {card_border}; border-radius: {large}px; background: {card};
