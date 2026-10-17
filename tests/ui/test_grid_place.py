@@ -7,7 +7,7 @@ from photos import make_jpeg
 from PySide6.QtCore import QItemSelectionModel
 
 from lumina.qt_models import library_model
-from lumina.ui.main_window import MainWindow
+from lumina.ui.main_window import MainWindow, _inset
 
 
 def steps(old, new):
@@ -137,3 +137,27 @@ def test_a_filter_change_still_starts_over_and_keeps_nothing(qtbot, service, dri
     window.filters.year.setCurrentIndex(0)
     window.model.set_filter(window.model.filter)
     qtbot.waitUntil(lambda: bool(resets), timeout=TIMEOUT)
+
+
+def test_the_place_in_the_view_is_kept_when_rows_are_removed_far_down(qtbot, service, drive):
+    # More photos than Qt lays out in one batch; a stack made far down folds rows away
+    window = photos_window(qtbot, service, drive, 700)
+    grid, model = window.grid, window.model
+    bar = grid.verticalScrollBar()
+    bar.setValue(bar.maximum() - grid.gridSize().height() * 3)
+    qtbot.wait(100)
+    count = model.rowCount()
+    top = grid.indexAt(grid.viewport().rect().topLeft() + _inset()).row()
+    assert top > 600
+    selection = grid.selectionModel()
+    selection.setCurrentIndex(
+        model.index(top + 2), QItemSelectionModel.SelectionFlag.ClearAndSelect
+    )
+    selection.select(model.index(top + 9), QItemSelectionModel.SelectionFlag.Select)
+    before = bar.value()
+
+    window.stack_photos()
+    qtbot.waitUntil(lambda: model.rowCount() == count - 1, timeout=TIMEOUT)
+    qtbot.wait(100)
+
+    assert bar.value() == before
