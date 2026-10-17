@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from lumina.integration import style
 from lumina.qt_models import importing
+from lumina.qt_models.importing import CameraBusy, NotConnected
 from lumina.ui import settings
 
 # Layouts and namings in words, with what they make of a photo taken on 14 October 2026
@@ -37,6 +38,8 @@ NAMINGS = (
     ("date", "Time taken first"),
 )
 _OTHER = "other"
+# A camera on USB in the source box is "camera:" and its port
+_CAMERA = "camera:"
 DAY_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
@@ -59,6 +62,8 @@ class ImportDialog(QDialog):
         self.source_box = QComboBox()
         for card_path in importer.cards():
             self.source_box.addItem(_card_name(card_path), card_path)
+        for model, port in importer.cameras():
+            self.source_box.addItem(f"{model}  (camera on USB)", _CAMERA + port)
         self.source_box.addItem("Other Folder…", _OTHER)
         self.source_box.activated.connect(self._source_chosen)
         top = QFormLayout()
@@ -131,8 +136,8 @@ class ImportDialog(QDialog):
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
         note = QLabel(
-            "The photos on the card are only read: nothing there is changed or deleted. "
-            "Each copy is read back and checked against the card."
+            "The photos on the card or camera are only read: nothing there is changed or "
+            "deleted. Each copy is read back and checked against what was read."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -145,8 +150,13 @@ class ImportDialog(QDialog):
         self.resize(style.px(560), style.px(600))
 
         start = card if card is not None else self.source_box.itemData(0)
-        if start != _OTHER:
+        if start != _OTHER and not _is_camera(start):
             self.set_source(start)
+        elif _is_camera(start):
+            # A camera is held while it is read: not before it is asked for
+            self.read_label.setText(
+                "No memory card is connected: choose the camera to read it, or a folder."
+            )
         else:
             self.read_label.setText("No memory card is connected: choose a folder to import from.")
         self._update()
@@ -154,7 +164,8 @@ class ImportDialog(QDialog):
     # Choosing
 
     def set_source(self, path):
-        """Read the photos under `path`: a card or a folder."""
+        """Read the photos under `path`: a card or a folder, or on a camera (its entry's
+        data, "camera:" and its port)."""
         index = self.source_box.findData(path)
         if index < 0:
             self.source_box.insertItem(self.source_box.count() - 1, path, path)
@@ -163,9 +174,12 @@ class ImportDialog(QDialog):
         self._source = path
         self.reading = None
         self.days.clear()
-        self.read_label.setText(f"Reading {path}…")
+        self.read_label.setText(f"Reading {self._source_name()}…")
         self._update()
-        self.importer.read(path, self._on_read, self._on_read_progress)
+        if _is_camera(path):
+            self.importer.read_camera(self._on_read, self._on_read_progress)
+        else:
+            self.importer.read(path, self._on_read, self._on_read_progress)
 
     def set_destination(self, path):
         index = self.destination_box.findData(path)
@@ -213,12 +227,25 @@ class ImportDialog(QDialog):
 
     # Reading
 
+    def _source_name(self):
+        """What the source is called to the user: the camera's model, else the path."""
+        if _is_camera(self._source):
+            index = self.source_box.findData(self._source)
+            if index >= 0:
+                return self.source_box.itemText(index).partition("  (")[0]
+            return "the camera"
+        return self._source
+
     def _on_read_progress(self, done, total):
-        self.read_label.setText(f"Reading {self._source}: {done} of {total} photos…")
+        self.read_label.setText(f"Reading {self._source_name()}: {done} of {total} photos…")
 
     def _on_read(self, reading):
         if isinstance(reading, BaseException):
-            self.read_label.setText(f"Could not read {self._source}: {reading}")
+            name = self._source_name()
+            if isinstance(reading, NotConnected) and not isinstance(reading, CameraBusy):
+                self.read_label.setText(f"{name} is not connected.")
+            else:
+                self.read_label.setText(f"Could not read {name}: {reading}")
             return
         if reading is None:
             return
@@ -233,7 +260,7 @@ class ImportDialog(QDialog):
             self.read_label.setToolTip(
                 "\n".join(f"{path}: {message}" for path, message in reading.failures[:20])
             )
-        self.read_label.setText(text if count else f"No photos in {self._source}")
+        self.read_label.setText(text if count else f"No photos in {self._source_name()}")
         self._fill_days()
 
     def _fill_days(self):
@@ -334,6 +361,10 @@ class ImportDialog(QDialog):
     def done(self, result):
         self.importer.stop_reading()
         super().done(result)
+
+
+def _is_camera(source):
+    return isinstance(source, str) and source.startswith(_CAMERA)
 
 
 def _card_name(path):

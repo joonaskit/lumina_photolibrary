@@ -187,6 +187,35 @@ class FakeCamera:
         FakeCamera._flag(root, "no-live-capture", stops)
 
     @classmethod
+    def put(cls, root, name, data, folder="100CANON", mtime=None):
+        """A photo already on the card (not told as an event), as one to import."""
+        import os
+
+        where = os.path.join(os.fspath(root), "card", "DCIM", folder)
+        os.makedirs(where, exist_ok=True)
+        path = os.path.join(where, name)
+        with open(path, "wb") as file:
+            file.write(data)
+        if mtime is not None:
+            os.utime(path, (mtime, mtime))
+        return path
+
+    @staticmethod
+    def unplug_while_reading(root):
+        """The next read of part of a photo finds the camera unplugged."""
+        FakeCamera._flag(root, "unplug-on-read", True)
+
+    @staticmethod
+    def fail_reading(root, name):
+        """Reading the photo called `name` fails (the others do not)."""
+        FakeCamera._flag(root, f"fail-read-{name}", True)
+
+    @staticmethod
+    def short_reading(root, name):
+        """The photo called `name` is sent cut short."""
+        FakeCamera._flag(root, f"short-read-{name}", True)
+
+    @classmethod
     def log(cls, root, name):
         """What the session did: "target", "set", "triggers", "released", "live",
         "previews", "zoom", "point" or "focus" lines."""
@@ -268,6 +297,65 @@ class FakeCamera:
                 return file.read()
         except OSError as error:
             raise tether.CameraError(f"{frame.name}: not found ({error})") from error
+
+    # Reading what is on the card, for an import (nothing is written)
+
+    def list_files(self, should_stop=lambda: False):
+        import os
+
+        from lumina.core import tether
+
+        self._check()
+        found = []
+        card = os.path.join(self.root, "card")
+        for directory, folders, files in os.walk(card):
+            folders.sort()
+            below = os.path.relpath(directory, card)
+            folder = "/store_00020001" + ("" if below == "." else "/" + below)
+            for name in sorted(files):
+                info = os.stat(os.path.join(directory, name))
+                found.append(tether.CameraFile(folder, name, info.st_size, info.st_mtime))
+        return found
+
+    def info(self, path):
+        import os
+
+        from lumina.core import tether
+
+        self._check()
+        folder, _slash, name = path.rpartition("/")
+        try:
+            info = os.stat(self._path(path))
+        except OSError as error:
+            raise tether.CameraError(f"{name}: not found ({error})") from error
+        return tether.CameraFile(folder, name, info.st_size, info.st_mtime)
+
+    def read_range(self, path, offset, length):
+        from lumina.core import tether
+
+        self._check()
+        name = path.rpartition("/")[2]
+        self._write("reads", f"{path} {offset} {length}")
+        if offset > 0 and self._has("unplug-on-read"):
+            FakeCamera._flag(self.root, "unplug-on-read", False)
+            FakeCamera.unplug(self.root)
+            raise tether.CameraError("The camera was disconnected", tether.GONE)
+        if self._has(f"fail-read-{name}"):
+            raise tether.CameraError("I/O problem reading the file")
+        try:
+            with open(self._path(path), "rb") as file:
+                file.seek(offset)
+                data = file.read(length)
+        except OSError as error:
+            raise tether.CameraError(f"{name}: not found ({error})") from error
+        if self._has(f"short-read-{name}") and offset > 0:
+            return data[: len(data) // 2]
+        return data
+
+    def _path(self, path):
+        import os
+
+        return os.path.join(self.root, "card", path.split("/", 2)[2])
 
     def release(self, frame):
         import os

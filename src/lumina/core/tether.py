@@ -186,6 +186,21 @@ class Frame:
 
 
 @dataclass(frozen=True)
+class CameraFile:
+    """A file on the camera's storage, for an import: where it is, its size and its time
+    there (the camera's clock, as a Unix time)."""
+
+    folder: str
+    name: str
+    size: int
+    mtime: float = 0.0
+
+    @property
+    def path(self):
+        return f"{self.folder.rstrip('/')}/{self.name}"
+
+
+@dataclass(frozen=True)
 class Session:
     """What a camera session needs: its row's id, where its frames go and where frames are
     kept. `folders` is where each session with frames still to fetch puts them, by id,
@@ -342,6 +357,64 @@ class GPhotoCamera:
             return bytes(file.get_data_and_size())
         except gp.GPhoto2Error as error:
             raise self._error(error) from error
+
+    def list_files(self, should_stop=lambda: False):
+        """Every file on the camera's storage (all its cards), as CameraFiles in folder
+        order, with the size and time each has there. Only reads."""
+        gp = self._gp
+        found = []
+        pending = ["/"]
+        try:
+            while pending:
+                if should_stop():
+                    break
+                folder = pending.pop()
+                subfolders = self._patiently(self._camera.folder_list_folders, folder)
+                names = self._patiently(self._camera.folder_list_files, folder)
+                for number in range(len(names)):
+                    name = names.get_name(number)
+                    info = self._patiently(self._camera.file_get_info, folder, name)
+                    found.append(CameraFile(folder, name, info.file.size, info.file.mtime))
+                pending.extend(
+                    reversed(
+                        [
+                            f"{folder.rstrip('/')}/{subfolders.get_name(number)}"
+                            for number in range(len(subfolders))
+                        ]
+                    )
+                )
+        except gp.GPhoto2Error as error:
+            raise self._error(error) from error
+        return found
+
+    def info(self, path):
+        """The CameraFile at `path` on the camera."""
+        gp = self._gp
+        folder, _slash, name = path.rpartition("/")
+        try:
+            info = self._patiently(self._camera.file_get_info, folder or "/", name)
+        except gp.GPhoto2Error as error:
+            raise self._error(error) from error
+        return CameraFile(folder or "/", name, info.file.size, info.file.mtime)
+
+    def read_range(self, path, offset, length):
+        """`length` bytes of the file at `path` from `offset` (fewer at its end), without
+        the rest of it being sent."""
+        gp = self._gp
+        folder, _slash, name = path.rpartition("/")
+        buffer = bytearray(length)
+        try:
+            got = self._patiently(
+                self._camera.file_read,
+                folder or "/",
+                name,
+                gp.GP_FILE_TYPE_NORMAL,
+                offset,
+                memoryview(buffer),
+            )
+        except gp.GPhoto2Error as error:
+            raise self._error(error) from error
+        return bytes(buffer[:got])
 
     def release(self, frame):
         """Let go of a frame in the camera's memory, once it is saved."""
@@ -509,6 +582,19 @@ def canon_position(point, size):
     left = min(max(point[0] - half, 0.0), 1 - _POINT_SHARE)
     top = min(max(point[1] - half, 0.0), 1 - _POINT_SHARE)
     return (round(left * size[0]), round(top * size[1])), (left + half, top + half)
+
+
+def detect():
+    """[(model, port)] of the cameras on USB that libgphoto2 knows, without opening them:
+    empty without python-gphoto2 or when it can't look."""
+    try:
+        import gphoto2 as gp
+
+        found = gp.Camera.autodetect()
+        cameras = [(found.get_name(i), found.get_value(i)) for i in range(len(found))]
+    except Exception:
+        return []
+    return [(model, port) for model, port in cameras if port.startswith("usb:")]
 
 
 def available():
