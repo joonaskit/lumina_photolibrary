@@ -547,7 +547,9 @@ def _stylesheet():
         }}
         QToolButton#chip:hover {{ background: {hover}; }}
 
-        QSlider {{ min-height: {gap(20)}px; }}
+        /* Not shorter than the handle, which the density does not change: in the compact
+           density gap(20) was, and the handle's top was cut off */
+        QSlider {{ min-height: {max(gap(20), px(14) + px(3))}px; }}
         QSlider::groove:horizontal {{
             height: {px(4)}px; border-radius: {track_radius}px; background: {raised};
         }}

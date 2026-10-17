@@ -278,3 +278,41 @@ def test_a_toolbar_groups_buttons_are_round_in_both_densities(qapp, qtbot, tmp_p
     finally:
         style.set_density("comfortable")
         style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
+
+
+def test_a_sliders_handle_is_whole_in_both_densities(qapp, qtbot, tmp_path):
+    # In the compact density the slider was less tall than its handle, at the author's
+    # 1.1 scale, and the handle's top was cut off
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QSlider, QVBoxLayout, QWidget
+
+    def handle_rows(density):
+        path = tmp_path / "theme.json"
+        path.write_text(json.dumps({"version": 1, "scale": {"ui": 1.1}}))
+        style.set_density(density)
+        style.apply(qapp, theme.load_theme(path))
+        card = QWidget()
+        qtbot.addWidget(card)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        slider.setValue(50)
+        QVBoxLayout(card).addWidget(slider)
+        card.resize(300, 60)
+        card.show()
+        qtbot.waitExposed(card)
+        shot = slider.grab().toImage()
+        handle = style.color("textPrimary")
+        x = slider.width() // 2
+        rows = [y for y in range(shot.height()) if shot.pixelColor(x, y) == handle]
+        card.close()
+        return rows, shot.height()
+
+    try:
+        for density in ("comfortable", "compact"):
+            rows, height = handle_rows(density)
+            # The handle's middle column has rows of its colour, none at the slider's edges
+            assert rows and rows[0] > 0 and rows[-1] < height - 1, (density, rows, height)
+            assert rows[-1] - rows[0] + 1 >= style.px(14) - 2, (density, rows)
+    finally:
+        style.set_density("comfortable")
+        style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))
