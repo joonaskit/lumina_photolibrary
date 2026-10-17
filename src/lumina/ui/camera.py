@@ -139,10 +139,14 @@ class CameraBar(QFrame):
     """The session's camera: what it is and how it stands, its settings, Capture."""
 
     capture_requested = Signal(bool)
+    # Focus without taking a picture
+    focus_requested = Signal()
     # A setting changed here: its name and value
     setting_chosen = Signal(str, str)
     fetch_again_requested = Signal()
     end_requested = Signal()
+    # Live view shown, or not
+    live_requested = Signal(bool)
 
     def __init__(self, parent=None):
         """As narrow as it can be: the window's width is at least the bar's, and a bar
@@ -191,12 +195,23 @@ class CameraBar(QFrame):
         self.capture = QPushButton("Capture")
         self.capture.setToolTip("Take a photo (Space)")
         self.capture.clicked.connect(lambda: self.capture_requested.emit(self.focus.isChecked()))
+        self.autofocus = QPushButton("Focus")
+        self.autofocus.setToolTip("Focus without taking a photo; in live view, at its point")
+        self.autofocus.clicked.connect(self.focus_requested)
+        self._buttons = QHBoxLayout()
+        self._buttons.addWidget(self.autofocus)
+        self._buttons.addWidget(self.capture)
         self.end = QPushButton("End Session")
         self.end.clicked.connect(self.end_requested)
+        self.live = QPushButton("Live View")
+        self.live.setCheckable(True)
+        self.live.setToolTip("The camera's live view, to frame and focus by")
+        self.live.toggled.connect(self.live_requested)
+        self._top.addWidget(self.live)
         self._top.addWidget(self.fetch_again)
         self._top.addWidget(self.end)
         self._shoot.addWidget(self.focus)
-        self._shoot.addWidget(self.capture)
+        self._shoot.addLayout(self._buttons)
         style.follow_density(self, self._fit)
         self.hide()
 
@@ -229,9 +244,23 @@ class CameraBar(QFrame):
             box.blockSignals(False)
         self.fetch_again.setVisible(failed)
         self.capture.setEnabled(service.connected and not service.ending)
+        self.show_focus(service)
         self.focus.setEnabled(service.connected and not service.ending)
         self.end.setEnabled(not service.ending)
+        self.live.setEnabled(service.connected and not service.ending or self.live.isChecked())
         self.show()
+
+    def show_focus(self, service):
+        """Focus, for a camera that can be told to focus (which its live view's state
+        says)."""
+        self.autofocus.setVisible(not service.connected or service.live.view.focus)
+        self.autofocus.setEnabled(service.can_focus and not service.ending)
+
+    def set_live_shown(self, shown):
+        """Whether live view is shown: the Live View button is down."""
+        self.live.blockSignals(True)
+        self.live.setChecked(shown)
+        self.live.blockSignals(False)
 
     def _chosen(self, name, box):
         self.setting_chosen.emit(name, box.currentText())
@@ -244,6 +273,7 @@ class CameraBar(QFrame):
         self._settings.setHorizontalSpacing(style.gap(6))
         self._settings.setVerticalSpacing(style.gap(4))
         self._shoot.setSpacing(style.gap(4))
+        self._buttons.setSpacing(style.gap(6))
 
 
 def describe(service):

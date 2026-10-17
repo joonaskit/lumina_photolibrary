@@ -90,6 +90,11 @@ class HotFolder(QObject):
         self.changed.emit()
         self._check()
 
+    @property
+    def edit(self):
+        """The edit each new photo gets, as JSON, or None for none."""
+        return self._edit
+
     def take(self, path):
         """Look at the file `path` now, as if the watcher had told of it: for a program that
         tells when it wrote one (a camera session)."""

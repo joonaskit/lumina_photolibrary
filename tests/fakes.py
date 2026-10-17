@@ -176,9 +176,20 @@ class FakeCamera:
         """The next fetch finds the camera unplugged."""
         FakeCamera._flag(root, "unplug-on-fetch", True)
 
+    @staticmethod
+    def fail_previews(root, failing=True):
+        """Live view frames fail, as from a camera too hot."""
+        FakeCamera._flag(root, "fail-preview", failing)
+
+    @staticmethod
+    def stop_in_live_view(root, stops=True):
+        """A camera that can't take a picture in live view."""
+        FakeCamera._flag(root, "no-live-capture", stops)
+
     @classmethod
     def log(cls, root, name):
-        """What the session did: "target", "set", "triggers" or "released" lines."""
+        """What the session did: "target", "set", "triggers", "released", "live",
+        "previews", "zoom", "point" or "focus" lines."""
         return cls._lines(root, name)
 
     # As core/tether.py uses it
@@ -266,9 +277,54 @@ class FakeCamera:
         self._write("released", frame.name)
 
     def trigger(self, focus):
+        from lumina.core import tether
+
         self._check()
+        if self._has("live-on") and self._has("no-live-capture"):
+            raise tether.CameraError("It can't take a picture in live view")
         self._write("triggers", "focus" if focus else "no focus")
         FakeCamera.shoot(self.root, b"shot from the app " + bytes(str(focus), "ascii"))
+
+    # Live view
+
+    def live_view(self):
+        from lumina.core import tether
+
+        return tether.LiveView((1, 5, 10), True, True, not self._has("no-live-capture"))
+
+    def live(self, on):
+        self._check()
+        FakeCamera._flag(self.root, "live-on", on)
+        self._write("live", "on" if on else "off")
+
+    def preview(self):
+        import time
+
+        from lumina.core import tether
+
+        self._check()
+        if not self._has("live-on"):
+            raise tether.CameraError("Live view is off")
+        if self._has("fail-preview"):
+            time.sleep(0.005)
+            raise tether.CameraError("Could not get the live view frame")
+        count = len(self._lines(self.root, "previews"))
+        self._write("previews", str(count + 1))
+        time.sleep(0.005)
+        return live_jpeg(count % 256)
+
+    def zoom(self, times):
+        self._check()
+        self._write("zoom", str(times))
+
+    def point(self, x, y):
+        self._check()
+        self._write("point", f"{x:.2f},{y:.2f}")
+        return (x, y)
+
+    def autofocus(self):
+        self._check()
+        self._write("focus", "at the point")
 
     # Inside
 
@@ -322,3 +378,14 @@ class FakeCamera:
             open(path, "w").close()
         elif os.path.exists(path):
             os.remove(path)
+
+
+def live_jpeg(level=128, size=(96, 64)):
+    """A grey live view frame as a camera sends it: a JPEG."""
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", size, (level, level, level)).save(out, "JPEG", quality=90)
+    return out.getvalue()
