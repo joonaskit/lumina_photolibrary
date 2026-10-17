@@ -4,6 +4,7 @@ the session's collection and shown."""
 
 import json
 import os
+from dataclasses import replace
 from datetime import datetime
 from functools import partial
 
@@ -450,6 +451,39 @@ def test_the_bar_does_not_make_the_window_wider(qtbot, service):
     Stood.connected = False
     window.camera_bar.show_service(Stood)
     assert window.minimumSizeHint().width() <= before
+
+
+def test_focus_and_capture_are_in_the_middle_of_the_bar(qtbot):
+    """Under the settings, which are in the middle too; Focus first on their right does
+    not move them off it."""
+    from lumina.core.tether import CameraInfo, Setting
+
+    class Stood:
+        running, connected, ending, can_focus = True, True, False, True
+        live = camera_service.LiveState(None)
+        info = CameraInfo("Canon EOS 90D", "x", "usb:003,006")
+        message = None
+        saved_count, fetching, failures = 0, {}, {}
+        settings = {"iso": Setting("iso", "iso", "400", ("100", "400"))}
+
+    Stood.live = replace(Stood.live, view=replace(Stood.live.view, focus=True))
+    bar = CameraBar()
+    qtbot.addWidget(bar)
+    bar.show_service(Stood)
+    bar.resize(1200, bar.sizeHint().height())
+    qtbot.waitExposed(bar)
+
+    def middle(*widgets):
+        left = min(w.mapTo(bar, QPoint(0, 0)).x() for w in widgets)
+        right = max(w.mapTo(bar, QPoint(w.width(), 0)).x() for w in widgets)
+        return (left + right) / 2
+
+    assert bar.autofocus.isVisible() and bar.capture.isVisible()
+    assert abs(middle(bar.autofocus, bar.capture) - bar.width() / 2) <= 2
+    assert bar.focus.mapTo(bar, QPoint(0, 0)).x() > bar.capture.mapTo(bar, QPoint(0, 0)).x()
+    label, iso = bar.boxes["iso"]
+    assert abs(middle(label, iso) - bar.width() / 2) <= 2
+    assert bar.capture.y() > iso.y()
 
 
 def test_live_view_in_the_window(qtbot, scanned, camera, root, tmp_path):

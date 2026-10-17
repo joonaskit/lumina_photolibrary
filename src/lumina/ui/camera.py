@@ -151,19 +151,25 @@ class CameraBar(QFrame):
     def __init__(self, parent=None):
         """As narrow as it can be: the window's width is at least the bar's, and a bar
         wider than the screen keeps the window from being maximized. The camera and its
-        state on top; the settings below, three to a row, with Capture beside them."""
+        state on top; the settings below, three to a row, in the middle; and below them
+        Focus and Capture in the very middle, with Focus first on their right."""
         super().__init__(parent)
         self.setObjectName("group")
         self._column = QVBoxLayout(self)
         self._top = QHBoxLayout()
         self._below = QHBoxLayout()
         self._settings = QGridLayout()
-        self._shoot = QVBoxLayout()
+        # Three columns, the outer two as wide as each other, so the buttons in the
+        # middle one are in the middle of the bar whatever is beside them
+        self._shoot = QGridLayout()
+        self._shoot.setColumnStretch(0, 1)
+        self._shoot.setColumnStretch(2, 1)
         self._column.addLayout(self._top)
         self._column.addLayout(self._below)
+        self._column.addLayout(self._shoot)
+        self._below.addStretch(1)
         self._below.addLayout(self._settings)
         self._below.addStretch(1)
-        self._below.addLayout(self._shoot)
         self.camera = QLabel()
         self.camera.setObjectName("title")
         # Wrapped, so a long reason (another program has the camera) adds height, not width
@@ -193,9 +199,11 @@ class CameraBar(QFrame):
         self.focus = QCheckBox("Focus first")
         self.focus.setChecked(True)
         self.capture = QPushButton("Capture")
+        self.capture.setObjectName("shutter")
         self.capture.setToolTip("Take a photo (Space)")
         self.capture.clicked.connect(lambda: self.capture_requested.emit(self.focus.isChecked()))
         self.autofocus = QPushButton("Focus")
+        self.autofocus.setObjectName("focus")
         self.autofocus.setToolTip("Focus without taking a photo; in live view, at its point")
         self.autofocus.clicked.connect(self.focus_requested)
         self._buttons = QHBoxLayout()
@@ -210,8 +218,13 @@ class CameraBar(QFrame):
         self._top.addWidget(self.live)
         self._top.addWidget(self.fetch_again)
         self._top.addWidget(self.end)
-        self._shoot.addWidget(self.focus)
-        self._shoot.addLayout(self._buttons)
+        self._shoot.addLayout(self._buttons, 0, 1)
+        # The space between them inside the right column: an empty column has none, so
+        # the grid's spacing would be on the right only and the buttons off the middle
+        self._beside = QHBoxLayout()
+        self._beside.addWidget(self.focus)
+        self._beside.addStretch(1)
+        self._shoot.addLayout(self._beside, 0, 2)
         style.follow_density(self, self._fit)
         self.hide()
 
@@ -267,13 +280,14 @@ class CameraBar(QFrame):
 
     def _fit(self):
         self._column.setContentsMargins(style.gap(8), style.gap(4), style.gap(8), style.gap(4))
-        self._column.setSpacing(style.gap(4))
         self._top.setSpacing(style.gap(6))
         self._below.setSpacing(style.gap(12))
         self._settings.setHorizontalSpacing(style.gap(6))
         self._settings.setVerticalSpacing(style.gap(4))
-        self._shoot.setSpacing(style.gap(4))
-        self._buttons.setSpacing(style.gap(6))
+        self._column.setSpacing(style.gap(6))
+        self._shoot.setHorizontalSpacing(0)
+        self._beside.setContentsMargins(style.gap(16), 0, 0, 0)
+        self._buttons.setSpacing(style.gap(10))
 
 
 def describe(service):

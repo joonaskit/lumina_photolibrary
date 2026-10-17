@@ -3,6 +3,7 @@
 from PySide6.QtCore import QSettings
 
 from lumina import APP_ID
+from lumina.integration import appearance
 
 
 def _settings():
@@ -153,6 +154,42 @@ def density():
 
 def set_density(name):
     _settings().setValue("view/density", name)
+
+
+def follow_shell():
+    """Whether the look is the shell's (its theme file), or the one chosen by hand. On at
+    first; without the shell the look chosen by hand is used whatever this says."""
+    return _settings().value("appearance/follow_shell", True) in (True, "true")
+
+
+def set_follow_shell(on):
+    _settings().setValue("appearance/follow_shell", bool(on))
+
+
+def look():
+    """The look chosen by hand (an appearance.Look): dark, blue and the default corners
+    until one is chosen."""
+    s = _settings()
+    return appearance.Look(
+        s.value("appearance/scheme", "dark"),
+        s.value("appearance/accent", "blue"),
+        s.value("appearance/corners", "default"),
+    )
+
+
+def set_look(chosen):
+    s = _settings()
+    s.setValue("appearance/scheme", chosen.scheme)
+    s.setValue("appearance/accent", chosen.accent)
+    s.setValue("appearance/corners", chosen.corners)
+
+
+def chosen_look(shell=None):
+    """The look to lay over the shell's theme: None to follow the shell, which is only
+    while it is there (`shell`: whether it is, found when not given) and followed."""
+    if shell is None:
+        shell = appearance.shell_found()
+    return None if shell and follow_shell() else look()
 
 
 def advance_after_flag():

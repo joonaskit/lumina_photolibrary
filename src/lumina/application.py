@@ -10,7 +10,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from lumina import APP_ID
-from lumina.integration import style, theme
+from lumina.integration import appearance, style
 from lumina.integration.single_instance import SingleInstance
 from lumina.integration.theme_watcher import ThemeWatcher
 from lumina.qt_models import backups as backing
@@ -67,10 +67,14 @@ def run(paths=(), restore=None):
     instance.listen()
 
     # The same look as filehouse: the shell's theme.json over the same defaults, followed
-    # while the app runs
+    # while the app runs; or with the scheme, accent and corners chosen in the settings
     style.set_density(settings.density())
-    style.apply(app, theme.load_theme())
-    ThemeWatcher(app, parent=app)
+    appearance.apply(app, settings.chosen_look(), live=False)
+    ThemeWatcher(
+        app,
+        parent=app,
+        adjust=lambda read: appearance.theme_with(read, settings.chosen_look()),
+    )
 
     # Before anything opens the database
     told = None
