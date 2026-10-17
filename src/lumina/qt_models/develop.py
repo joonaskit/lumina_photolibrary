@@ -47,6 +47,7 @@ Grain = _params.Grain
 Grading = _params.Grading
 Curves = _params.Curves
 Matte = _params.Matte
+Perspective = _params.Perspective
 Crop = _params.Crop
 Lens = _params.Lens
 LENS = _params.LENS
@@ -90,6 +91,7 @@ MATTE_BLACK = _params.MATTE_BLACK
 MATTE_WHITE = _params.MATTE_WHITE
 DESATURATION = _params.DESATURATION
 STRAIGHTEN = _params.STRAIGHTEN
+PERSPECTIVE = _params.PERSPECTIVE
 PRESET_SECTIONS = _params.SECTIONS
 IDENTITY_CURVE = _curves.IDENTITY
 PROXY, SCREEN, REGION = _session.PROXY, _session.SCREEN, _session.REGION
@@ -104,8 +106,8 @@ def normalize_curve(points):
     return _curves.normalize(points)
 
 
-def suggested_name(path, options):
-    return _export.suggested_name(path, options)
+def suggested_name(path, options, copy=0):
+    return _export.suggested_name(path, options, copy)
 
 
 def _replaces(new, waiting):
@@ -156,6 +158,8 @@ class DevelopSession(QObject):
         self.service = service
         self.photo_id = None
         self.path = None
+        # 0: the photo's own edit; more: a virtual copy
+        self.copy = 0
         self.params = Params()
         # What an edit of this photo starts as, and what a Reset goes back to: the lens
         # corrections on for a RAW file whose lens is known, else nothing (see `_on_opened`)
@@ -190,10 +194,11 @@ class DevelopSession(QObject):
 
     # Opening and closing
 
-    def open(self, photo_id, path):
-        """Edit the photo `photo_id` at `path` (it must be connected)."""
+    def open(self, photo_id, path, copy=0):
+        """Edit the photo `photo_id` at `path` (it must be connected): its own edit, or
+        virtual copy `copy`."""
         self.close()
-        self.photo_id, self.path = photo_id, path
+        self.photo_id, self.path, self.copy = photo_id, path, copy
         self.size = None
         self._moving = False
         self._token += 1
@@ -201,7 +206,7 @@ class DevelopSession(QObject):
         self._shot = self.service.lens_shot(photo_id)
         self._lens, self._lens_known, self._lens_data = None, False, True
         self._raw = False
-        stored = self.service.edit_json(photo_id)
+        stored = self.service.edit_json(photo_id, copy)
         try:
             self.params = _params.from_json(stored) if stored else self._baseline
         except _params.NewerParams as error:
@@ -236,6 +241,7 @@ class DevelopSession(QObject):
             self._before = False
             self.before_changed.emit(False)
         self.photo_id = self.path = None
+        self.copy = 0
         workers.submit(
             _session.close,
             on_done=lambda _r: None,
@@ -261,7 +267,14 @@ class DevelopSession(QObject):
             if opened.lens is not None and opened.raw:
                 lens = _params.Lens(enabled=True, profile=opened.lens)
             self._baseline = Params(lens=lens, profile=ColourProfile(*opened.profile))
-            if self.params == Params() and self.service.edit_json(self.photo_id) is None:
+            # A copy made of a photo that had no edit holds the identity, which is not
+            # where a RAW file's edit starts
+            unedited = (
+                self.params == Params()
+                if self.copy
+                else self.params == Params() and self.service.edit_json(self.photo_id) is None
+            )
+            if unedited:
                 self.params = self._baseline
                 self.params_changed.emit(self.params)
         self.lens_changed.emit()
@@ -341,7 +354,7 @@ class DevelopSession(QObject):
         self._set(params)
 
     def _committed(self):
-        stored = self.service.edit_json(self.photo_id)
+        stored = self.service.edit_json(self.photo_id, self.copy)
         try:
             return _params.from_json(stored) if stored else self._baseline
         except _params.NewerParams:
@@ -359,10 +372,11 @@ class DevelopSession(QObject):
     def _save(self):
         # What a new edit starts as is no edit: the photo is its original (see `reset`). With
         # the lens corrections on to start with, an edit with them off is one to keep
-        if self.params == self._baseline:
+        # A virtual copy stays whatever it holds: only the photo's own edit goes away
+        if self.params == self._baseline and not self.copy:
             self.service.save_edit(self.photo_id, None)
         else:
-            self.service.save_edit(self.photo_id, self.params.to_json())
+            self.service.save_edit(self.photo_id, self.params.to_json(), self.copy)
 
     def can_undo(self):
         return bool(self._undo)

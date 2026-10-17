@@ -17,6 +17,7 @@ from lumina.core.edit.params import (
     Sharpening,
     Vignette,
 )
+from lumina.core.edit.perspective import Perspective
 from lumina.core.edit.source import make_proxy
 
 
@@ -70,6 +71,7 @@ def test_a_region_is_the_same_pixels_as_in_the_whole_render(region):
     "edit",
     [
         EVERYTHING.with_changes(straighten=3.5),
+        EVERYTHING.with_changes(perspective=Perspective(40, -25), straighten=-2.0),
         EVERYTHING.with_changes(rotate=1, crop=Crop(0.1, 0.2, 0.9, 0.8)),
         EVERYTHING.with_changes(flip_horizontal=True, crop=Crop(0.05, 0.1, 0.7, 0.95)),
     ],

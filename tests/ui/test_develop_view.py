@@ -15,6 +15,7 @@ from lumina.qt_models.develop import (
     Hsl,
     NoiseReduction,
     Params,
+    Perspective,
     Presence,
     Sharpening,
     Vignette,
@@ -414,13 +415,32 @@ def test_the_straighten_slider_commits_degrees(qtbot, window):
     assert slider.value_label.text() == "-3.5°"
 
 
-def test_reset_crop_also_straightens(qtbot, window):
+def test_the_perspective_sliders_commit_and_show_the_edit(qtbot, window):
     open_editor(qtbot, window)
-    window.session.commit(Params(straighten=5.0, crop=Crop(0.1, 0.1, 0.9, 0.9)))
+    vertical = window.develop.perspective["vertical"]
+
+    vertical.slider.setSliderDown(True)
+    vertical.slider.setValue(-35)
+    vertical.slider.setSliderDown(False)
+
+    assert window.session.params.perspective.vertical == -35
+    assert window.session.params.perspective.horizontal == 0
+    assert vertical.value_label.text() == "-35"
+    window.session.commit(window.session.params.turned(1))
+    assert window.develop.perspective["horizontal"].slider.value() == -35
+    assert vertical.slider.value() == 0
+
+
+def test_reset_crop_resets_only_the_crop(qtbot, window):
+    open_editor(qtbot, window)
+    keystone = Perspective(vertical=20)
+    window.session.commit(
+        Params(straighten=5.0, perspective=keystone, crop=Crop(0.1, 0.1, 0.9, 0.9))
+    )
 
     window.develop.reset_crop.click()
 
-    assert window.session.params == Params()
+    assert window.session.params == Params(straighten=5.0, perspective=keystone)
 
 
 def test_the_basic_sliders_commit_their_control_and_show_the_edit(qtbot, window):

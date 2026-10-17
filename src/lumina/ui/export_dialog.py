@@ -24,10 +24,11 @@ _FORMAT_NAMES = (("jpeg", "JPEG"), ("png", "PNG"), ("tiff", "TIFF"))
 
 
 class ExportDialog(QDialog):
-    def __init__(self, source_path, parent=None):
+    def __init__(self, source_path, parent=None, copy=0):
         super().__init__(parent)
         self.setWindowTitle("Export Photo")
         self.source_path = source_path
+        self.copy = copy
         choices = settings.export_choices()
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -110,7 +111,7 @@ class ExportDialog(QDialog):
         self.long_side.setEnabled(bool(self.size_mode.currentData()))
 
     def _suggest_name(self):
-        name = suggested_name(self.source_path, self.options())
+        name = suggested_name(self.source_path, self.options(), self.copy)
         # Never the original's own name in its own folder: export does not write there
         if os.path.realpath(os.path.join(self.folder.text(), name)) == os.path.realpath(
             self.source_path

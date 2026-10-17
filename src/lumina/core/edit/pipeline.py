@@ -3,13 +3,14 @@
 The image comes in as linear light in sRGB primaries (16-bit integers, or floats
 in [0, 1]) and every step works on linear floats until the output encoding:
 
-1. Geometry: quarter turns, mirroring, the lens corrections, straightening and crop. Done
-   first, as every later step treats each pixel on its own: cropping first gives the same
-   result for less work. Straightening turns the photo about its centre and scales it just
-   enough to fill the frame, so no empty corners show; the crop is then taken of that, and
-   only the pixels inside it are sampled. The lens's distortion and chromatic aberration
-   are a resampling with the straightening (one pass), its vignetting a gain on the
-   samples (see lenscorrect.py).
+1. Geometry: quarter turns, mirroring, the lens corrections, perspective, straightening
+   and crop. Done first, as every later step treats each pixel on its own: cropping first
+   gives the same result for less work. Straightening turns the photo about its centre and
+   scales it just enough to fill the frame, so no empty corners show; the crop is then taken
+   of that, and only the pixels inside it are sampled. The lens's distortion and chromatic
+   aberration are a resampling with the straightening (one pass), its vignetting a gain on
+   the samples (see lenscorrect.py). Perspective is a homography in the same pass, scaled to
+   fill the frame with the straightening (see perspective.py).
 2. Colour, white balance and exposure: for a RAW file (`camera`), the camera's colours
    through the edit's profile (colour_profile.py) with the white balance and exposure
    folded into its matrix; for a photo in sRGB, one gain per channel.
@@ -47,6 +48,7 @@ from lumina.core.edit import (
     grading,
     hsl,
     lenscorrect,
+    perspective,
     sharpen,
 )
 from lumina.core.edit import detail as detail_steps
@@ -237,14 +239,22 @@ def geometry(image, params, region=None):
         left, right = left + x0, min(right, left + x1)
         top, bottom = top + y0, min(bottom, top + y1)
     correction = params.lens.correction()
+    box = (top, bottom, left, right)
+    if not params.perspective.is_identity():
+        degrees = params.straighten
+        scale = perspective.fill_scale(width, height, params.perspective, degrees)
+        matrix = perspective.source_matrix(width, height, params.perspective, degrees, scale)
+        if correction is not None:
+            return lenscorrect.resample(image, correction, box, matrix)
+        return perspective.warp(image, matrix, box)
     if correction is not None:
         turn = None
         if params.straighten:
             turn = (params.straighten, straighten_scale(width, height, params.straighten))
-        return lenscorrect.resample(image, correction, (top, bottom, left, right), turn)
+        return lenscorrect.resample(image, correction, box, turn)
     if params.straighten == 0:
         return image[top:bottom, left:right]
-    return _straightened(image, params.straighten, (top, bottom, left, right))
+    return _straightened(image, params.straighten, box)
 
 
 def straighten_scale(width, height, degrees):

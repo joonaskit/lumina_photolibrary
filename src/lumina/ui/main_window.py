@@ -30,6 +30,8 @@ from lumina.integration import style
 from lumina.qt_models.develop import DevelopSession
 from lumina.qt_models.library import NewerParams
 from lumina.qt_models.library_model import (
+    COPIES_ROLE,
+    COPY_ROLE,
     DAMAGE_ROLE,
     DIMMED_ROLE,
     FLAG_ROLE,
@@ -37,6 +39,7 @@ from lumina.qt_models.library_model import (
     RATING_ROLE,
     REJECTED,
     SIMILAR,
+    STACK_ROLE,
     TEXT,
     UNFLAGGED,
     Filter,
@@ -44,7 +47,7 @@ from lumina.qt_models.library_model import (
     SmartQuery,
 )
 from lumina.qt_models.previews import PreviewLoader
-from lumina.ui import damage, flags, settings, stars
+from lumina.ui import badges, damage, flags, settings, stars
 from lumina.ui.develop_view import DevelopView
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.filters import FilterBar
@@ -97,33 +100,89 @@ class _CellDelegate(QStyledItemDelegate):
     def sizeHint(self, _option, _index):
         return self._size
 
-    def paint(self, painter, option, index):
-        """The cell, greyed out for a dimmed thumbs-down photo, its flag's badge on the
-        photo's bottom right corner, its stars on the bottom left and a warning on the
-        top right when its raw data may be damaged."""
-        painter.save()
-        if index.data(DIMMED_ROLE):
-            painter.setOpacity(DIMMED_OPACITY)
-        super().paint(painter, option, index)
-        painter.restore()
-        flag, rating = index.data(FLAG_ROLE), index.data(RATING_ROLE)
-        damaged = index.data(DAMAGE_ROLE)
-        if flag not in flags.COLOURS and not rating and not damaged:
-            return
+    def photo_rect(self, option, index):
+        """Where the photo is in the cell: the icon keeps the photo's shape within its
+        square."""
         item = QStyleOptionViewItem(option)
         self.initStyleOption(item, index)
         widget = option.widget
         area = widget.style().subElementRect(
             QStyle.SubElement.SE_ItemViewItemDecoration, item, widget
         )
-        # The photo within its square: the icon keeps the photo's shape
         photo = QRect(QPoint(0, 0), item.icon.actualSize(item.decorationSize))
         photo.moveCenter(area.center())
+        return photo
+
+    def stack_badge_at(self, grid, index, point):
+        """Whether `point` (in the grid's viewport) is on the stack badge of the cell."""
+        stacked = index.data(STACK_ROLE)
+        if not stacked:
+            return False
+        option = QStyleOptionViewItem()
+        grid.initViewItemOption(option)
+        option.rect = grid.visualRect(index)
+        option.widget = grid
+        card = badges.pill_rect(self.photo_rect(option, index), badges.stack_text(stacked))
+        if card is None:
+            return False
+        if stacked[2]:
+            behind = style.px(3)
+            card = card.adjusted(0, 0, behind, behind)
+        return card.contains(point)
+
+    def copies_badge_at(self, grid, index, point):
+        """Whether `point` (in the grid's viewport) is on the virtual copies' badge."""
+        virtual = index.data(COPIES_ROLE)
+        if not virtual:
+            return False
+        option = QStyleOptionViewItem()
+        grid.initViewItemOption(option)
+        option.rect = grid.visualRect(index)
+        option.widget = grid
+        photo = self.photo_rect(option, index)
+        stacked = index.data(STACK_ROLE)
+        left = 0.0
+        if stacked:
+            pill = badges.pill_rect(photo, badges.stack_text(stacked))
+            if pill is not None:
+                left = pill.width() + style.px(4) + (style.px(3) if stacked[2] else 0)
+        number = index.data(COPY_ROLE) or virtual
+        card = badges.diamond_rect(photo, str(number), left)
+        return card is not None and card.contains(point)
+
+    def paint(self, painter, option, index):
+        """The cell, greyed out for a dimmed thumbs-down photo, its flag's badge on the
+        photo's bottom right corner, its stars on the bottom left and a warning on the
+        top right when its raw data may be damaged, and the number of its virtual copies on
+        the top left, after its stack's."""
+        flag, rating = index.data(FLAG_ROLE), index.data(RATING_ROLE)
+        damaged = index.data(DAMAGE_ROLE)
+        virtual, stacked = index.data(COPIES_ROLE), index.data(STACK_ROLE)
+        # A virtual copy's cell has its own number on the badge, the photo's the count
+        number = index.data(COPY_ROLE) or virtual
+        photo = self.photo_rect(option, index)
+        painter.save()
+        if index.data(DIMMED_ROLE):
+            painter.setOpacity(DIMMED_OPACITY)
+        if stacked and stacked[2]:
+            badges.paint_stack_cue(painter, photo)
+        super().paint(painter, option, index)
+        painter.restore()
+        if flag not in flags.COLOURS and not rating and not damaged and not virtual and not stacked:
+            return
         if flag in flags.COLOURS:
             flags.paint_badge(painter, photo, flag)
         stars.paint_stars(painter, photo, rating or 0)
         if damaged:
             damage.paint_badge(painter, photo)
+        # Top left, side by side: the stack, then the virtual copies
+        left = 0.0
+        if stacked:
+            left = badges.paint_pill(
+                painter, photo, badges.stack_text(stacked), left, stacked=stacked[2]
+            )
+        if virtual:
+            badges.paint_diamond(painter, photo, str(number), left)
 
 
 class MainWindow(QMainWindow):
@@ -148,10 +207,22 @@ class MainWindow(QMainWindow):
         self.model.loading_changed.connect(self._update_status)
         self.model.about_to_refresh.connect(self._save_place)
         self.model.refreshed.connect(self._restore_place)
+        self.model.refreshed.connect(self._update_copy_actions)
+        # A stack made, taken apart, opened or closed changes the rows, not the selection
+        for signal in (
+            self.model.rowsInserted,
+            self.model.rowsRemoved,
+            self.model.modelReset,
+            self.model.dataChanged,
+        ):
+            signal.connect(self._update_stack_actions)
         self.previews = PreviewLoader(self)
         self.previews.ready.connect(self._on_preview_ready)
         self.previews.failed.connect(self._on_preview_failed)
         self._viewed_id = None
+        # Which of its edits the viewer or the Develop view shows: 0 is the photo's own,
+        # more are virtual copies
+        self._viewed_copy = 0
         # A photo asked for from outside that the library does not have yet (its folder
         # is being scanned), opened as it arrives
         self._opening = None
@@ -224,6 +295,7 @@ class MainWindow(QMainWindow):
                 *self.rate_actions,
                 *self.zoom_actions,
                 *self.settings_actions,
+                *self.copy_actions,
             ]
         )
         self.develop.image.zoom_changed.connect(self._on_zoom_changed)
@@ -373,6 +445,47 @@ class MainWindow(QMainWindow):
         self.export_action = QAction("Export…", self)
         self.export_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
         self.export_action.triggered.connect(self.export_photo)
+        self.make_copy_action = QAction("Make Virtual Copy", self)
+        self.make_copy_action.setShortcut(QKeySequence("Ctrl+'"))
+        self.make_copy_action.setToolTip(
+            "Another edit of the photo, to try a different look; the file is not touched (Ctrl+')"
+        )
+        self.make_copy_action.triggered.connect(self.make_virtual_copy)
+        self.delete_copy_action = QAction("Delete Virtual Copy", self)
+        self.delete_copy_action.triggered.connect(self.delete_virtual_copy)
+        self.previous_copy_action = QAction("Previous Copy", self)
+        self.previous_copy_action.setShortcut(QKeySequence("Ctrl+Up"))
+        self.previous_copy_action.triggered.connect(lambda: self.step_copy(-1))
+        self.next_copy_action = QAction("Next Copy", self)
+        self.next_copy_action.setShortcut(QKeySequence("Ctrl+Down"))
+        self.next_copy_action.triggered.connect(lambda: self.step_copy(1))
+        self.stack_action = QAction("Stack", self)
+        self.stack_action.setShortcut(QKeySequence("Ctrl+G"))
+        self.stack_action.setToolTip("Group the chosen photos in one stack (Ctrl+G)")
+        self.stack_action.triggered.connect(self.stack_photos)
+        self.unstack_action = QAction("Unstack", self)
+        self.unstack_action.setShortcut(QKeySequence("Ctrl+Shift+G"))
+        self.unstack_action.triggered.connect(self.unstack_photos)
+        self.leave_stack_action = QAction("Remove from Stack", self)
+        self.leave_stack_action.triggered.connect(self.leave_stack)
+        self.toggle_stack_action = QAction("Expand or Collapse Stack", self)
+        self.toggle_stack_action.setShortcut(QKeySequence("Ctrl+Alt+G"))
+        self.toggle_stack_action.triggered.connect(self.toggle_stacks)
+        self.stack_top_action = QAction("Set as Top of Stack", self)
+        self.stack_top_action.triggered.connect(self.set_stack_top)
+        self.stack_actions = (
+            self.stack_action,
+            self.unstack_action,
+            self.leave_stack_action,
+            self.toggle_stack_action,
+            self.stack_top_action,
+        )
+        self.copy_actions = (
+            self.make_copy_action,
+            self.delete_copy_action,
+            self.previous_copy_action,
+            self.next_copy_action,
+        )
         self.previous_action = QAction("Previous Photo", self)
         self.previous_action.setShortcut(QKeySequence(Qt.Key.Key_Left))
         self.previous_action.triggered.connect(lambda: self.step(-1))
@@ -485,6 +598,8 @@ class MainWindow(QMainWindow):
             *self.flag_actions,
             *self.zoom_actions,
             *self.settings_actions,
+            *self.copy_actions,
+            *self.stack_actions,
             self.merge_hdr_action,
             self.stitch_panorama_action,
         ):
@@ -618,8 +733,9 @@ class MainWindow(QMainWindow):
         self.grid.setMovement(QListView.Movement.Static)
         self.grid.setResizeMode(QListView.ResizeMode.Adjust)
         self.grid.setUniformItemSizes(True)
-        self.grid.setLayoutMode(QListView.LayoutMode.Batched)
-        self.grid.setBatchSize(500)
+        # In one pass (11 ms for 50,000 photos): a batched layout, done again for rows
+        # removed or inserted, scrolls the view back into its first batch
+        self.grid.setLayoutMode(QListView.LayoutMode.SinglePass)
         self._delegate = _CellDelegate(QSize(), self.grid)
         self.grid.setItemDelegate(self._delegate)
         self._apply_grid_size(settings.grid_size())
@@ -639,11 +755,15 @@ class MainWindow(QMainWindow):
         self.grid.setDragEnabled(True)
         self.grid.setDragDropMode(QListView.DragDropMode.DragOnly)
         self.grid.setDefaultDropAction(Qt.DropAction.CopyAction)
-        self.grid.activated.connect(lambda index: self.show_photo(index.row()))
+        self.grid.activated.connect(
+            lambda index: self.show_photo(index.row(), self.model.copy(index.row()))
+        )
         self.grid.addActions(
             [
                 *self.flag_actions,
                 *self.settings_actions,
+                self.make_copy_action,
+                *self.stack_actions,
                 self.merge_hdr_action,
                 self.stitch_panorama_action,
             ]
@@ -687,6 +807,7 @@ class MainWindow(QMainWindow):
                 *self.flag_actions,
                 *self.zoom_actions,
                 *self.settings_actions,
+                *self.copy_actions,
                 self.merge_hdr_action,
                 self.stitch_panorama_action,
             ]
@@ -1066,6 +1187,24 @@ class MainWindow(QMainWindow):
         rating.addSeparator()
         rating.addAction(self.rate_actions[0])
         menu.addSeparator()
+        menu.addAction(self.make_copy_action)
+        if not in_grid and self._copy_to_delete() is not None:
+            menu.addAction(self.delete_copy_action)
+        else:
+            rows = self._flag_rows()
+            if len(rows) == 1 and self.model.copies(rows[0]):
+                shown = self.model.copies_open(rows[0])
+                menu.addAction(
+                    "Hide Virtual Copies" if shown else "Show Virtual Copies",
+                    lambda: self.model.toggle_copies(self.model.photo_id(rows[0])),
+                )
+            if self._copy_to_delete() is not None:
+                menu.addAction(self.delete_copy_action)
+        if in_grid:
+            menu.addSeparator()
+            for action in self.stack_actions:
+                menu.addAction(action)
+        menu.addSeparator()
         menu.addAction(self.copy_settings_action)
         menu.addAction(self.paste_settings_action)
         if in_grid:
@@ -1163,6 +1302,8 @@ class MainWindow(QMainWindow):
         # Photos that differ show no stars, as neither flag button shows as set
         self.rating_bar.setEnabled(bool(rows))
         self.rating_bar.set_rating(next(iter(given_stars)) if len(given_stars) == 1 else 0)
+        self._update_copy_actions()
+        self._update_stack_actions()
         page = self.pages.currentIndex()
         browsing = page in (_GRID, _VIEWER)
         self.undo_flag_action.setEnabled(browsing and self.model.can_undo_flags())
@@ -1631,6 +1772,24 @@ class MainWindow(QMainWindow):
             if steps:
                 self.step_grid_size(1 if steps > 0 else -1)
             return True
+        # A click on a stack's or the virtual copies' badge opens or closes it, and chooses
+        # nothing
+        if (
+            event.type() == QEvent.Type.MouseButtonPress
+            and watched is self.grid.viewport()
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            index = self.grid.indexAt(event.position().toPoint())
+            if index.isValid() and self._delegate.stack_badge_at(
+                self.grid, index, event.position()
+            ):
+                self.toggle_stack_of(index.row())
+                return True
+            if index.isValid() and self._delegate.copies_badge_at(
+                self.grid, index, event.position()
+            ):
+                self.model.toggle_copies(self.model.photo_id(index.row()))
+                return True
         return super().eventFilter(watched, event)
 
     # Keeping the grid's place while a scan adds photos
@@ -1682,10 +1841,12 @@ class MainWindow(QMainWindow):
         self._viewed_id = None
         self.grid.setFocus()
 
-    def show_photo(self, row):
+    def show_photo(self, row, copy=0):
+        """The photo of `row`, as its own edit makes it or as virtual copy `copy` does."""
         if not 0 <= row < self.model.rowCount():
             return
         self._viewed_id = self.model.photo_id(row)
+        self._viewed_copy = self._existing_copy(copy)
         self._full_requested = None
         # Moved on: photos flagged out of the view leave it
         self.model.settle(self._viewed_id)
@@ -1701,7 +1862,7 @@ class MainWindow(QMainWindow):
             self.viewer.set_message("Loading…")
         self._show_page(_VIEWER)
         self.viewer.setFocus()
-        self.title.setText(self.model.name(row))
+        self.title.setText(self._viewed_title(row))
         if path is not None:
             # Zoomed: the same place of this photo at full size, as the last one's
             if self.viewer.is_zoomed():
@@ -1714,13 +1875,13 @@ class MainWindow(QMainWindow):
 
     def _viewed_edit(self):
         # From the library, not the grid's rows: an edit just made may not be in them yet
-        return self.service.edit_json(self._viewed_id)
+        return self.service.edit_json(self._viewed_id, self._viewed_copy)
 
     def _request_full(self):
         path = self._viewed_path()
-        if path is None or self._full_requested == self._viewed_id:
+        if path is None or self._full_requested == (self._viewed_id, self._viewed_copy):
             return
-        self._full_requested = self._viewed_id
+        self._full_requested = (self._viewed_id, self._viewed_copy)
         self.previews.request(path, None, self._viewed_edit())
 
     def _on_zoom_changed(self):
@@ -1749,10 +1910,16 @@ class MainWindow(QMainWindow):
         row = self._viewed_row()
         if row is None:
             return
+        # From the cell of the copy shown (when open), onto the cell next to it
+        row = self.model.row_of(self._viewed_id, self._viewed_copy)
+        target = row + delta
+        if not 0 <= target < self.model.rowCount():
+            return
+        copy = self.model.copy(target)
         if self.pages.currentIndex() == _DEVELOP:
-            self.show_develop(row + delta)
+            self.show_develop(target, copy)
         else:
-            self.show_photo(row + delta)
+            self.show_photo(target, copy)
 
     def go_back(self):
         """Escape: cancel the crop, then out of the Develop view; in the viewer back to
@@ -1773,7 +1940,7 @@ class MainWindow(QMainWindow):
             self.session.close()
             row = self._viewed_row()
             if self._develop_from == _VIEWER and row is not None:
-                self.show_photo(row)
+                self.show_photo(row, self._viewed_copy)
                 return
         self.show_grid()
 
@@ -1782,16 +1949,18 @@ class MainWindow(QMainWindow):
     def edit_current(self):
         """Edit the photo shown, or the one chosen in the grid."""
         if self.pages.currentIndex() == _VIEWER:
-            row = self._viewed_row()
+            row, copy = self._viewed_row(), self._viewed_copy
         elif self.pages.currentIndex() == _GRID and self.grid.currentIndex().isValid():
             row = self.grid.currentIndex().row()
+            copy = self.model.copy(row)
         else:
             return
         if row is not None:
             self._develop_from = self.pages.currentIndex()
-            self.show_develop(row)
+            self.show_develop(row, copy)
 
-    def show_develop(self, row):
+    def show_develop(self, row, copy=0):
+        """Edit the photo of `row`: its own edit, or virtual copy `copy`."""
         if not 0 <= row < self.model.rowCount():
             return
         path = self.model.path(row)
@@ -1808,15 +1977,190 @@ class MainWindow(QMainWindow):
             # Stepping keeps the zoom, as in the viewer; coming in from outside starts fitted
             self.develop.image.reset_zoom()
         self._viewed_id = self.model.photo_id(row)
+        self._viewed_copy = self._existing_copy(copy)
         self.model.settle(self._viewed_id)
         row = self.model.row_of(self._viewed_id)
-        self.develop.show_loading(self.model.name(row))
+        self.develop.show_loading(self._viewed_title(row))
         self.session.screen_side = self._viewer_side()
         self._show_page(_DEVELOP)
-        self.session.open(self._viewed_id, path)
-        self.title.setText(self.model.name(row))
+        self.session.open(self._viewed_id, path, self._viewed_copy)
+        self.title.setText(self._viewed_title(row))
         self.develop.setFocus()
         self._update_status()
+
+    # Stacks
+
+    def _stack_rows(self):
+        """The rows chosen in the grid (stacks are made and taken apart there)."""
+        if self.pages.currentIndex() != _GRID:
+            return []
+        return self._flag_rows()
+
+    def _update_stack_actions(self, *_args):
+        rows = self._stack_rows()
+        stacked = [row for row in rows if self.model.stack(row) is not None]
+        self.stack_action.setEnabled(len(rows) > 1)
+        self.unstack_action.setEnabled(bool(stacked))
+        self.leave_stack_action.setEnabled(bool(stacked))
+        self.toggle_stack_action.setEnabled(bool(stacked))
+        self.stack_top_action.setEnabled(
+            len(rows) == 1 and bool(stacked) and not self.model.is_stack_top(rows[0])
+        )
+
+    def stack_photos(self):
+        """Group the photos chosen in one stack, the first shown on top, collapsed."""
+        rows = self._stack_rows()
+        if len(rows) < 2:
+            return
+        self.service.make_stack([self.model.photo_id(row) for row in rows])
+        self.statusBar().showMessage(f"Stacked {len(rows)} photos", 4000)
+
+    def unstack_photos(self):
+        """Take apart the stacks the photos chosen are in."""
+        ids = [self.model.photo_id(row) for row in self._stack_rows()]
+        if ids:
+            self.service.unstack(ids)
+
+    def leave_stack(self):
+        """Take the photos chosen out of their stacks; the rest of each stack stays."""
+        ids = [
+            self.model.photo_id(row)
+            for row in self._stack_rows()
+            if self.model.stack(row) is not None
+        ]
+        if ids:
+            self.service.leave_stack(ids)
+
+    def toggle_stack_of(self, row):
+        """Open the stack of `row` if it is collapsed, else close it."""
+        stack = self.model.stack(row)
+        if stack is not None:
+            collapsed = self.model.data(self.model.index(row), STACK_ROLE)[2]
+            self.service.set_stacks_collapsed([stack], not collapsed)
+
+    def toggle_stacks(self):
+        """Expand the collapsed stacks among the photos chosen, or collapse them when
+        none is collapsed."""
+        rows = [row for row in self._stack_rows() if self.model.stack(row) is not None]
+        if not rows:
+            return
+        collapsed = {
+            self.model.stack(row): self.model.data(self.model.index(row), STACK_ROLE)[2]
+            for row in rows
+        }
+        expand = any(collapsed.values())
+        self.service.set_stacks_collapsed(list(collapsed), not expand)
+
+    def set_stack_top(self):
+        """Make the photo chosen the top of its stack, the cell shown while it is collapsed."""
+        rows = self._stack_rows()
+        if len(rows) == 1 and self.model.stack(rows[0]) is not None:
+            self.service.set_stack_top(self.model.photo_id(rows[0]))
+
+    # Virtual copies
+
+    def _existing_copy(self, copy):
+        """`copy` if the viewed photo has it, else its own edit (0)."""
+        if copy and copy in self.service.copies(self._viewed_id):
+            return copy
+        return 0
+
+    def _viewed_title(self, row):
+        name = self.model.name(row)
+        return f"{name} (copy {self._viewed_copy})" if self._viewed_copy else name
+
+    def _update_copy_actions(self, *_args):
+        page = self.pages.currentIndex()
+        viewing = page in (_VIEWER, _DEVELOP)
+        self.make_copy_action.setEnabled(bool(self._flag_rows()))
+        self.delete_copy_action.setEnabled(self._copy_to_delete() is not None)
+        several = viewing and self._viewed_id is not None and bool(self._others())
+        self.previous_copy_action.setEnabled(several)
+        self.next_copy_action.setEnabled(several)
+
+    def _others(self):
+        return self.service.copies(self._viewed_id)
+
+    def _show_edit(self, copy):
+        """The viewer or the Develop view on the same photo, as edit `copy` of it."""
+        row = self._viewed_row()
+        if row is None:
+            return
+        if self.pages.currentIndex() == _DEVELOP:
+            self.show_develop(row, copy)
+        else:
+            self.show_photo(row, copy)
+
+    def _copy_to_delete(self):
+        """(photo id, copy) of the virtual copy the viewer or the Develop view shows, or of
+        the one cell chosen in the grid when it is a copy's; else None."""
+        page = self.pages.currentIndex()
+        if page in (_VIEWER, _DEVELOP):
+            if self._viewed_id is not None and self._viewed_copy > 0:
+                return self._viewed_id, self._viewed_copy
+            return None
+        rows = self._flag_rows() if page == _GRID else []
+        if len(rows) == 1 and self.model.copy(rows[0]) > 0:
+            return self.model.photo_id(rows[0]), self.model.copy(rows[0])
+        return None
+
+    def make_virtual_copy(self):
+        """A new virtual copy of the photo shown, from the edit as it is, and shown. In
+        the grid one of each photo chosen, from its own edit, and nothing else changes."""
+        page = self.pages.currentIndex()
+        if page == _GRID:
+            ids = [self.model.photo_id(row) for row in self._flag_rows()]
+            if ids:
+                self.service.make_copies(ids)
+                what = "a photo" if len(ids) == 1 else f"{len(ids)} photos"
+                self.statusBar().showMessage(f"Made a virtual copy of {what}", 4000)
+            return
+        if page not in (_VIEWER, _DEVELOP) or self._viewed_id is None:
+            return
+        if page == _DEVELOP and self.session.is_open():
+            number = self.service.make_copy(
+                self._viewed_id, params_json=self.session.params.to_json()
+            )
+        else:
+            number = self.service.make_copy(self._viewed_id, self._viewed_copy)
+        self._show_edit(number)
+
+    def delete_virtual_copy(self):
+        """Delete the virtual copy shown or chosen, after asking. In the viewer or Develop
+        view the one before it is shown after."""
+        target = self._copy_to_delete()
+        if target is None:
+            return
+        photo_id, copy = target
+        answer = QMessageBox.question(
+            self,
+            "Delete Virtual Copy",
+            f"Delete copy {copy} of this photo and its edit? "
+            "The photo and its other edits are not touched.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if self.pages.currentIndex() == _GRID:
+            self.service.delete_copy(photo_id, copy)
+            return
+        # Closed first, so that nothing is saved over the copy once it is gone
+        if self.pages.currentIndex() == _DEVELOP:
+            self.session.close()
+        numbers = [0, *self.service.copies(photo_id)]
+        before = numbers[max(0, numbers.index(copy) - 1)]
+        self.service.delete_copy(photo_id, copy)
+        self._show_edit(before)
+
+    def step_copy(self, delta):
+        """The next or previous edit of the photo shown: its own, then its copies."""
+        if self._viewed_id is None:
+            return
+        numbers = [0, *self.service.copies(self._viewed_id)]
+        if self._viewed_copy not in numbers:
+            return
+        place = numbers.index(self._viewed_copy) + delta
+        if 0 <= place < len(numbers):
+            self._show_edit(numbers[place])
 
     def _update_history(self):
         self.undo_action.setEnabled(self.session.can_undo())
@@ -1825,7 +2169,7 @@ class MainWindow(QMainWindow):
     def export_photo(self):
         if not self.session.is_open():
             return
-        dialog = ExportDialog(self.session.path, self)
+        dialog = ExportDialog(self.session.path, self, self.session.copy)
         if dialog.exec() != ExportDialog.DialogCode.Accepted:
             return
         destination, options = dialog.destination(), dialog.options()
@@ -1938,7 +2282,22 @@ class MainWindow(QMainWindow):
                 if self._zoom_loading(view):
                     zoom += ", loading full size…" if view is self.viewer else ", rendering…"
             damaged = "Raw data may be damaged" if self.model.damage(row) else None
-            parts = (f"{row + 1} of {count}", zoom, flag, rated, tagged, damaged, details, where)
+            versions = None
+            numbers = [0, *self.service.copies(self._viewed_id)]
+            if len(numbers) > 1:
+                place = numbers.index(self._viewed_copy) + 1 if self._viewed_copy in numbers else 1
+                versions = f"Edit {place} of {len(numbers)}"
+            parts = (
+                f"{row + 1} of {count}",
+                versions,
+                zoom,
+                flag,
+                rated,
+                tagged,
+                damaged,
+                details,
+                where,
+            )
             text = "  ·  ".join(part for part in parts if part)
         else:
             text = f"{count} photo" + ("" if count == 1 else "s")

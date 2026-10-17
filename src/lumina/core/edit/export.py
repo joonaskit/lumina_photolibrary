@@ -55,8 +55,12 @@ class ExportCancelled(Exception):
     pass
 
 
-def suggested_name(source_path, options):
+def suggested_name(source_path, options, copy=0):
+    """The file name for an export: the photo's, with `-copy2` for virtual copy 2, so a
+    copy does not land on the name of the photo's own export."""
     stem = os.path.splitext(os.path.basename(source_path))[0]
+    if copy:
+        stem += f"-copy{copy}"
     return stem + EXTENSIONS[options.format]
 
 
