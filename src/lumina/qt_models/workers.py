@@ -72,6 +72,8 @@ SIDECARS = "sidecars"
 IMPORT = "import"
 # One thread for backing up the library's database, which reads all of it
 BACKUP = "backup"
+# One thread for a tethered folder's photos, which never wait for a scan
+TETHER = "tether"
 _NAMED_PROCESSES = {DEVELOP, EMBED, QUERY, MERGING}
 
 
@@ -174,6 +176,21 @@ def call(process, fn, *args):
     except BrokenProcessPool:
         _forget_pool(pool)
         raise
+
+
+def start_process(target, *args):
+    """Run `target(*args)` in a process of its own, for work that lasts (a camera session)
+    and is spoken to through queues from `make_queue()`. Started as the pools' are (not
+    forked: Qt's threads); a daemon, so it never outlives the app. Returns the Process."""
+    context = multiprocessing.get_context("forkserver")
+    process = context.Process(target=target, args=args, daemon=True)
+    process.start()
+    return process
+
+
+def make_queue():
+    """A queue to and from a process of `start_process`, which a thread can use too."""
+    return multiprocessing.get_context("forkserver").Queue()
 
 
 def call_on_main(owner, fn, *args):

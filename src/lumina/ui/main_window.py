@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from lumina.integration import style
+from lumina.qt_models import tether as camera_service
 from lumina.qt_models.develop import DevelopSession
 from lumina.qt_models.library import NewerParams
 from lumina.qt_models.library_model import (
@@ -48,6 +49,7 @@ from lumina.qt_models.library_model import (
 )
 from lumina.qt_models.previews import PreviewLoader
 from lumina.ui import badges, damage, flags, settings, stars
+from lumina.ui.camera import CameraBar, CameraDialog
 from lumina.ui.develop_view import DevelopView
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.filters import FilterBar
@@ -63,6 +65,7 @@ from lumina.ui.quick_view import QuickView
 from lumina.ui.search import SearchField, SearchStatus
 from lumina.ui.settings_dialog import SettingsDialog
 from lumina.ui.sidebar import Sidebar
+from lumina.ui.tether import TetherDialog, TetherStatus
 
 APP_NAME = "Lumina"
 # Size of a thumbnail in the grid, unscaled, by the size chosen. Large stays within the
@@ -186,14 +189,28 @@ class _CellDelegate(QStyledItemDelegate):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, service, search=None, merge=None, importer=None, parent=None, backups=None):
+    def __init__(
+        self,
+        service,
+        search=None,
+        merge=None,
+        importer=None,
+        parent=None,
+        backups=None,
+        tether=None,
+        camera=None,
+    ):
         """`search` is the SearchService; without one there is no search. `merge` is the
         MergeService; without one there are no merges. `importer` is the ImportService;
         without one there is no importing. `backups` is the BackupService; without one
-        the settings have no Backups section."""
+        the settings have no Backups section. `tether` is the HotFolder; without one no
+        folder can be tethered. `camera` is the CameraService (which takes its photos in
+        through `tether`); without one there is no shooting with a camera."""
         super().__init__(parent)
         self.service = service
         self.backups = backups
+        self.tether = tether
+        self.camera = camera
         self.search = search
         self.merge = merge
         self.importer = importer
@@ -226,6 +243,10 @@ class MainWindow(QMainWindow):
         # A photo asked for from outside that the library does not have yet (its folder
         # is being scanned), opened as it arrives
         self._opening = None
+        # A tethered folder's newest photo, and the one to show once the grid has it, with
+        # whether in the Develop view
+        self._last_shot = None
+        self._showing_shot = None
         self.quick_views = []
         self._place = (None, None, 0)
         # Where the Develop view was opened from, to go back to
@@ -249,6 +270,9 @@ class MainWindow(QMainWindow):
         self.sidebar.rescan_requested.connect(service.rescan)
         self.sidebar.rescan_all_requested.connect(service.rescan)
         self.sidebar.remove_requested.connect(self.remove_folder)
+        self.sidebar.tether_requested.connect(self.tether_folder)
+        self.sidebar.camera_requested.connect(lambda: self.tether_camera())
+        self.sidebar.set_camera_shown(camera is not None)
         self.sidebar.collection_selected.connect(self._on_collection_selected)
         self.sidebar.import_selected.connect(self._on_import_selected)
         self.sidebar.new_collection_requested.connect(lambda: self.new_collection())
@@ -312,6 +336,20 @@ class MainWindow(QMainWindow):
         divider.setObjectName("divider")
         divider.setFixedHeight(1)
         column.addWidget(divider)
+        self.camera_bar = CameraBar()
+        column.addWidget(self.camera_bar)
+        if camera is not None:
+            self.camera_bar.capture_requested.connect(camera.capture)
+            self.camera_bar.setting_chosen.connect(camera.set_setting)
+            self.camera_bar.fetch_again_requested.connect(camera.fetch_again)
+            self.camera_bar.end_requested.connect(camera.stop)
+            camera.changed.connect(self._on_camera_changed)
+            camera.failed.connect(
+                lambda name, why: self.statusBar().showMessage(
+                    f"{name} was not saved: {why}", 15000
+                )
+            )
+            camera.error.connect(lambda why: self.statusBar().showMessage(why, 15000))
         layout = QHBoxLayout()
         layout.addWidget(self.sidebar)
         layout.addWidget(self.pages, 1)
@@ -337,6 +375,15 @@ class MainWindow(QMainWindow):
             merge.job_changed.connect(self.merge_status.show_status)
         self.import_status = import_status()
         self.statusBar().addPermanentWidget(self.import_status)
+        self.tether_status = TetherStatus()
+        self.statusBar().addPermanentWidget(self.tether_status)
+        if tether is not None:
+            self.tether_status.stop_requested.connect(self.stop_tethering)
+            self.sidebar.stop_tether_requested.connect(self.stop_tethering)
+            tether.changed.connect(self._on_tether_changed)
+            tether.arrived.connect(self._on_shot_arrived)
+            tether.failed.connect(self._on_shot_failed)
+            tether.stopped.connect(lambda why: self.statusBar().showMessage(why, 15000))
         if importer is not None:
             self.import_status.cancel_requested.connect(importer.cancel)
             importer.job_changed.connect(self.import_status.show_status)
@@ -380,6 +427,8 @@ class MainWindow(QMainWindow):
         self.model.loading_changed.connect(
             lambda loading: loading or self._open_arrived(loaded=True)
         )
+        self.model.rowsInserted.connect(lambda: self._show_shot())
+        self.model.loading_changed.connect(lambda loading: loading or self._show_shot(loaded=True))
 
         self._draw_icons()
         style.themed.changed.connect(self._draw_icons)
@@ -419,6 +468,17 @@ class MainWindow(QMainWindow):
         self.import_action.setToolTip("Copy photos from a memory card into the library (Ctrl+I)")
         self.import_action.triggered.connect(lambda: self.import_photos())
         self.addAction(self.import_action)
+
+        self.camera_action = QAction("Tether Camera…", self)
+        self.camera_action.setShortcut(QKeySequence("Ctrl+T"))
+        self.camera_action.triggered.connect(lambda: self.tether_camera())
+        self.addAction(self.camera_action)
+        # A foot pedal can send either
+        self.capture_action = QAction("Capture", self)
+        self.capture_action.setShortcuts([QKeySequence("Space"), QKeySequence("F12")])
+        self.capture_action.setEnabled(False)
+        self.capture_action.triggered.connect(self.capture)
+        self.addAction(self.capture_action)
         self.preferences_action = QAction("Settings", self)
         self.preferences_action.setShortcut(QKeySequence("Ctrl+,"))
         self.preferences_action.setToolTip("Settings (Ctrl+,)")
@@ -972,6 +1032,124 @@ class MainWindow(QMainWindow):
             self.show_photo(row)
         elif (scanned and photo is None) or (loaded and photo is not None):
             self._opening = None
+
+    # Tethering
+
+    def tether_folder(self, folder_id):
+        """Ask for the preset, then tether the folder `folder_id` and show it."""
+        if self.tether is None:
+            return
+        info = next((f for f in self.service.folders() if f.id == folder_id), None)
+        if info is None:
+            return
+        presets = [name for name, _json in self.service.presets()]
+        dialog = TetherDialog(info.name, presets, settings.tether_preset(), self)
+        if dialog.exec() != TetherDialog.DialogCode.Accepted:
+            return
+        preset = dialog.chosen_preset()
+        settings.set_tether_preset(preset)
+        try:
+            self.tether.start(folder_id, preset)
+        except (KeyError, NewerParams) as error:
+            QMessageBox.warning(self, "Cannot Tether", f"The preset can't be used: {error}")
+            return
+        self._last_shot = None
+        self.sidebar.select(folder_id)
+
+    def stop_tethering(self):
+        """Stop the tethered folder, or the camera session whose photos come through it."""
+        if self.camera is not None and self.camera.running:
+            self.camera.stop()
+        elif self.tether is not None:
+            self.tether.stop()
+
+    def tether_camera(self):
+        """Ask where a camera session's photos go, then start it."""
+        if self.camera is None:
+            return
+        if self.camera.running:
+            self.camera_bar.show()
+            return
+        if not camera_service.available():
+            QMessageBox.information(
+                self,
+                "Tether Camera",
+                "Shooting with a camera needs python-gphoto2, which is not installed.\n\n"
+                "Install it with: pip install 'lumina[tether]'",
+            )
+            return
+        folders = [f for f in self.service.folders() if f.connected]
+        presets = [name for name, _json in self.service.presets()]
+        dialog = CameraDialog(folders, presets, settings.camera_choices(), self)
+        if dialog.exec() != CameraDialog.DialogCode.Accepted:
+            return
+        chosen = dialog.chosen()
+        settings.set_camera_choices(chosen)
+        try:
+            self.camera.start(
+                chosen["folder"], chosen["name"], chosen["layout"], chosen["keep"], chosen["preset"]
+            )
+        except (ValueError, KeyError, NewerParams) as error:
+            QMessageBox.warning(self, "Cannot Tether", str(error))
+            return
+        self._last_shot = None
+        self.sidebar.select(chosen["folder"])
+
+    def capture(self):
+        if self.camera is not None and self.camera.connected:
+            self.camera.capture(self.camera_bar.focus.isChecked())
+
+    def _on_camera_changed(self):
+        self.camera_bar.show_service(self.camera)
+        self.capture_action.setEnabled(self.camera.connected and not self.camera.ending)
+        self._on_tether_changed()
+
+    def _on_tether_changed(self):
+        folder = self.tether.folder
+        info = next((f for f in self.service.folders() if f.id == folder), None)
+        self.sidebar.set_tethered(folder)
+        # A camera session's folder is its bar's
+        shooting = self.camera is not None and self.camera.running
+        self.tether_status.show_state(
+            info.name if info is not None and not shooting else None,
+            self.tether.count,
+            self.tether.preset,
+        )
+
+    def _on_shot_arrived(self, photo_id):
+        """A tethered folder's new photo: shown in the viewer, or in the Develop view while
+        that is open, unless an older photo is being looked at."""
+        page = self.pages.currentIndex()
+        following = (
+            page in (_GRID, _EMPTY) or self._last_shot is None or self._viewed_id == self._last_shot
+        )
+        self._last_shot = photo_id
+        if following:
+            self._showing_shot = (photo_id, page == _DEVELOP)
+            self._show_shot()
+
+    def _show_shot(self, loaded=False):
+        """The tethered photo to show, once the grid has it; given up when the grid has
+        loaded without it (a filter or the folder chosen hides it)."""
+        if self._showing_shot is None:
+            return
+        photo_id, develop = self._showing_shot
+        row = self.model.row_of(photo_id)
+        if row is None:
+            if loaded and not self.model.is_loading():
+                self._showing_shot = None
+                name = self._photo_name(photo_id)
+                self.statusBar().showMessage(f"New photo {name} is not among those shown", 10000)
+            return
+        self._showing_shot = None
+        if develop:
+            self._develop_from = _VIEWER
+            self.show_develop(row)
+        else:
+            self.show_photo(row)
+
+    def _on_shot_failed(self, path, why):
+        self.statusBar().showMessage(f"Could not read {path}: {why}", 15000)
 
     def remove_folder(self, folder_id):
         info = next((f for f in self.service.folders() if f.id == folder_id), None)

@@ -312,3 +312,41 @@ def set_import_choices(destination, layout, naming, backup, backup_on):
     stored.setValue("import/naming", naming)
     stored.setValue("import/backup", backup or "")
     stored.setValue("import/backup_on", bool(backup_on))
+
+
+def tether_preset():
+    """The name of the preset a tethered folder gave its photos last time, or None."""
+    value = _settings().value("tether/preset")
+    return value if isinstance(value, str) and value else None
+
+
+def set_tether_preset(name):
+    _settings().setValue("tether/preset", name or "")
+
+
+def camera_choices():
+    """What the last camera session was started with: {"folder": a library folder's id or
+    None, "layout", "name", "keep": "card" or "computer", "preset": a name or None}."""
+    stored = _settings()
+    try:
+        folder = int(stored.value("camera/folder", ""))
+    except (TypeError, ValueError):
+        folder = None
+    layout = stored.value("camera/layout")
+    keep = stored.value("camera/keep")
+    return {
+        "folder": folder,
+        "layout": layout if layout in ("year-day", "year-month", "day", "none") else "year-day",
+        "name": stored.value("camera/name", "") or "",
+        "keep": keep if keep in ("card", "computer") else "card",
+        "preset": stored.value("camera/preset", "") or None,
+    }
+
+
+def set_camera_choices(choices):
+    stored = _settings()
+    stored.setValue("camera/folder", "" if choices["folder"] is None else choices["folder"])
+    stored.setValue("camera/layout", choices["layout"])
+    stored.setValue("camera/name", choices["name"])
+    stored.setValue("camera/keep", choices["keep"])
+    stored.setValue("camera/preset", choices["preset"] or "")
