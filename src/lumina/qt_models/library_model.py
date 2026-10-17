@@ -51,6 +51,9 @@ KEYWORDS_ROLE = Qt.ItemDataRole.UserRole + 7
 COPIES_ROLE = Qt.ItemDataRole.UserRole + 8
 # (place, size, collapsed) of a photo in a stack of two or more, else None
 STACK_ROLE = Qt.ItemDataRole.UserRole + 9
+# The number of the virtual copy the cell is (the photo shown as that edit makes it), or
+# 0 for the photo itself
+COPY_ROLE = Qt.ItemDataRole.UserRole + 10
 
 # What a drag of photos from the grid carries: the photo ids as JSON
 PHOTOS_MIME = "application/x-lumina-photos"
@@ -121,6 +124,11 @@ class LibraryModel(QAbstractListModel):
         self._ranked = None
         self._rows = []
         self._index = {}
+        # (photo id, copy) of a cell: its row, and for a photo id the rows of its copies' cells
+        self._cells = {}
+        self._copy_cells = {}
+        # The photos whose virtual copies are open: a cell of their own after the photo's
+        self._copies_open = set()
         # Photos flagged or rated out of the view, shown until the user moves on
         self._kept = set()
         # Changes that can be undone: (field, {photo id: value it had}) with field "flag",
@@ -254,7 +262,21 @@ class LibraryModel(QAbstractListModel):
             base = self._all
         else:
             base = [self._all[self._positions[i]] for i in self._ranked if i in self._positions]
-        return self._fold([photo for photo in base if self._passes(photo)])
+        return self._open_copies(self._fold([photo for photo in base if self._passes(photo)]))
+
+    def _open_copies(self, shown):
+        """`shown` with a cell for each virtual copy of the photos that are open, after the
+        photo: the photo's own row with the copy's edit."""
+        if not self._copies_open:
+            return shown
+        opened = []
+        for photo in shown:
+            opened.append(photo)
+            if photo.id in self._copies_open and photo.copies:
+                for number in self.service.copies(photo.id):
+                    edit = self.service.edit_json(photo.id, number)
+                    opened.append(replace(photo, copy=number, edit=edit))
+        return opened
 
     def _fold(self, shown):
         """The stacks within `shown`: a stack is there when its top passes, as one cell
@@ -321,8 +343,8 @@ class LibraryModel(QAbstractListModel):
         return not (self.rejected == HIDE and photo.flag == REJECTED)
 
     def _show(self, rows, reset):
-        old = [photo.id for photo in self._rows]
-        new = [photo.id for photo in rows]
+        old = [(photo.id, photo.copy) for photo in self._rows]
+        new = [(photo.id, photo.copy) for photo in rows]
         if reset:
             self.beginResetModel()
             self._set_rows(rows)
@@ -362,7 +384,14 @@ class LibraryModel(QAbstractListModel):
 
     def _set_rows(self, rows):
         self._rows = list(rows)
-        self._index = {row.id: number for number, row in enumerate(self._rows)}
+        self._index = {}
+        self._cells = {}
+        self._copy_cells = {}
+        for number, row in enumerate(self._rows):
+            self._index.setdefault(row.id, number)
+            self._cells[(row.id, row.copy)] = number
+            if row.copy:
+                self._copy_cells.setdefault(row.id, []).append(number)
 
     def _set_loading(self, on):
         if on != self._loading:
@@ -594,15 +623,31 @@ class LibraryModel(QAbstractListModel):
     def mimeData(self, indexes):
         """The ids of the photos dragged, for dropping on a collection."""
         data = QMimeData()
-        ids = [self._rows[index.row()].id for index in indexes if index.isValid()]
+        ids = list({self._rows[index.row()].id: 0 for index in indexes if index.isValid()})
         data.setData(PHOTOS_MIME, json.dumps(ids).encode())
         return data
 
     def supportedDragActions(self):
         return Qt.DropAction.CopyAction
 
-    def row_of(self, photo_id):
+    def row_of(self, photo_id, copy=0):
+        """The row of the photo, or of its virtual copy `copy` when that is open."""
+        if copy and (photo_id, copy) in self._cells:
+            return self._cells[(photo_id, copy)]
         return self._index.get(photo_id)
+
+    def copy(self, row):
+        """The number of the virtual copy the cell of `row` is, or 0 for the photo itself."""
+        return self._rows[row].copy
+
+    def copies_open(self, row):
+        """Whether the photo of `row` has its virtual copies shown as cells of their own."""
+        return self._rows[row].id in self._copies_open
+
+    def toggle_copies(self, photo_id):
+        """Open or close the photo's virtual copies, a cell each after the photo."""
+        self._copies_open ^= {photo_id}
+        self._show(self._compose(), reset=False)
 
     def path(self, row):
         """Where the photo of `row` is now, or None when its drive is not connected."""
@@ -630,7 +675,11 @@ class LibraryModel(QAbstractListModel):
             return damage_text(photo.damage_warning)
         if role == COPIES_ROLE:
             return photo.copies
+        if role == COPY_ROLE:
+            return photo.copy
         if role == STACK_ROLE:
+            if photo.copy:
+                return None
             members = self._stacks.get(photo.stack)
             if members is None:
                 return None
@@ -646,6 +695,8 @@ class LibraryModel(QAbstractListModel):
                 lines = [photo.path, "On a drive that is not connected"]
             else:
                 lines = [path, self.thumbnails.error(self._key(photo))]
+            if photo.copy:
+                lines.insert(0, f"Copy {photo.copy}")
             lines.append(damage_text(photo.damage_warning))
             return "\n".join(line for line in lines if line)
         if role == PATH_ROLE:
@@ -671,10 +722,12 @@ class LibraryModel(QAbstractListModel):
         return (photo.id, photo.edit)
 
     def _thumbnail_changed(self, key):
-        row = self._index.get(key[0])
-        if row is not None:
-            index = self.index(row)
-            self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
+        # The photo's cell and those of its virtual copies, which may share the thumbnail
+        rows = [self._index.get(key[0]), *self._copy_cells.get(key[0], ())]
+        for row in rows:
+            if row is not None:
+                index = self.index(row)
+                self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
 
     def _on_mounts_changed(self):
         # Photos that were not connected may be now, and the other way round

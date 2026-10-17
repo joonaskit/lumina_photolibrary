@@ -247,3 +247,106 @@ def test_the_grid_makes_a_copy_of_each_photo_chosen(qtbot, service, drive):
         timeout=TIMEOUT,
     )
     assert os.path.exists(window.model.path(0))
+
+
+def open_grid(qtbot, library, photo_id):
+    window = MainWindow(library)
+    qtbot.addWidget(window)
+    window.resize(900, 600)
+    qtbot.waitUntil(lambda: window.model.row_of(photo_id) is not None, timeout=TIMEOUT)
+    return window
+
+
+def test_opening_the_copies_makes_a_cell_of_each_and_closing_hides_them(qtbot, library, photo):
+    photo_id, _path = photo
+    library.make_copy(photo_id)
+    library.make_copy(photo_id)
+    window = open_grid(qtbot, library, photo_id)
+    before = window.model.rowCount()
+
+    window.model.toggle_copies(photo_id)
+
+    row = window.model.row_of(photo_id)
+    assert window.model.rowCount() == before + 2
+    assert [window.model.copy(row + n) for n in range(3)] == [0, 1, 2]
+    assert window.model.photo_id(row + 2) == photo_id
+    assert window.model.row_of(photo_id, 2) == row + 2
+    window.model.toggle_copies(photo_id)
+    assert window.model.rowCount() == before
+
+
+def test_a_click_on_the_badge_opens_the_copies(qtbot, library, photo):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    from lumina.ui import badges
+
+    photo_id, _path = photo
+    library.make_copy(photo_id)
+    window = open_grid(qtbot, library, photo_id)
+    window.show()
+    qtbot.waitUntil(
+        lambda: window.grid.visualRect(window.model.index(0)).isValid(), timeout=TIMEOUT
+    )
+    index = window.model.index(window.model.row_of(photo_id))
+
+    def badge():
+        option = QStyleOptionViewItem()
+        window.grid.initViewItemOption(option)
+        option.rect = window.grid.visualRect(index)
+        option.widget = window.grid
+        return badges.diamond_rect(window._delegate.photo_rect(option, index), "1")
+
+    # Once the thumbnail is made, there is a photo to put the badge on
+    qtbot.waitUntil(lambda: badge() is not None, timeout=TIMEOUT)
+    card = badge()
+    before = window.model.rowCount()
+
+    qtbot.mouseClick(window.grid.viewport(), Qt.MouseButton.LeftButton, pos=card.center().toPoint())
+
+    assert window.model.rowCount() == before + 1
+
+
+def test_a_copy_chosen_in_the_grid_is_deleted_and_the_photo_is_not(
+    qtbot, library, photo, monkeypatch
+):
+    from PySide6.QtWidgets import QMessageBox
+
+    photo_id, path = photo
+    library.make_copy(photo_id)
+    other = library.make_copy(photo_id)
+    before = digest(path)
+    window = open_grid(qtbot, library, photo_id)
+    window.model.toggle_copies(photo_id)
+    row = window.model.row_of(photo_id, other)
+    window.grid.setCurrentIndex(window.model.index(window.model.row_of(photo_id)))
+
+    # The photo's own cell has no copy to delete
+    window._update_copy_actions()
+    assert not window.delete_copy_action.isEnabled()
+
+    window.grid.setCurrentIndex(window.model.index(row))
+    window._update_copy_actions()
+    assert window.delete_copy_action.isEnabled()
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    window.delete_virtual_copy()
+
+    assert library.copies(photo_id) == [1]
+    qtbot.waitUntil(
+        lambda: window.model.row_of(photo_id, other) == window.model.row_of(photo_id),
+        timeout=TIMEOUT,
+    )
+    assert digest(path) == before
+
+
+def test_a_copy_cell_opens_that_copy(qtbot, library, photo):
+    photo_id, _path = photo
+    library.make_copy(photo_id)
+    window = open_grid(qtbot, library, photo_id)
+    window.model.toggle_copies(photo_id)
+    row = window.model.row_of(photo_id, 1)
+
+    window.grid.activated.emit(window.model.index(row))
+
+    assert window.pages.currentIndex() == _VIEWER
+    assert window._viewed_copy == 1

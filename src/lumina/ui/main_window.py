@@ -31,6 +31,7 @@ from lumina.qt_models.develop import DevelopSession
 from lumina.qt_models.library import NewerParams
 from lumina.qt_models.library_model import (
     COPIES_ROLE,
+    COPY_ROLE,
     DAMAGE_ROLE,
     DIMMED_ROLE,
     FLAG_ROLE,
@@ -129,6 +130,26 @@ class _CellDelegate(QStyledItemDelegate):
             card = card.adjusted(0, 0, behind, behind)
         return card.contains(point)
 
+    def copies_badge_at(self, grid, index, point):
+        """Whether `point` (in the grid's viewport) is on the virtual copies' badge."""
+        virtual = index.data(COPIES_ROLE)
+        if not virtual:
+            return False
+        option = QStyleOptionViewItem()
+        grid.initViewItemOption(option)
+        option.rect = grid.visualRect(index)
+        option.widget = grid
+        photo = self.photo_rect(option, index)
+        stacked = index.data(STACK_ROLE)
+        left = 0.0
+        if stacked:
+            pill = badges.pill_rect(photo, badges.stack_text(stacked))
+            if pill is not None:
+                left = pill.width() + style.px(4) + (style.px(3) if stacked[2] else 0)
+        number = index.data(COPY_ROLE) or virtual
+        card = badges.diamond_rect(photo, str(number), left)
+        return card is not None and card.contains(point)
+
     def paint(self, painter, option, index):
         """The cell, greyed out for a dimmed thumbs-down photo, its flag's badge on the
         photo's bottom right corner, its stars on the bottom left and a warning on the
@@ -137,6 +158,8 @@ class _CellDelegate(QStyledItemDelegate):
         flag, rating = index.data(FLAG_ROLE), index.data(RATING_ROLE)
         damaged = index.data(DAMAGE_ROLE)
         virtual, stacked = index.data(COPIES_ROLE), index.data(STACK_ROLE)
+        # A virtual copy's cell has its own number on the badge, the photo's the count
+        number = index.data(COPY_ROLE) or virtual
         photo = self.photo_rect(option, index)
         painter.save()
         if index.data(DIMMED_ROLE):
@@ -159,7 +182,7 @@ class _CellDelegate(QStyledItemDelegate):
                 painter, photo, badges.stack_text(stacked), left, stacked=stacked[2]
             )
         if virtual:
-            badges.paint_pill(painter, photo, str(virtual), left)
+            badges.paint_diamond(painter, photo, str(number), left)
 
 
 class MainWindow(QMainWindow):
@@ -732,7 +755,9 @@ class MainWindow(QMainWindow):
         self.grid.setDragEnabled(True)
         self.grid.setDragDropMode(QListView.DragDropMode.DragOnly)
         self.grid.setDefaultDropAction(Qt.DropAction.CopyAction)
-        self.grid.activated.connect(lambda index: self.show_photo(index.row()))
+        self.grid.activated.connect(
+            lambda index: self.show_photo(index.row(), self.model.copy(index.row()))
+        )
         self.grid.addActions(
             [
                 *self.flag_actions,
@@ -1163,8 +1188,18 @@ class MainWindow(QMainWindow):
         rating.addAction(self.rate_actions[0])
         menu.addSeparator()
         menu.addAction(self.make_copy_action)
-        if not in_grid:
+        if not in_grid and self._copy_to_delete() is not None:
             menu.addAction(self.delete_copy_action)
+        else:
+            rows = self._flag_rows()
+            if len(rows) == 1 and self.model.copies(rows[0]):
+                shown = self.model.copies_open(rows[0])
+                menu.addAction(
+                    "Hide Virtual Copies" if shown else "Show Virtual Copies",
+                    lambda: self.model.toggle_copies(self.model.photo_id(rows[0])),
+                )
+            if self._copy_to_delete() is not None:
+                menu.addAction(self.delete_copy_action)
         if in_grid:
             menu.addSeparator()
             for action in self.stack_actions:
@@ -1737,7 +1772,8 @@ class MainWindow(QMainWindow):
             if steps:
                 self.step_grid_size(1 if steps > 0 else -1)
             return True
-        # A click on a stack's badge opens or closes it, and chooses nothing
+        # A click on a stack's or the virtual copies' badge opens or closes it, and chooses
+        # nothing
         if (
             event.type() == QEvent.Type.MouseButtonPress
             and watched is self.grid.viewport()
@@ -1748,6 +1784,11 @@ class MainWindow(QMainWindow):
                 self.grid, index, event.position()
             ):
                 self.toggle_stack_of(index.row())
+                return True
+            if index.isValid() and self._delegate.copies_badge_at(
+                self.grid, index, event.position()
+            ):
+                self.model.toggle_copies(self.model.photo_id(index.row()))
                 return True
         return super().eventFilter(watched, event)
 
@@ -1869,10 +1910,16 @@ class MainWindow(QMainWindow):
         row = self._viewed_row()
         if row is None:
             return
+        # From the cell of the copy shown (when open), onto the cell next to it
+        row = self.model.row_of(self._viewed_id, self._viewed_copy)
+        target = row + delta
+        if not 0 <= target < self.model.rowCount():
+            return
+        copy = self.model.copy(target)
         if self.pages.currentIndex() == _DEVELOP:
-            self.show_develop(row + delta)
+            self.show_develop(target, copy)
         else:
-            self.show_photo(row + delta)
+            self.show_photo(target, copy)
 
     def go_back(self):
         """Escape: cancel the crop, then out of the Develop view; in the viewer back to
@@ -1904,7 +1951,8 @@ class MainWindow(QMainWindow):
         if self.pages.currentIndex() == _VIEWER:
             row, copy = self._viewed_row(), self._viewed_copy
         elif self.pages.currentIndex() == _GRID and self.grid.currentIndex().isValid():
-            row, copy = self.grid.currentIndex().row(), 0
+            row = self.grid.currentIndex().row()
+            copy = self.model.copy(row)
         else:
             return
         if row is not None:
@@ -2025,7 +2073,7 @@ class MainWindow(QMainWindow):
         page = self.pages.currentIndex()
         viewing = page in (_VIEWER, _DEVELOP)
         self.make_copy_action.setEnabled(bool(self._flag_rows()))
-        self.delete_copy_action.setEnabled(viewing and self._viewed_copy > 0)
+        self.delete_copy_action.setEnabled(self._copy_to_delete() is not None)
         several = viewing and self._viewed_id is not None and bool(self._others())
         self.previous_copy_action.setEnabled(several)
         self.next_copy_action.setEnabled(several)
@@ -2042,6 +2090,19 @@ class MainWindow(QMainWindow):
             self.show_develop(row, copy)
         else:
             self.show_photo(row, copy)
+
+    def _copy_to_delete(self):
+        """(photo id, copy) of the virtual copy the viewer or the Develop view shows, or of
+        the one cell chosen in the grid when it is a copy's; else None."""
+        page = self.pages.currentIndex()
+        if page in (_VIEWER, _DEVELOP):
+            if self._viewed_id is not None and self._viewed_copy > 0:
+                return self._viewed_id, self._viewed_copy
+            return None
+        rows = self._flag_rows() if page == _GRID else []
+        if len(rows) == 1 and self.model.copy(rows[0]) > 0:
+            return self.model.photo_id(rows[0]), self.model.copy(rows[0])
+        return None
 
     def make_virtual_copy(self):
         """A new virtual copy of the photo shown, from the edit as it is, and shown. In
@@ -2065,23 +2126,29 @@ class MainWindow(QMainWindow):
         self._show_edit(number)
 
     def delete_virtual_copy(self):
-        """Delete the virtual copy shown, after asking, and show the one before it."""
-        if self._viewed_copy <= 0 or self._viewed_id is None:
+        """Delete the virtual copy shown or chosen, after asking. In the viewer or Develop
+        view the one before it is shown after."""
+        target = self._copy_to_delete()
+        if target is None:
             return
+        photo_id, copy = target
         answer = QMessageBox.question(
             self,
             "Delete Virtual Copy",
-            f"Delete copy {self._viewed_copy} of this photo and its edit? "
+            f"Delete copy {copy} of this photo and its edit? "
             "The photo and its other edits are not touched.",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        if self.pages.currentIndex() == _GRID:
+            self.service.delete_copy(photo_id, copy)
+            return
         # Closed first, so that nothing is saved over the copy once it is gone
         if self.pages.currentIndex() == _DEVELOP:
             self.session.close()
-        numbers = [0, *self.service.copies(self._viewed_id)]
-        before = numbers[max(0, numbers.index(self._viewed_copy) - 1)]
-        self.service.delete_copy(self._viewed_id, self._viewed_copy)
+        numbers = [0, *self.service.copies(photo_id)]
+        before = numbers[max(0, numbers.index(copy) - 1)]
+        self.service.delete_copy(photo_id, copy)
         self._show_edit(before)
 
     def step_copy(self, delta):
