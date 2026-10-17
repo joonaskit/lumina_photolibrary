@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from lumina.integration import style
+from lumina.integration import appearance, style, theme
 from lumina.qt_models import develop
 from lumina.qt_models.backups import (
     BEFORE_MIGRATION,
@@ -34,6 +34,7 @@ from lumina.qt_models.backups import (
     KEEP_WEEKLY,
 )
 from lumina.ui import settings
+from lumina.ui.appearance import AccentDots, Segments
 from lumina.ui.develop_view import SECTION_NAMES, SECTIONS
 
 _DENSITIES = (("comfortable", "Comfortable"), ("compact", "Compact"))
@@ -120,23 +121,8 @@ class SettingsDialog(QDialog):
             pages.append(made)
             return made
 
+        self._appearance_page(page("Appearance"))
         layout = page("General")
-
-        self.density = QComboBox()
-        for key, text in _DENSITIES:
-            self.density.addItem(text, key)
-        self.density.setCurrentIndex(max(0, self.density.findData(settings.density())))
-        self.density.currentIndexChanged.connect(self._on_density_changed)
-        appearance = QFormLayout()
-        appearance.addRow("Density", self.density)
-        layout.addWidget(self._heading("Appearance"))
-        layout.addLayout(appearance)
-        layout.addWidget(
-            self._note(
-                "Compact takes less room for the menus, buttons and the Develop panel. "
-                "The text, the icons and the thumbnails stay as large."
-            )
-        )
 
         self.advance = QCheckBox("Go to the next photo after flagging or rating")
         self.advance.setChecked(settings.advance_after_flag())
@@ -302,6 +288,83 @@ class SettingsDialog(QDialog):
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.reject)
         outer.addWidget(close)
+
+    def _appearance_page(self, layout):
+        """The scheme, the accent and the corners: the shell's, followed as it changes
+        them, or chosen here; and the density."""
+        layout.addWidget(self._heading("Theme"))
+        self._shell = appearance.shell_found()
+        self.follow = QCheckBox("Follow the shell's look")
+        self.follow.setChecked(settings.follow_shell())
+        self.follow.toggled.connect(self._on_follow_toggled)
+        self.follow.setVisible(self._shell)
+        layout.addWidget(self.follow)
+        self.follow_note = self._note(
+            "Quickshell Island's colours and corners, changing as you change them there. "
+            "Turn this off to choose them here."
+        )
+        layout.addWidget(self.follow_note)
+        self.scheme = Segments(appearance.SCHEMES)
+        self.accent = AccentDots(appearance.ACCENTS)
+        self.corners = Segments([(key, label) for key, label, _scale in appearance.CORNERS])
+        for control in (self.scheme, self.accent, self.corners):
+            control.chosen.connect(self._on_look_chosen)
+        look = QFormLayout()
+        look.addRow("Appearance", self.scheme)
+        look.addRow("Accent", self.accent)
+        look.addRow("Corners", self.corners)
+        style.follow_density(self, lambda: look.setVerticalSpacing(style.gap(10)))
+        layout.addLayout(look)
+        self._show_look()
+        # While following the shell, what it changes shows here
+        style.themed.changed.connect(self._show_look)
+
+        self.density = QComboBox()
+        for key, text in _DENSITIES:
+            self.density.addItem(text, key)
+        self.density.setCurrentIndex(max(0, self.density.findData(settings.density())))
+        self.density.currentIndexChanged.connect(self._on_density_changed)
+        density = QFormLayout()
+        density.addRow("Density", self.density)
+        layout.addWidget(self._heading("Layout"))
+        layout.addLayout(density)
+        layout.addWidget(
+            self._note(
+                "Compact takes less room for the menus, buttons and the Develop panel. "
+                "The text, the icons and the thumbnails stay as large."
+            )
+        )
+
+    def _following(self):
+        return self._shell and self.follow.isChecked()
+
+    def _show_look(self):
+        """The shell's look while it is followed, greyed; or the one chosen here."""
+        following = self._following()
+        shown = appearance.look_of(theme.load_theme()) if following else settings.look()
+        self.scheme.set_value(shown.scheme)
+        self.accent.set_value(shown.accent)
+        self.corners.set_value(shown.corners)
+        self.follow_note.setVisible(following)
+        for control in (self.scheme, self.accent, self.corners):
+            control.setEnabled(not following)
+
+    def _on_follow_toggled(self, on):
+        if not on:
+            # Choosing by hand starts from the shell's look as it is: nothing changes yet
+            settings.set_look(appearance.look_of(theme.load_theme()))
+        settings.set_follow_shell(on)
+        self._apply_look()
+        self._show_look()
+
+    def _on_look_chosen(self, _key):
+        settings.set_look(
+            appearance.Look(self.scheme.value(), self.accent.value(), self.corners.value())
+        )
+        self._apply_look()
+
+    def _apply_look(self):
+        appearance.apply(QApplication.instance(), settings.chosen_look(self._shell))
 
     def _backups_page(self, layout):
         layout.addWidget(self._heading("Backups"))
@@ -631,6 +694,7 @@ class SettingsDialog(QDialog):
 
     def done(self, result):
         self._closed = True
+        style.themed.changed.disconnect(self._show_look)
         if self._limit_timer_pending():
             self.apply_cache_limit()
         if self.library is not None:

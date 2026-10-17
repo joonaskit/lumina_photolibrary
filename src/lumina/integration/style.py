@@ -145,6 +145,12 @@ def row_height():
     return px(_DENSITY_SIZES[_density]["row_height"])
 
 
+def segment_padding():
+    """The space between a segmented choice's well and its buttons (the settings'
+    Dark or Light). Scaled."""
+    return px(3)
+
+
 def group_padding():
     """The space between a toolbar group's edge and its buttons. Scaled."""
     return px(_DENSITY_SIZES[_density]["group_padding"])
@@ -438,6 +444,7 @@ def _stylesheet():
     hover, pressed, divider = overlay(0.08), overlay(0.14), overlay(_DIVIDER)
     selected = tint("accent", 0.22)
     shutter_border = px(2)
+    segment = _radius_for_text("medium", 5)
     shutter_radius = _radius_for_text("medium", 10, border=shutter_border)
     window, card, raised = (layer(name).name() for name in ("window", "card", "raised"))
     card_border = overlay(_CARD_BORDER)
@@ -502,6 +509,19 @@ def _stylesheet():
         QPushButton#shutter:disabled, QPushButton#focus:disabled {{
             background: {raised}; border-color: {raised}; color: {colors["textTertiary"]};
         }}
+
+        /* One of a few choices, as the shell has them: buttons in a rounded well, the
+           one chosen raised. The well's corners are its buttons' and the padding, so
+           the two are round about one centre */
+        #segments {{
+            background: {overlay(0.05)}; border-radius: {segment + segment_padding()}px;
+        }}
+        #segments QPushButton {{
+            background: transparent; border-radius: {segment}px;
+            padding: {gap(5)}px {gap(12)}px;
+        }}
+        #segments QPushButton:hover {{ background: {hover}; }}
+        #segments QPushButton:checked {{ background: {overlay(0.12)}; font-weight: 600; }}
 
         /* A button that reads as a link: "Reset Curve" */
         QPushButton#link {{
