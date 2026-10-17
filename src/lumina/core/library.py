@@ -20,6 +20,7 @@ The rules it keeps:
 """
 
 import os
+import stat
 import time
 
 from lumina.core import db as dbm
@@ -220,29 +221,11 @@ def _details(library, job, folder, base, should_stop, exiftool, gentle=False, re
             batch = library.pending_metadata(folder.id, _DETAILS_BATCH)
             if not batch:
                 break
-            read, failed = [], []
             paths = {photo: _absolute(folder.path, base, relative) for photo, relative in batch}
-            ids = {}
-            for photo, path in paths.items():
-                try:
-                    ids[photo] = content_id(path)
-                except PhotoError as error:
-                    failed.append((photo, None, error.message))
-            try:
-                results = tool.read_many([paths[photo] for photo in ids])
-            except metadata.MetadataUnavailable as error:
-                library.write_metadata(failed=failed)
-                return dbm.FAILED_JOB, f"Reading details stopped: {error}", failures + len(failed)
-            for photo, cid in ids.items():
-                result = results[paths[photo]]
-                if isinstance(result, PhotoError):
-                    failed.append((photo, cid, result.message))
-                else:
-                    read.append((photo, cid, result))
-            library.write_metadata(read, failed)
-            library.add_failures(
-                job.id, [(paths[photo], message) for photo, _cid, message in failed]
-            )
+            failed, stopped = read_details(library, paths, tool)
+            if stopped is not None:
+                return dbm.FAILED_JOB, f"Reading details stopped: {stopped}", failures + len(failed)
+            library.add_failures(job.id, failed)
             failures += len(failed)
             done += len(batch)
             job.progress(DETAILS, done, total, changed=True)
@@ -252,6 +235,104 @@ def _details(library, job, folder, base, should_stop, exiftool, gentle=False, re
         tool.close()
     job.progress(DETAILS, done, total, force=True)
     return dbm.DONE, None, failures
+
+
+def read_details(library, paths, tool):
+    """Read the content ids and metadata of the photos {photo id: path} with the ExifTool
+    `tool`, and write them. Returns ([(path, message)] of those that could not be read,
+    and the MetadataUnavailable that stopped exiftool, or None). When exiftool stopped,
+    the photos it did not read stay to be read."""
+    read, failed, ids = [], [], {}
+    for photo, path in paths.items():
+        try:
+            ids[photo] = content_id(path)
+        except PhotoError as error:
+            failed.append((photo, None, error.message))
+    stopped = None
+    try:
+        results = tool.read_many([paths[photo] for photo in ids])
+    except metadata.MetadataUnavailable as error:
+        results, stopped = {}, error
+    for photo, cid in ids.items():
+        result = results.get(paths[photo])
+        if isinstance(result, PhotoError):
+            failed.append((photo, cid, result.message))
+        elif result is not None:
+            read.append((photo, cid, result))
+    library.write_metadata(read, failed)
+    return [(paths[photo], message) for photo, _cid, message in failed], stopped
+
+
+# A tethered folder (#57): photos taken in as each is written, without walking the folder
+
+
+def new_files(library, folder, volume, base, directory):
+    """The photos directly in `directory`, a directory of `folder` (found at `base`, on
+    the volume with id `volume`), that the library does not have as they are now:
+    [(path, size, mtime_ns)] by name. Hidden files and what is not a photo are left
+    out, as a scan leaves them out."""
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return []
+    found = []
+    for name in names:
+        if name.startswith(".") or not scanner.is_photo(name):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            info = os.stat(path)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        state = library.photo_state(volume, _relative(folder.path, base, path))
+        if (
+            state is None
+            or not state[3]
+            or (state[1], state[2])
+            != (
+                info.st_size,
+                info.st_mtime_ns,
+            )
+        ):
+            found.append((path, info.st_size, info.st_mtime_ns))
+    return found
+
+
+def take_in(library, folder, volume, base, files, edit_json=None):
+    """Write the photos `files` ([(path, size, mtime_ns)], each complete) into the library
+    as a scan's walk would, without walking the folder: a new one added, a changed one
+    to be read again, one that was missing available. A new photo with no edit is given
+    `edit_json` (a tethered folder's preset). Returns [(photo id, path)] of the photos
+    written, whose details `read_details` reads; a name that is not UTF-8 is left to the
+    scan, which names it."""
+    new, changed, returned, paths = [], [], [], {}
+    for path, size, mtime in files:
+        relative = _relative(folder.path, base, path)
+        try:
+            relative.encode("utf-8")
+        except UnicodeEncodeError:
+            continue
+        state = library.photo_state(volume, relative)
+        row = (relative, size, mtime, dbm.local_time(mtime))
+        if state is None:
+            new.append(row)
+        elif (state[1], state[2]) != (size, mtime):
+            changed.append((state[0], *row[1:]))
+        elif not state[3]:
+            returned.append(state[0])
+        else:
+            continue
+        paths[relative] = path
+    library.write_scan(folder.id, volume, new, changed, returned)
+    ids = {relative: library.photo_state(volume, relative) for relative in paths}
+    if edit_json is not None:
+        fresh = (ids[row[0]][0] for row in new if ids[row[0]] is not None)
+        edits = {photo: edit_json for photo in fresh if library.edit(photo) is None}
+        if edits:
+            library.save_edits(edits)
+    return [(state[0], paths[relative]) for relative, state in ids.items() if state is not None]
 
 
 def _read_sidecars(library, job, folder, base, should_stop):

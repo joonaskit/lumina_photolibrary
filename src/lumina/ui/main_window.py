@@ -63,6 +63,7 @@ from lumina.ui.quick_view import QuickView
 from lumina.ui.search import SearchField, SearchStatus
 from lumina.ui.settings_dialog import SettingsDialog
 from lumina.ui.sidebar import Sidebar
+from lumina.ui.tether import TetherDialog, TetherStatus
 
 APP_NAME = "Lumina"
 # Size of a thumbnail in the grid, unscaled, by the size chosen. Large stays within the
@@ -186,14 +187,25 @@ class _CellDelegate(QStyledItemDelegate):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, service, search=None, merge=None, importer=None, parent=None, backups=None):
+    def __init__(
+        self,
+        service,
+        search=None,
+        merge=None,
+        importer=None,
+        parent=None,
+        backups=None,
+        tether=None,
+    ):
         """`search` is the SearchService; without one there is no search. `merge` is the
         MergeService; without one there are no merges. `importer` is the ImportService;
         without one there is no importing. `backups` is the BackupService; without one
-        the settings have no Backups section."""
+        the settings have no Backups section. `tether` is the HotFolder; without one no
+        folder can be tethered."""
         super().__init__(parent)
         self.service = service
         self.backups = backups
+        self.tether = tether
         self.search = search
         self.merge = merge
         self.importer = importer
@@ -226,6 +238,10 @@ class MainWindow(QMainWindow):
         # A photo asked for from outside that the library does not have yet (its folder
         # is being scanned), opened as it arrives
         self._opening = None
+        # A tethered folder's newest photo, and the one to show once the grid has it, with
+        # whether in the Develop view
+        self._last_shot = None
+        self._showing_shot = None
         self.quick_views = []
         self._place = (None, None, 0)
         # Where the Develop view was opened from, to go back to
@@ -249,6 +265,7 @@ class MainWindow(QMainWindow):
         self.sidebar.rescan_requested.connect(service.rescan)
         self.sidebar.rescan_all_requested.connect(service.rescan)
         self.sidebar.remove_requested.connect(self.remove_folder)
+        self.sidebar.tether_requested.connect(self.tether_folder)
         self.sidebar.collection_selected.connect(self._on_collection_selected)
         self.sidebar.import_selected.connect(self._on_import_selected)
         self.sidebar.new_collection_requested.connect(lambda: self.new_collection())
@@ -337,6 +354,15 @@ class MainWindow(QMainWindow):
             merge.job_changed.connect(self.merge_status.show_status)
         self.import_status = import_status()
         self.statusBar().addPermanentWidget(self.import_status)
+        self.tether_status = TetherStatus()
+        self.statusBar().addPermanentWidget(self.tether_status)
+        if tether is not None:
+            self.tether_status.stop_requested.connect(self.stop_tethering)
+            self.sidebar.stop_tether_requested.connect(self.stop_tethering)
+            tether.changed.connect(self._on_tether_changed)
+            tether.arrived.connect(self._on_shot_arrived)
+            tether.failed.connect(self._on_shot_failed)
+            tether.stopped.connect(lambda why: self.statusBar().showMessage(why, 15000))
         if importer is not None:
             self.import_status.cancel_requested.connect(importer.cancel)
             importer.job_changed.connect(self.import_status.show_status)
@@ -380,6 +406,8 @@ class MainWindow(QMainWindow):
         self.model.loading_changed.connect(
             lambda loading: loading or self._open_arrived(loaded=True)
         )
+        self.model.rowsInserted.connect(lambda: self._show_shot())
+        self.model.loading_changed.connect(lambda loading: loading or self._show_shot(loaded=True))
 
         self._draw_icons()
         style.themed.changed.connect(self._draw_icons)
@@ -972,6 +1000,76 @@ class MainWindow(QMainWindow):
             self.show_photo(row)
         elif (scanned and photo is None) or (loaded and photo is not None):
             self._opening = None
+
+    # Tethering
+
+    def tether_folder(self, folder_id):
+        """Ask for the preset, then tether the folder `folder_id` and show it."""
+        if self.tether is None:
+            return
+        info = next((f for f in self.service.folders() if f.id == folder_id), None)
+        if info is None:
+            return
+        presets = [name for name, _json in self.service.presets()]
+        dialog = TetherDialog(info.name, presets, settings.tether_preset(), self)
+        if dialog.exec() != TetherDialog.DialogCode.Accepted:
+            return
+        preset = dialog.chosen_preset()
+        settings.set_tether_preset(preset)
+        try:
+            self.tether.start(folder_id, preset)
+        except (KeyError, NewerParams) as error:
+            QMessageBox.warning(self, "Cannot Tether", f"The preset can't be used: {error}")
+            return
+        self._last_shot = None
+        self.sidebar.select(folder_id)
+
+    def stop_tethering(self):
+        if self.tether is not None:
+            self.tether.stop()
+
+    def _on_tether_changed(self):
+        folder = self.tether.folder
+        info = next((f for f in self.service.folders() if f.id == folder), None)
+        self.sidebar.set_tethered(folder)
+        self.tether_status.show_state(
+            info.name if info is not None else None, self.tether.count, self.tether.preset
+        )
+
+    def _on_shot_arrived(self, photo_id):
+        """A tethered folder's new photo: shown in the viewer, or in the Develop view while
+        that is open, unless an older photo is being looked at."""
+        page = self.pages.currentIndex()
+        following = (
+            page in (_GRID, _EMPTY) or self._last_shot is None or self._viewed_id == self._last_shot
+        )
+        self._last_shot = photo_id
+        if following:
+            self._showing_shot = (photo_id, page == _DEVELOP)
+            self._show_shot()
+
+    def _show_shot(self, loaded=False):
+        """The tethered photo to show, once the grid has it; given up when the grid has
+        loaded without it (a filter or the folder chosen hides it)."""
+        if self._showing_shot is None:
+            return
+        photo_id, develop = self._showing_shot
+        row = self.model.row_of(photo_id)
+        if row is None:
+            if loaded and not self.model.is_loading():
+                self._showing_shot = None
+                name = self._photo_name(photo_id)
+                self.statusBar().showMessage(f"New photo {name} is not among those shown", 10000)
+            return
+        self._showing_shot = None
+        if develop:
+            self._develop_from = _VIEWER
+            self.show_develop(row)
+        else:
+            self.show_photo(row)
+
+    def _on_shot_failed(self, path, why):
+        self.statusBar().showMessage(f"Could not read {path}: {why}", 15000)
 
     def remove_folder(self, folder_id):
         info = next((f for f in self.service.folders() if f.id == folder_id), None)

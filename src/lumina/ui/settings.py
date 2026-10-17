@@ -312,3 +312,13 @@ def set_import_choices(destination, layout, naming, backup, backup_on):
     stored.setValue("import/naming", naming)
     stored.setValue("import/backup", backup or "")
     stored.setValue("import/backup_on", bool(backup_on))
+
+
+def tether_preset():
+    """The name of the preset a tethered folder gave its photos last time, or None."""
+    value = _settings().value("tether/preset")
+    return value if isinstance(value, str) and value else None
+
+
+def set_tether_preset(name):
+    _settings().setValue("tether/preset", name or "")

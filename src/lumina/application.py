@@ -16,6 +16,7 @@ from lumina.integration.theme_watcher import ThemeWatcher
 from lumina.qt_models import backups as backing
 from lumina.qt_models import workers
 from lumina.qt_models.backups import BackupService
+from lumina.qt_models.hot_folder import HotFolder
 from lumina.qt_models.importing import ImportService
 from lumina.qt_models.library import LibraryService, NewerDatabase, NoBackup
 from lumina.qt_models.merge import MergeService
@@ -100,15 +101,17 @@ def run(paths=(), restore=None):
     search = SearchService(service, parent=app)
     merge = MergeService(service, parent=app)
     importer = ImportService(service, parent=app)
+    tether = HotFolder(service, search, parent=app)
     # A scan, indexing or a merge in progress stops and is queued for the next start
     app.aboutToQuit.connect(search.close)
     app.aboutToQuit.connect(merge.close)
     app.aboutToQuit.connect(importer.close)
+    app.aboutToQuit.connect(tether.close)
     app.aboutToQuit.connect(backups.close)
     app.aboutToQuit.connect(service.close)
     app.aboutToQuit.connect(workers.shutdown)
 
-    window = MainWindow(service, search, merge, importer, backups=backups)
+    window = MainWindow(service, search, merge, importer, backups=backups, tether=tether)
     backups.failed.connect(lambda text: window.statusBar().showMessage(text, 15000))
     instance.opened.connect(lambda wanted: _open(window, wanted))
     service.start()

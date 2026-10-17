@@ -11,6 +11,10 @@ when a drive is plugged in, and Rescan.
 A change is not scanned for at once: after a quiet moment, so a folder being copied
 into is read when the copy is done, not once per file. A file that was still being
 written then is found changed by the next scan. Nothing here writes to a folder.
+
+A tethered folder (#57, qt_models/hot_folder.py) is watched even with watching off, and
+a change in it is told at once (`hot_changed`), besides the quiet moment's scan when
+watching is on.
 """
 
 import os
@@ -60,6 +64,8 @@ def directories(base, most):
 class FolderWatcher(QObject):
     # The folders watched, or not, changed: `watched` and `unwatched` say which
     status_changed = Signal()
+    # A directory of the tethered folder changed: the folder's id and the directory
+    hot_changed = Signal(int, str)
 
     def __init__(self, service, quiet_ms=_QUIET_MS, budget=None, parent=None):
         """`service` is the LibraryService. `budget` is how many directories may be
@@ -68,6 +74,8 @@ class FolderWatcher(QObject):
         self.service = service
         self.budget = default_budget() if budget is None else budget
         self.enabled = False
+        # The id of the tethered folder, or None
+        self.hot = None
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_changed)
         # Directory -> the id of the folder it is in, and folder id -> its directories
@@ -98,6 +106,12 @@ class FolderWatcher(QObject):
         self.enabled = on
         self.sync()
 
+    def set_hot(self, folder_id):
+        """Watch the folder `folder_id` (None: none) whatever `enabled` is, and tell of a
+        change in it at once."""
+        self.hot = folder_id
+        self.sync()
+
     def close(self):
         self._quitting = True
         self._timer.stop()
@@ -108,11 +122,8 @@ class FolderWatcher(QObject):
         that are gone, not connected, or not wanted."""
         if self._quitting:
             return
-        wanted = (
-            {f.id for f in self.service.folders() if self.service.is_connected(f.id)}
-            if self.enabled
-            else set()
-        )
+        connected = {f.id for f in self.service.folders() if self.service.is_connected(f.id)}
+        wanted = connected if self.enabled else connected & {self.hot}
         for folder in set(self._dirs) - wanted:
             self._forget(folder)
         self.unwatched &= wanted
@@ -138,7 +149,9 @@ class FolderWatcher(QObject):
 
     def _walked(self, folder, found):
         self._walking.discard(folder)
-        if self._quitting or not self.enabled or not self.service.is_connected(folder):
+        if self._quitting or not self.service.is_connected(folder):
+            return
+        if not self.enabled and folder != self.hot:
             return
         if found is None:
             # Too many directories for what is left of the budget
@@ -174,16 +187,22 @@ class FolderWatcher(QObject):
         folder = self._owner.get(path)
         if folder is None:
             return
-        self._add_new_directories(folder, path)
-        self._changed.add(folder)
-        self._timer.start()
+        made = self._add_new_directories(folder, path)
+        if folder == self.hot:
+            for directory in (path, *made):
+                self.hot_changed.emit(folder, directory)
+        if self.enabled:
+            self._changed.add(folder)
+            self._timer.start()
 
     def _add_new_directories(self, folder, path):
-        """A directory made in `path` needs a watch of its own, as long as there is room."""
+        """A directory made in `path` needs a watch of its own, as long as there is room.
+        Returns the directories given one."""
         try:
             names = os.listdir(path)
         except OSError:
-            return
+            return []
+        made = []
         used = sum(len(paths) for paths in self._dirs.values())
         for name in names:
             child = os.path.join(path, name)
@@ -195,8 +214,10 @@ class FolderWatcher(QObject):
             self._dirs[folder].add(child)
             self._watcher.addPath(child)
             used += 1
+            made.append(child)
             # Its own directories, if it came with some
-            self._add_new_directories(folder, child)
+            made.extend(self._add_new_directories(folder, child))
+        return made
 
     def _scan(self):
         changed, self._changed = self._changed, set()

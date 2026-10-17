@@ -72,6 +72,8 @@ SIDECARS = "sidecars"
 IMPORT = "import"
 # One thread for backing up the library's database, which reads all of it
 BACKUP = "backup"
+# One thread for a tethered folder's photos, which never wait for a scan
+TETHER = "tether"
 _NAMED_PROCESSES = {DEVELOP, EMBED, QUERY, MERGING}
 
 

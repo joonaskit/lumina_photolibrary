@@ -642,15 +642,26 @@ class Library:
         )
         return {row[0]: (row[1], row[2], row[3], bool(row[4])) for row in rows}
 
+    def photo_state(self, volume, path):
+        """(id, size, mtime_ns, available) of the photo at `path` (from the root) of the
+        volume with id `volume`, or None."""
+        row = self.db.execute(
+            "SELECT id, size, mtime_ns, available FROM photos WHERE volume_id = ? AND path = ?",
+            (volume, path),
+        ).fetchone()
+        return (row[0], row[1], row[2], bool(row[3])) if row is not None else None
+
     def write_scan(self, folder_id, volume, new=(), changed=(), returned=()):
         """One batch of what a walk found, in one transaction. `new` and `changed` are
         (path, size, mtime_ns, file_time); `changed` and `returned` are by photo id
-        in the first place: (id, size, mtime_ns, file_time) and ids."""
+        in the first place: (id, size, mtime_ns, file_time) and ids. A new photo the
+        library has by now (a tethered folder's, taken in while a scan walked) is left
+        as it is."""
         now = time.time()
         with self.db:
             self.db.executemany(
                 "INSERT INTO photos (folder_id, volume_id, path, size, mtime_ns, file_time, "
-                "added_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "added_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (volume_id, path) DO NOTHING",
                 [
                     (folder_id, volume, path, size, mtime, when, now)
                     for path, size, mtime, when in new

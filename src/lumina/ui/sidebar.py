@@ -71,6 +71,9 @@ class Sidebar(QFrame):
     rescan_requested = Signal(int)
     rescan_all_requested = Signal()
     remove_requested = Signal(int)
+    # Tether the folder (its id), or stop tethering
+    tether_requested = Signal(int)
+    stop_tether_requested = Signal()
     # A collection was chosen: its id and whether it is a smart one
     collection_selected = Signal(int, bool)
     # The last import was chosen: its job id
@@ -135,6 +138,7 @@ class Sidebar(QFrame):
         layout.addWidget(self.import_button)
         style.follow_density(self, lambda: self._fit(layout))
         self._folders = []
+        self._tethered = None
         self._collections = []
         self._last_import = None
         self._draw_icons()
@@ -304,6 +308,11 @@ class Sidebar(QFrame):
         menu.addAction("Delete…", lambda: self.delete_keyword_requested.emit(path))
         menu.exec(self.keyword_list.viewport().mapToGlobal(point))
 
+    def set_tethered(self, folder_id):
+        """Mark the folder `folder_id` as tethered (None: none)."""
+        self._tethered = folder_id
+        self._draw_icons()
+
     def set_import_shown(self, shown):
         self.import_button.setVisible(shown)
 
@@ -331,7 +340,10 @@ class Sidebar(QFrame):
             self.selected.emit(item.data(FOLDER_ROLE))
 
     def _menu(self, point):
-        item = self.list.itemAt(point)
+        self.menu_for(self.list.itemAt(point)).exec(self.list.viewport().mapToGlobal(point))
+
+    def menu_for(self, item):
+        """The menu of the list's `item` (None: of the empty space below the items)."""
         kind = item.data(KIND_ROLE) if item is not None else None
         folder_id = item.data(FOLDER_ROLE) if item is not None else None
         menu = QMenu(self)
@@ -346,13 +358,17 @@ class Sidebar(QFrame):
             menu.addSeparator()
             menu.addAction("Delete…", lambda: self.delete_collection_requested.emit(collection_id))
         elif folder_id is None:
-            menu.addAction("Rescan All Folders", self.rescan_all_requested)
-            menu.addAction("New Collection…", self.new_collection_requested)
+            menu.addAction("Rescan All Folders", self.rescan_all_requested.emit)
+            menu.addAction("New Collection…", self.new_collection_requested.emit)
         else:
             menu.addAction("Rescan", lambda: self.rescan_requested.emit(folder_id))
+            if folder_id == self._tethered:
+                menu.addAction("Stop Tethering", self.stop_tether_requested.emit)
+            else:
+                menu.addAction("Tether…", lambda: self.tether_requested.emit(folder_id))
             menu.addSeparator()
             menu.addAction("Remove from Library…", lambda: self.remove_requested.emit(folder_id))
-        menu.exec(self.list.viewport().mapToGlobal(point))
+        return menu
 
     def _fit(self, layout):
         layout.setSpacing(style.gap(4))
@@ -373,6 +389,8 @@ class Sidebar(QFrame):
                 item.setIcon(style.icon("edit-find", "view-filter", "system-search"))
             elif folder_id is None:
                 item.setIcon(style.icon("folder-pictures", "camera-photo", "image-x-generic"))
+            elif folder_id == self._tethered:
+                item.setIcon(style.icon("camera-photo", "folder-pictures", "folder"))
             elif connected.get(folder_id, True):
                 item.setIcon(style.icon("folder", "folder-pictures"))
             else:
