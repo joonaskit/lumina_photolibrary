@@ -15,12 +15,22 @@ def stack_text(stacked):
     return str(size) if collapsed else f"{place}/{size}"
 
 
+def _room(photo_rect):
+    """Whether a photo's thumbnail has room for badges: it is not a small one (judged by
+    its longer side, which follows the grid's size, not by the photo's shape: a
+    panorama's is short and wide), and a badge fits inside its shorter side."""
+    height = style.px(20)
+    longer = max(photo_rect.width(), photo_rect.height())
+    shorter = min(photo_rect.width(), photo_rect.height())
+    return longer >= 3 * height and shorter >= height + 2 * style.px(4)
+
+
 def pill_rect(photo_rect, text, left=0.0):
     """Where the badge with `text` is on a photo (`left` pixels in from its top left
     corner), or None when the thumbnail is too small for one."""
-    height = style.px(20)
-    if photo_rect.width() < 3 * height or photo_rect.height() < 3 * height:
+    if not _room(photo_rect):
         return None
+    height = style.px(20)
     width = height + style.px(6) * (len(text) - 1)
     inset = style.px(4)
     return QRectF(photo_rect.left() + inset + left, photo_rect.top() + inset, width, height)
@@ -63,8 +73,7 @@ def diamond_rect(photo_rect, text, left=0.0):
     pill for the same text, as its corners hold none."""
     size = style.px(26) + style.px(5) * (len(text) - 1)
     # Too small a thumbnail is judged as for the pill, whatever the number
-    least = 3 * style.px(20)
-    if photo_rect.width() < least or photo_rect.height() < least:
+    if not _room(photo_rect):
         return None
     inset = style.px(4)
     return QRectF(photo_rect.left() + inset + left, photo_rect.top() + inset, size, size)

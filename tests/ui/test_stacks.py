@@ -289,3 +289,21 @@ def test_stack_bursts_leaves_a_stack_made_by_hand_as_it_is(qtbot, service, drive
     wait_for_rows(qtbot, window, 2)
     assert window.model.data(window.model.index(0), STACK_ROLE)[1] == 2
     assert window.statusBar().currentMessage() == "No bursts found"
+
+
+def test_a_wide_photo_on_top_of_a_stack_has_its_badge():
+    from PySide6.QtCore import QRect
+
+    from lumina.integration import style
+
+    side = style.px(200)
+    # A panorama's thumbnail: as wide as any in the grid, but short
+    wide = QRect(0, 0, side, side // 4)
+    assert badges.pill_rect(wide, "20") is not None
+    assert badges.diamond_rect(wide, "2") is not None
+    # A small grid's thumbnails have none, whatever their shape
+    small = QRect(0, 0, style.px(50), style.px(40))
+    assert badges.pill_rect(small, "20") is None
+    # Nor one too short for a badge to fit inside it
+    strip = QRect(0, 0, side, style.px(20))
+    assert badges.pill_rect(strip, "20") is None
