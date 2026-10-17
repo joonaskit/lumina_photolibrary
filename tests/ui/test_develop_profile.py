@@ -140,9 +140,10 @@ def test_the_profiles_can_be_listed_and_chosen(library, qtbot, profiles):
 
     session.choose_profile("libraw", "Neutral (LibRaw)")
     assert json.loads(library.edit_json(photo[0]))["profile"]["id"] == "libraw"
-    with qtbot.waitSignal(session.image_ready, timeout=TIMEOUT):
-        session.choose_profile(str(path))
-    assert session.params.profile.name == "Testcam Look"
+    # The file is stored on a worker before it is chosen: the render of "libraw" can be
+    # ready first
+    session.choose_profile(str(path))
+    qtbot.waitUntil(lambda: session.params.profile.name == "Testcam Look", timeout=TIMEOUT)
     session.close()
 
 

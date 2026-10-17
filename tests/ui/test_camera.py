@@ -14,6 +14,7 @@ from photos import make_jpeg_with_exif
 
 from lumina.core import db as dbm
 from lumina.core.edit import params as _params
+from lumina.qt_models import tether as camera_service
 from lumina.qt_models.hot_folder import HotFolder
 from lumina.qt_models.tether import CARD, COMPUTER, CameraService
 from lumina.ui import settings
@@ -227,6 +228,8 @@ def test_tether_camera_starts_a_session_and_the_new_photo_opens(
         dialog.name_field.setText("Product shoot")
         return CameraDialog.DialogCode.Accepted
 
+    # The fake camera needs no python-gphoto2, which the tests are run without
+    monkeypatch.setattr(camera_service, "available", lambda: True)
     monkeypatch.setattr(CameraDialog, "exec", accept)
     window.camera_action.trigger()
 
