@@ -505,14 +505,16 @@ class LibraryService(QObject):
             self._stacks_changed()
         return len(found)
 
-    def find_similar(self, similarity, on_done, on_error):
-        """Look through the whole library, on a thread, for photos that look alike or are
-        copies of one file (core/similar.py), then `on_done([(exact, [PhotoRow, ...])])`,
-        the best photo of each group first, largest groups first."""
+    def find_similar(self, similarity, only, on_done, on_error):
+        """Look through the library, or only the photos with the ids `only`, on a thread,
+        for photos that look alike or are copies of one file (core/similar.py), then
+        `on_done([(exact, [PhotoRow, ...])])`, the best photo of each group first,
+        largest groups first."""
         workers.submit(
             _find_similar,
             self.path,
             similarity,
+            None if only is None else frozenset(only),
             on_done=on_done,
             on_error=on_error,
             owner=self,
@@ -898,10 +900,11 @@ def _run_scan(
 SIMILAR_DEFAULT = similar.SIMILARITY
 
 
-def _find_similar(path, similarity):
-    """On a thread: the groups of photos in the library at `path` that are alike."""
+def _find_similar(path, similarity, only):
+    """On a thread: the groups of photos in the library at `path` that are alike, among
+    those with the ids `only` unless that is None."""
     with dbm.Library(path) as library:
-        rows = library.photos()
+        rows = [r for r in library.photos() if only is None or r.id in only]
         blobs = library.vectors_of(embed.MODEL.name, [r.content_id for r in rows])
     vectors = dict(zip(blobs, embed.from_blobs(list(blobs.values())), strict=True))
     by_id = {row.id: row for row in rows}

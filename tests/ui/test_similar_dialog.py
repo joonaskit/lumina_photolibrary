@@ -80,3 +80,39 @@ def test_a_lower_setting_finds_photos_that_only_resemble_each_other(qtbot, servi
     dialog.slider.setValue(85)
 
     qtbot.waitUntil(lambda: dialog.tree.topLevelItemCount() == 1, timeout=TIMEOUT)
+
+
+def add_copy_elsewhere(qtbot, service, drive):
+    """A copy of a.jpg in a folder of its own, which the grid does not show."""
+    other = drive / "Other"
+    other.mkdir()
+    (other / "copy.jpg").write_bytes((drive / "Photos" / "a.jpg").read_bytes())
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        service.add_folder(other)
+
+
+def test_the_folder_shown_is_looked_through_alone_until_the_whole_library_is_chosen(
+    qtbot, service, drive
+):
+    window = open_window(qtbot, service, drive / "Photos")
+    add_copy_elsewhere(qtbot, service, drive)
+
+    dialog = open_dialog(qtbot, window, 0)
+
+    assert dialog.scope_box.count() == 2
+    assert dialog.scope_box.itemText(0) == window.title.text()
+    dialog.scope_box.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: dialog.tree.topLevelItemCount() == 1, timeout=TIMEOUT)
+    assert dialog.tree.topLevelItem(0).text(0).endswith("the same file")
+
+
+def test_all_photos_offers_only_the_whole_library(qtbot, service, drive):
+    window = open_window(qtbot, service, drive / "Photos")
+    add_copy_elsewhere(qtbot, service, drive)
+    window.sidebar.list.setCurrentRow(0)
+    qtbot.waitUntil(lambda: window.sidebar.current_folder() is None, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: window.model.rowCount() == 4, timeout=TIMEOUT)
+
+    dialog = open_dialog(qtbot, window, 1)
+
+    assert dialog.scope_box.count() == 1

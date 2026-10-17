@@ -67,7 +67,7 @@ from lumina.ui.quick_view import QuickView
 from lumina.ui.search import SearchField, SearchStatus
 from lumina.ui.settings_dialog import SettingsDialog
 from lumina.ui.sidebar import Sidebar
-from lumina.ui.similar_dialog import SimilarDialog
+from lumina.ui.similar_dialog import SHOWN, SimilarDialog
 from lumina.ui.tether import TetherDialog, TetherStatus
 
 APP_NAME = "Lumina"
@@ -561,6 +561,7 @@ class MainWindow(QMainWindow):
         self.find_duplicates_action.triggered.connect(self.find_duplicates)
         self.addAction(self.find_duplicates_action)
         self.similar_dialog = None
+        self._similar_scope = set()
         self.leave_stack_action = QAction("Remove from Stack", self)
         self.leave_stack_action.triggered.connect(self.leave_stack)
         self.toggle_stack_action = QAction("Expand or Collapse Stack", self)
@@ -2312,9 +2313,13 @@ class MainWindow(QMainWindow):
     def find_duplicates(self):
         """Open the list of photos across the library that look alike or are copies."""
         if self.similar_dialog is None:
+            # What the grid shows now is what "here" means, whatever is shown later
+            self._similar_scope = {p.id for p in self.model.photo_rows()}
+            shown = None if self._shows_library() else self.title.text()
             dialog = SimilarDialog(
                 lambda photo: self.service.resolve(photo.volume_key, photo.path),
                 SIMILAR_DEFAULT,
+                shown,
                 self,
             )
             dialog.search_requested.connect(self._search_similar)
@@ -2324,13 +2329,23 @@ class MainWindow(QMainWindow):
             self.similar_dialog = dialog
         self.similar_dialog.show()
         self.similar_dialog.raise_()
-        self._search_similar(self.similar_dialog.similarity())
+        self._search_similar(self.similar_dialog.similarity(), self.similar_dialog.scope())
 
-    def _search_similar(self, similarity):
+    def _shows_library(self):
+        """Whether the grid shows every photo, so there is no narrower place to look."""
+        return (
+            self.sidebar.current_folder() is None
+            and self.sidebar.current_collection() is None
+            and self.sidebar.current_import() is None
+            and self.model.filter == self.model.filter.__class__()
+        )
+
+    def _search_similar(self, similarity, scope):
         dialog = self.similar_dialog
         dialog.searching()
         self.service.find_similar(
             similarity,
+            self._similar_scope if scope == SHOWN else None,
             lambda groups: self._similar_found(dialog, similarity, groups),
             lambda error: dialog.failed(str(error)),
         )

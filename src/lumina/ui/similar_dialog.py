@@ -5,6 +5,7 @@ import os
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -22,18 +23,22 @@ from lumina.qt_models.thumbnails import Thumbnails
 # The slider's range, in percent: from clearly alike to the same picture
 LOWEST, HIGHEST = 80, 100
 _IDS = Qt.ItemDataRole.UserRole + 1
+# Where to look: the photos the grid showed, or all of them
+SHOWN, LIBRARY = "shown", "library"
 
 
 class SimilarDialog(QDialog):
-    # The similarity wanted, 0 to 1: look again
-    search_requested = Signal(float)
+    # Look again: the similarity wanted, 0 to 1, and where to look (SHOWN or LIBRARY)
+    search_requested = Signal(float, str)
     # The groups chosen, each a list of photo ids, the best first
     stack_requested = Signal(object)
     # The ids of the photos other than the best of each group chosen
     reject_requested = Signal(object)
 
-    def __init__(self, resolve, similarity, parent=None):
-        """`resolve(photo)` is where the photo is now, or None when it can't be read."""
+    def __init__(self, resolve, similarity, shown=None, parent=None):
+        """`resolve(photo)` is where the photo is now, or None when it can't be read. `shown`
+        names what the grid shows (a folder, a collection) so it can be looked through
+        alone; None when it shows the whole library."""
         super().__init__(parent)
         self.setWindowTitle("Find Duplicates")
         self.resize(style.px(560), style.px(640))
@@ -44,6 +49,15 @@ class SimilarDialog(QDialog):
         self._items = {}
         layout = QVBoxLayout(self)
         layout.setSpacing(style.gap(10))
+        where = QHBoxLayout()
+        where.addWidget(QLabel("Look in:"))
+        self.scope_box = QComboBox()
+        if shown is not None:
+            self.scope_box.addItem(shown, SHOWN)
+        self.scope_box.addItem("The whole library", LIBRARY)
+        self.scope_box.currentIndexChanged.connect(lambda _i: self._ask(self.slider.value()))
+        where.addWidget(self.scope_box, 1)
+        layout.addLayout(where)
         row = QHBoxLayout()
         row.addWidget(QLabel("Looks alike:"))
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -85,6 +99,9 @@ class SimilarDialog(QDialog):
         self._show_value(self.slider.value())
         self._update_buttons()
 
+    def scope(self):
+        return self.scope_box.currentData()
+
     def similarity(self):
         return self.slider.value() / 100
 
@@ -94,7 +111,7 @@ class SimilarDialog(QDialog):
     def _ask(self, percent):
         self._show_value(percent)
         self.summary.setText("Looking…")
-        self.search_requested.emit(percent / 100)
+        self.search_requested.emit(percent / 100, self.scope())
 
     def searching(self):
         self.summary.setText("Looking…")
