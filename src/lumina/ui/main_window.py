@@ -6,6 +6,7 @@ import os
 from PySide6.QtCore import QEvent, QMargins, QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -59,6 +60,7 @@ from lumina.ui.image_view import ImageView
 from lumina.ui.import_dialog import ImportDialog
 from lumina.ui.job_status import JobStatus, import_status, merge_status
 from lumina.ui.keywords_dialog import KeywordsDialog
+from lumina.ui.live_view import LivePanel
 from lumina.ui.merge_dialog import MergeDialog, PanoramaDialog
 from lumina.ui.preset_dialog import CopyDialog
 from lumina.ui.quick_view import QuickView
@@ -85,7 +87,7 @@ DIMMED_OPACITY = 0.35
 
 FLAG_NAMES = {PICKED: "Thumbs up", REJECTED: "Thumbs down"}
 
-_EMPTY, _GRID, _VIEWER, _DEVELOP = range(4)
+_EMPTY, _GRID, _VIEWER, _DEVELOP, _LIVE = range(5)
 
 
 class _CellDelegate(QStyledItemDelegate):
@@ -329,6 +331,9 @@ class MainWindow(QMainWindow):
         self.develop.paste_settings_button.clicked.connect(self.paste_settings)
         self.service.settings_copied.connect(self._update_settings_actions)
         self.pages.addWidget(self.develop)
+        self.live_view = LivePanel()
+        self.pages.addWidget(self.live_view)
+        self._live_from = _GRID
         outer = QWidget()
         column = QVBoxLayout(outer)
         # Between the toolbar and the filters
@@ -350,6 +355,23 @@ class MainWindow(QMainWindow):
                 )
             )
             camera.error.connect(lambda why: self.statusBar().showMessage(why, 15000))
+            self.camera_bar.live_requested.connect(self._on_live_requested)
+            self.camera_bar.focus_requested.connect(camera.focus)
+            camera.live_changed.connect(self._on_live_changed)
+            camera.frame_ready.connect(lambda: self.live_view.show_frame(camera.frame))
+            camera.saved.connect(self._on_camera_saved)
+            self.live_view.live_toggled.connect(camera.set_live)
+            self.live_view.zoom_chosen.connect(camera.zoom)
+            self.live_view.point_chosen.connect(camera.move_point)
+            self.live_view.clipping_toggled.connect(camera.set_clipping)
+            self.live_view.last_shot_wanted.connect(self._load_last_shot)
+            self.last_shot = PreviewLoader(self)
+            self.last_shot.ready.connect(
+                lambda _path, image, _full: self.live_view.set_last_shot(image)
+            )
+            QApplication.instance().applicationStateChanged.connect(
+                lambda state: camera.set_active(state == Qt.ApplicationState.ApplicationActive)
+            )
         layout = QHBoxLayout()
         layout.addWidget(self.sidebar)
         layout.addWidget(self.pages, 1)
@@ -1103,6 +1125,63 @@ class MainWindow(QMainWindow):
         self.camera_bar.show_service(self.camera)
         self.capture_action.setEnabled(self.camera.connected and not self.camera.ending)
         self._on_tether_changed()
+        if self.pages.currentIndex() == _LIVE:
+            if self.camera.running:
+                self._on_live_changed()
+            else:
+                self.go_back()
+
+    # Live view
+
+    def show_live(self):
+        """The camera's live view, on a page of its own; it runs while that is shown."""
+        if self.camera is None or not self.camera.running:
+            return
+        if self.pages.currentIndex() != _LIVE:
+            self._live_from = self.pages.currentIndex()
+            if self._live_from == _DEVELOP:
+                self.session.close()
+                self._live_from = _VIEWER
+        self._show_page(_LIVE)
+        self.live_view.set_crop(self.camera.crop_guide())
+        self.camera.set_live(True)
+        self._on_live_changed()
+        self.live_view.canvas.setFocus()
+
+    def _leave_live(self):
+        self.camera.set_live(False)
+        self.last_shot.cancel()
+        row = self._viewed_row()
+        if self._live_from == _VIEWER and row is not None:
+            self.show_photo(row, self._viewed_copy)
+        else:
+            self.show_grid()
+
+    def _on_live_changed(self):
+        camera = self.camera
+        # Whether it can focus comes with its live view's state
+        self.camera_bar.show_focus(camera)
+        self.live_view.show_live(camera.live, camera.connected)
+        self.live_view.set_message(None if camera.connected else camera.message)
+        self.camera_bar.set_live_shown(self.pages.currentIndex() == _LIVE)
+
+    def _on_live_requested(self, on):
+        if on:
+            self.show_live()
+        elif self.pages.currentIndex() == _LIVE:
+            self._leave_live()
+
+    def _on_camera_saved(self, path):
+        if self.pages.currentIndex() == _LIVE and self.live_view.last.isChecked():
+            self._load_last_shot()
+        else:
+            # Loaded when it is wanted
+            self.live_view.set_last_shot(None)
+
+    def _load_last_shot(self):
+        path = self.camera.last_saved
+        if path is not None:
+            self.last_shot.request(path, max(self.live_view.width(), self.live_view.height()))
 
     def _on_tether_changed(self):
         folder = self.tether.folder
@@ -1120,7 +1199,7 @@ class MainWindow(QMainWindow):
         """A tethered folder's new photo: shown in the viewer, or in the Develop view while
         that is open, unless an older photo is being looked at."""
         page = self.pages.currentIndex()
-        following = (
+        following = page != _LIVE and (
             page in (_GRID, _EMPTY) or self._last_shot is None or self._viewed_id == self._last_shot
         )
         self._last_shot = photo_id
@@ -2101,7 +2180,10 @@ class MainWindow(QMainWindow):
 
     def go_back(self):
         """Escape: cancel the crop, then out of the Develop view; in the viewer back to
-        fitted, then to the grid."""
+        fitted, then to the grid. Out of live view to where it was opened from."""
+        if self.pages.currentIndex() == _LIVE:
+            self._leave_live()
+            return
         if self.pages.currentIndex() == _VIEWER and self.viewer.is_zoomed():
             self.viewer.reset_zoom()
             return
@@ -2406,7 +2488,11 @@ class MainWindow(QMainWindow):
             self.viewer.set_message(f"Cannot show {os.path.basename(path)}\n{message}")
 
     def _show_page(self, page):
+        if self.pages.currentIndex() == _LIVE and page != _LIVE and self.camera is not None:
+            # Live view runs only while it is shown
+            self.camera.set_live(False)
         self.pages.setCurrentIndex(page)
+        self.camera_bar.set_live_shown(page == _LIVE)
         viewing = page in (_VIEWER, _DEVELOP)
         developing = page == _DEVELOP
         self.navigation.setVisible(viewing)
@@ -2416,6 +2502,7 @@ class MainWindow(QMainWindow):
         self.grid_view_options.setVisible(page == _GRID)
         for action in (self.back_action, self.previous_action, self.next_action):
             action.setEnabled(viewing)
+        self.back_action.setEnabled(viewing or page == _LIVE)
         for action in (self.reset_action, self.export_action):
             action.setEnabled(developing)
         self.edit_action.setEnabled(page in (_GRID, _VIEWER))

@@ -11,6 +11,7 @@ import pytest
 from conftest import TIMEOUT
 from fakes import FakeCamera
 from photos import make_jpeg_with_exif
+from PySide6.QtCore import QPoint, Qt
 
 from lumina.core import db as dbm
 from lumina.core.edit import params as _params
@@ -19,9 +20,9 @@ from lumina.qt_models.hot_folder import HotFolder
 from lumina.qt_models.tether import CARD, COMPUTER, CameraService
 from lumina.ui import settings
 from lumina.ui.camera import CameraBar, CameraDialog, describe
-from lumina.ui.main_window import _VIEWER, MainWindow
+from lumina.ui.main_window import _GRID, _LIVE, _VIEWER, MainWindow
 
-TIMING = {"poll": 0.02, "retry": 0.05, "readings_every": 60.0}
+TIMING = {"poll": 0.02, "retry": 0.05, "readings_every": 60.0, "live_fails_for": 0.3}
 
 
 @pytest.fixture
@@ -205,6 +206,93 @@ def test_a_session_runs_in_a_process_of_its_own(qtbot, scanned, root, tmp_path):
         camera.close()
 
 
+# Live view (#59)
+
+
+def live_on(qtbot, camera):
+    with qtbot.waitSignal(camera.frame_ready, timeout=TIMEOUT):
+        camera.set_live(True)
+    return camera.frame
+
+
+def test_live_view_shows_the_newest_frames_and_none_after_it_is_stopped(
+    qtbot, scanned, camera, root
+):
+    _service, folder = scanned
+    camera.start(folder, "Studio")
+    connected(qtbot, camera)
+    first = live_on(qtbot, camera)
+    assert camera.live.on and camera.live.view.zooms == (1, 5, 10)
+    assert (first.image.width(), first.image.height()) == (96, 64)
+    assert first.look.luminance and first.clipping is None
+    # One after another, each one newer
+    numbers = [first.number]
+    camera.frame_ready.connect(lambda: numbers.append(camera.frame.number))
+    qtbot.waitUntil(lambda: len(numbers) >= 5, timeout=TIMEOUT)
+    assert numbers == sorted(set(numbers))
+
+    camera.set_clipping(True)
+    qtbot.waitUntil(lambda: camera.frame.clipping is not None, timeout=TIMEOUT)
+
+    camera.set_live(False)
+    assert not camera.live.on and camera.frame is None
+    del numbers[:]
+    qtbot.waitUntil(lambda: FakeCamera.log(root, "live") == ["on", "off"], timeout=TIMEOUT)
+    qtbot.wait(300)
+    assert numbers == [] and camera.frame is None
+
+
+def test_live_view_stops_in_the_background_and_starts_again_in_front(qtbot, scanned, camera, root):
+    _service, folder = scanned
+    camera.start(folder, "Studio")
+    connected(qtbot, camera)
+    camera._pause.setInterval(50)
+    live_on(qtbot, camera)
+
+    camera.set_active(False)
+    qtbot.waitUntil(lambda: camera.live.why == camera_service.PAUSED, timeout=TIMEOUT)
+    assert not camera.live_wanted and camera.frame is None
+    qtbot.waitUntil(lambda: FakeCamera.log(root, "live") == ["on", "off"], timeout=TIMEOUT)
+
+    with qtbot.waitSignal(camera.frame_ready, timeout=TIMEOUT):
+        camera.set_active(True)
+    assert camera.live.on and camera.live.why is None
+
+    # Back in front soon enough: it never stopped
+    camera.set_active(False)
+    camera.set_active(True)
+    qtbot.wait(200)
+    assert camera.live.on
+
+
+def test_live_view_the_camera_stops_says_why(qtbot, scanned, camera, root):
+    _service, folder = scanned
+    camera.start(folder, "Studio")
+    connected(qtbot, camera)
+    FakeCamera.fail_previews(root)
+    camera.set_live(True)
+
+    qtbot.waitUntil(lambda: camera.live.why is not None, timeout=TIMEOUT)
+    assert camera.live.why.startswith("The camera stopped sending live view")
+    assert not camera.live_wanted and not camera.live.on
+
+
+def test_the_crop_guide_is_the_session_presets_crop(qtbot, scanned, camera):
+    service, folder = scanned
+    edit = _params.Params(rotate=1, crop=_params.Crop(0.0, 0.0, 0.5, 1.0))
+    service.save_preset("Square", json.dumps(_params.preset(edit, ["rotate", "crop"])))
+    service.save_preset(
+        "Bright", json.dumps(_params.preset(_params.Params(exposure=1), ["exposure"]))
+    )
+    camera.start(folder, "Studio", preset="Square")
+    assert camera.crop_guide() == pytest.approx((0.0, 0.5, 1.0, 1.0))
+    camera.stop()
+    qtbot.waitUntil(lambda: not camera.running, timeout=TIMEOUT)
+
+    camera.start(folder, "Other", preset="Bright")
+    assert camera.crop_guide() is None
+
+
 # The window
 
 
@@ -339,7 +427,8 @@ def test_the_bar_does_not_make_the_window_wider(qtbot, service):
     before = window.minimumSizeHint().width()
 
     class Stood:
-        running, connected, ending = True, True, False
+        running, connected, ending, can_focus = True, True, False, True
+        live = camera_service.LiveState(None)
         info = CameraInfo("Canon EOS 90D", "x", "usb:003,006")
         message = None
         saved_count, fetching, failures = 12, {}, {}
@@ -361,3 +450,62 @@ def test_the_bar_does_not_make_the_window_wider(qtbot, service):
     Stood.connected = False
     window.camera_bar.show_service(Stood)
     assert window.minimumSizeHint().width() <= before
+
+
+def test_live_view_in_the_window(qtbot, scanned, camera, root, tmp_path):
+    service, folder = scanned
+    window = open_window(qtbot, service, camera)
+    camera.start(folder, "Studio")
+    connected(qtbot, camera)
+    with qtbot.waitSignal(camera.hot.arrived, timeout=TIMEOUT):
+        FakeCamera.shoot(root, frame(tmp_path), "IMG_0001.JPG")
+    qtbot.waitUntil(lambda: window.pages.currentIndex() == _VIEWER, timeout=TIMEOUT)
+    window.show_grid()
+
+    with qtbot.waitSignal(camera.frame_ready, timeout=TIMEOUT):
+        window.camera_bar.live.click()
+    panel = window.live_view
+    assert window.pages.currentIndex() == _LIVE and window.camera_bar.live.isChecked()
+    qtbot.waitUntil(lambda: panel.canvas.frame is not None, timeout=TIMEOUT)
+    assert panel.histogram.isVisible() and panel.start.isChecked()
+    assert [b.isVisible() for b in panel.zooms.values()] == [True, True, True]
+
+    # Focus, without a picture
+    assert window.camera_bar.autofocus.isEnabled()
+    window.camera_bar.autofocus.click()
+    qtbot.waitUntil(lambda: FakeCamera.log(root, "focus") == ["at the point"], timeout=TIMEOUT)
+
+    # A click focuses there, with Focus on Click
+    panel.focus.setChecked(True)
+    target = panel.canvas.image_rect()
+    spot = QPoint(round(target.left() + target.width() / 4), round(target.center().y()))
+    qtbot.mouseClick(panel.canvas, Qt.MouseButton.LeftButton, pos=spot)
+    qtbot.waitUntil(lambda: len(FakeCamera.log(root, "focus")) == 2, timeout=TIMEOUT)
+    x, y = map(float, FakeCamera.log(root, "point")[0].split(","))
+    assert x == pytest.approx(0.25, abs=0.02) and y == pytest.approx(0.5, abs=0.02)
+    panel.zooms[5].click()
+    qtbot.waitUntil(lambda: camera.live.zoom == 5, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: panel.canvas.zoom == 5, timeout=TIMEOUT)
+
+    # The last shot over the frame
+    with qtbot.waitSignal(window.last_shot.ready, timeout=TIMEOUT):
+        panel.last.setChecked(True)
+    assert panel.canvas.last_shot is not None and panel.canvas.opacity == 0.4
+
+    # A shot taken in live view stays in it
+    with qtbot.waitSignal(camera.hot.arrived, timeout=TIMEOUT):
+        window.capture_action.trigger()
+    qtbot.wait(200)
+    assert window.pages.currentIndex() == _LIVE
+
+    # Escape leaves it, and live view stops
+    window.back_action.trigger()
+    assert window.pages.currentIndex() == _GRID and not window.camera_bar.live.isChecked()
+    assert not camera.live_wanted
+    qtbot.waitUntil(lambda: FakeCamera.log(root, "live")[-1] == "off", timeout=TIMEOUT)
+
+    # Ending the session in live view leaves it
+    with qtbot.waitSignal(camera.frame_ready, timeout=TIMEOUT):
+        window.camera_bar.live.click()
+    window.camera_bar.end.click()
+    qtbot.waitUntil(lambda: window.pages.currentIndex() == _GRID, timeout=TIMEOUT)

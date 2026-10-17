@@ -1,6 +1,7 @@
 """Shooting tethered (#58): every frame the camera tells of is noted, fetched, written
 safely into the session's folder and never lost track of, through unplugs and crashes."""
 
+import io
 import os
 import queue
 import threading
@@ -11,7 +12,7 @@ from fakes import FakeCamera
 from photos import make_jpeg_with_exif
 
 from lumina.core import db as dbm
-from lumina.core import tether
+from lumina.core import live, tether
 from lumina.core.db import Library
 from lumina.core.errors import PhotoError
 
@@ -47,11 +48,16 @@ class Running:
 
     def __init__(self, library, session, camera_root):
         self.commands, self.events = queue.SimpleQueue(), queue.SimpleQueue()
+        self.frames = queue.SimpleQueue()
         self.told = []
         self.thread = threading.Thread(
             target=tether.serve,
             args=(library.path, session, self.commands, self.events),
-            kwargs={"camera": lambda: FakeCamera(camera_root), **TIMING},
+            kwargs={
+                "camera": lambda: FakeCamera(camera_root),
+                "frames": self.frames,
+                **TIMING,
+            },
         )
         self.thread.start()
 
@@ -67,6 +73,9 @@ class Running:
             if event[0] == kind:
                 return event
         raise AssertionError(f"no {kind} in {self.told}")
+
+    def frame(self, timeout=TIMEOUT):
+        return self.frames.get(timeout=timeout)
 
     def stop(self):
         self.commands.put((tether.STOP,))
@@ -315,6 +324,237 @@ def test_a_command_with_no_camera_is_told_and_stop_ends_the_session(camera, star
     run.stop()
 
     assert not run.thread.is_alive()
+
+
+# Live view (#59)
+
+
+def drain(frames):
+    found = []
+    while True:
+        try:
+            found.append(frames.get_nowait())
+        except queue.Empty:
+            return found
+
+
+def live_on(run, start=1):
+    run.commands.put((tether.LIVE, start))
+    state = run.until(tether.LIVE_TOLD)[1]
+    while not state.on:
+        state = run.until(tether.LIVE_TOLD)[1]
+    return state
+
+
+def test_live_view_frames_come_with_their_look_and_never_more_than_two_unshown(camera, start):
+    run, _session = start()
+    connected = run.until(tether.CONNECTED)
+    assert connected
+    state = live_on(run, start=7)
+    assert state.view.zooms == (1, 5, 10) and state.view.point and state.view.focus
+    assert FakeCamera.log(camera, "live") == ["on"]
+
+    first, second = run.frame(), run.frame()
+    assert (first.number, second.number) == (1, 2) and first.start == 7
+    assert first.look.luminance[0] > 0 and first.look.clipped_shadows == 1.0
+    # Not shown yet: no more are taken from the camera, none queue up
+    time.sleep(0.3)
+    assert drain(run.frames) == []
+    assert len(FakeCamera.log(camera, "previews")) == 2
+
+    # The app has the second: two more, the newest frames
+    run.commands.put((tether.SHOWN, 2))
+    third, fourth = run.frame(), run.frame()
+    assert (third.number, fourth.number) == (3, 4)
+    time.sleep(0.2)
+    assert drain(run.frames) == []
+
+
+def test_live_view_stops_cleanly_and_no_frame_comes_after(camera, start):
+    run, _session = start()
+    run.until(tether.CONNECTED)
+    live_on(run)
+    for number in range(1, 20):
+        run.frame()
+        run.commands.put((tether.SHOWN, number))
+
+    run.commands.put((tether.LIVE, None))
+    state = run.until(tether.LIVE_TOLD)[1]
+    assert not state.on and state.why is None
+    drain(run.frames)
+    taken = len(FakeCamera.log(camera, "previews"))
+    time.sleep(0.3)
+    assert drain(run.frames) == []
+    assert len(FakeCamera.log(camera, "previews")) == taken
+    assert FakeCamera.log(camera, "live") == ["on", "off"]
+
+    # A session that ends in live view leaves it, and sends nothing more
+    live_on(run, start=2)
+    run.frame()
+    run.stop()
+    assert FakeCamera.log(camera, "live") == ["on", "off", "on", "off"]
+    drain(run.frames)
+    time.sleep(0.1)
+    assert drain(run.frames) == []
+
+
+def test_frames_of_an_earlier_start_do_not_hold_up_a_new_one(camera, start):
+    run, _session = start()
+    run.until(tether.CONNECTED)
+    live_on(run, start=1)
+    run.frame(), run.frame()
+    run.commands.put((tether.LIVE, None))
+    run.until(tether.LIVE_TOLD)
+    drain(run.frames)
+
+    # Never said to be shown, yet a new start has its frames at once
+    live_on(run, start=2)
+    frame = run.frame()
+    assert frame.start == 2 and frame.number == 3
+
+
+def test_live_view_that_keeps_failing_stops_and_says_why(camera, start):
+    run, _session = start()
+    run.until(tether.CONNECTED)
+    FakeCamera.fail_previews(camera)
+    live_on(run)
+
+    state = run.until(tether.LIVE_TOLD, timeout=TIMEOUT)[1]
+    assert not state.on
+    assert state.why.startswith("The camera stopped sending live view")
+    assert "Could not get the live view frame" in state.why
+    assert FakeCamera.log(camera, "live") == ["on", "off"]
+
+
+def test_zoom_and_the_point_reach_the_camera_and_the_frames(camera, start):
+    run, _session = start()
+    run.until(tether.CONNECTED)
+    live_on(run)
+
+    run.commands.put((tether.POINT, 0.25, 1.4, True))
+    state = run.until(tether.LIVE_TOLD)[1]
+    assert state.point == (0.25, 1.0)
+    run.commands.put((tether.ZOOM, 5))
+    assert run.until(tether.LIVE_TOLD)[1].zoom == 5
+    run.commands.put((tether.ZOOM, 3))
+    assert run.until(tether.ERROR)[1] == "The camera can't magnify 3 times"
+
+    assert FakeCamera.log(camera, "point") == ["0.25,1.00"]
+    assert FakeCamera.log(camera, "focus") == ["at the point"]
+    assert FakeCamera.log(camera, "zoom") == ["5"]
+    found = None
+    for _number in range(1, 50):
+        found = run.frame()
+        run.commands.put((tether.SHOWN, found.number))
+        if found.zoom == 5:
+            break
+    assert (found.zoom, found.point) == (5, (0.25, 1.0))
+
+
+def test_a_capture_in_live_view_goes_on_in_it(camera, start):
+    run, _session = start()
+    run.until(tether.CONNECTED)
+    live_on(run)
+    run.commands.put((tether.CAPTURE, False))
+    run.until(tether.SAVED)
+    assert FakeCamera.log(camera, "live") == ["on"]
+
+
+def test_a_camera_that_cant_capture_in_live_view_leaves_it_for_the_picture(camera, start):
+    FakeCamera.stop_in_live_view(camera)
+    run, _session = start()
+    run.until(tether.CONNECTED)
+    assert not live_on(run).view.captures
+    run.commands.put((tether.CAPTURE, False))
+    run.until(tether.SAVED)
+    assert FakeCamera.log(camera, "live") == ["on", "off", "on"]
+    assert FakeCamera.log(camera, "triggers") == ["no focus"]
+    assert run.frame()
+
+
+def test_live_view_goes_on_when_an_unplugged_camera_is_back(camera, start):
+    run, _session = start()
+    run.until(tether.CONNECTED)
+    live_on(run, start=4)
+    run.frame()
+    FakeCamera.unplug(camera)
+    run.until(tether.DISCONNECTED)
+    drain(run.frames)
+
+    FakeCamera.unplug(camera, False)
+    run.until(tether.CONNECTED)
+    assert run.until(tether.LIVE_TOLD)[1].start == 4
+    assert run.frame().start == 4
+    assert FakeCamera.log(camera, "live") == ["on", "on"]
+
+
+def test_focus_without_a_picture_in_live_view_and_out_of_it(camera, start):
+    run, _session = start()
+    run.until(tether.CONNECTED)
+    run.commands.put((tether.FOCUS,))
+    live_on(run)
+    run.commands.put((tether.FOCUS,))
+    run.commands.put((tether.LIVE, None))
+    run.until(tether.LIVE_TOLD)
+
+    assert FakeCamera.log(camera, "focus") == ["at the point", "at the point"]
+    assert FakeCamera.log(camera, "triggers") == []
+
+
+def test_live_view_commands_need_it_on(camera, start):
+    run, _session = start()
+    run.until(tether.CONNECTED)
+    run.commands.put((tether.ZOOM, 5))
+    assert run.until(tether.ERROR)[1] == "Live view is off"
+
+
+def test_a_frames_look():
+    from fakes import live_jpeg
+    from PIL import Image
+
+    look = live.examine(live_jpeg(255, (60, 40)))
+    assert look.clipped_highlights == 1.0 and look.clipped_shadows == 0.0
+    assert sum(look.luminance) == 60 * 40 and look.luminance[255] == 60 * 40
+
+    out = io.BytesIO()
+    image = Image.new("RGB", (100, 100), (0, 128, 128))
+    image.paste((255, 0, 0), (0, 0, 100, 10))
+    image.save(out, "PNG")
+    look = live.examine(out.getvalue())
+    assert look.highlights == (0.1, 0.0, 0.0)
+    assert look.shadows == (0.9, 0.1, 0.1)
+    with pytest.raises(ValueError):
+        live.examine(b"not a picture")
+
+
+def test_where_a_presets_crop_falls_on_the_cameras_frame():
+    assert live.crop_guide((0, 0, 1, 1)) is None
+    assert live.crop_guide((0.1, 0.2, 0.5, 0.9)) == (0.1, 0.2, 0.5, 0.9)
+    assert live.crop_guide((0.1, 0.2, 0.5, 0.9), flip_horizontal=True) == pytest.approx(
+        (0.5, 0.2, 0.9, 0.9)
+    )
+    # A crop of the left half of a photo turned a quarter clockwise is the frame's top
+    # half before the turn
+    assert live.crop_guide((0, 0, 0.5, 1), rotate=1) == pytest.approx((0, 0.5, 1, 1))
+    assert live.crop_guide((0, 0, 0.5, 1), rotate=2) == pytest.approx((0.5, 0, 1, 1))
+    assert live.crop_guide((0, 0, 0.5, 1), rotate=3) == pytest.approx((0, 0, 1, 0.5))
+
+
+def test_where_a_canon_is_told_to_magnify():
+    size = (6960, 4640)
+    # Measured on the 90D: 1500,1000 magnified 5 times shows around 0.314, 0.313
+    position, point = tether.canon_position((0.3155, 0.3155), size)
+    assert position == (1500, 1000) and point == pytest.approx((0.3155, 0.3155))
+    # Kept inside the frame
+    position, point = tether.canon_position((0.99, 0.0), size)
+    assert position == (5568, 0) and point == pytest.approx((0.9, 0.1))
+
+
+def test_what_a_magnified_live_view_shows():
+    assert live.magnified((0.3, 0.3), 1) == (0, 0, 1, 1)
+    assert live.magnified((0.5, 0.5), 5) == pytest.approx((0.4, 0.4, 0.6, 0.6))
+    # Kept inside the frame
+    assert live.magnified((0.0, 1.0), 10) == pytest.approx((0.0, 0.9, 0.1, 1.0))
 
 
 # Writing

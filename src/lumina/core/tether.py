@@ -22,6 +22,13 @@ written to the card, when it is the camera's memory. So:
   told with that program's name and how to let it go, found in /proc; nothing is
   stopped. An unplugged camera is waited for, and a session goes on when it is back.
 
+Live view (#59) is the session's too, as only one process can have the camera: while
+it is on, the session asks the camera for a frame between its events and its commands,
+and puts each on a queue of its own. Not more than two are on their way at a time: a
+frame is asked for only once the app has said it has the one before the last
+(`SHOWN`), so frames the app had no time for are never taken, nothing queues up, and
+the newest frame is always the one shown.
+
 `serve()` is the session; `GPhotoCamera` the camera through python-gphoto2 (libgphoto2),
 which is imported only when a camera is opened, so the rest of the app runs without it.
 """
@@ -31,10 +38,10 @@ import os
 import queue
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-from lumina.core import capture_time, derived
+from lumina.core import capture_time, derived, live
 from lumina.core import db as dbm
 from lumina.core.errors import PhotoError
 
@@ -51,6 +58,10 @@ _TARGETS = {CARD: "Memory card", COMPUTER: "Internal RAM"}
 # The commands a session takes, as tuples: (STOP,), (CAPTURE, focus first), (SET, name,
 # value), (FETCH, [item ids]) to fetch failed frames from the card again
 STOP, CAPTURE, SET, FETCH = "stop", "capture", "set", "fetch"
+# And for live view: (LIVE, a number for this start of it, or None to stop it), (SHOWN,
+# the number of the newest frame the app has), (ZOOM, times), (POINT, x, y, focus there)
+# with x and y as shares of the whole frame; (FOCUS,) to focus without taking a picture
+LIVE, SHOWN, ZOOM, POINT, FOCUS = "live", "shown", "zoom", "point", "focus"
 # What it tells, as tuples:
 #   (WAITING, why): no camera, or one that can't be used yet (BUSY: another program has it)
 #   (CONNECTED, CameraInfo, {name: Setting}), (SETTINGS, {name: Setting})
@@ -58,7 +69,9 @@ STOP, CAPTURE, SET, FETCH = "stop", "capture", "set", "fetch"
 #   (TAKEN, item id, the camera's name for it): reported, being fetched
 #   (SAVED, item id, path), (FAILED, item id, name, why)
 #   (ERROR, why): a command that could not be done
+#   (LIVE_TOLD, LiveState): live view started, stopped (and why) or changed
 #   (ENDED,)
+# and live view's frames, LiveFrame, on a queue of their own
 WAITING, BUSY, CONNECTED, SETTINGS_TOLD, DISCONNECTED = (
     "waiting",
     "busy",
@@ -67,6 +80,7 @@ WAITING, BUSY, CONNECTED, SETTINGS_TOLD, DISCONNECTED = (
     "disconnected",
 )
 TAKEN, SAVED, FAILED, ERROR, ENDED = "taken", "saved", "failed", "error", "ended"
+LIVE_TOLD = "live view"
 
 # How long one wait for the camera's events is, how often a camera that is not there is
 # looked for, and how often the readings (battery, shots left) are read again, in seconds
@@ -78,6 +92,13 @@ _EVENTS_AT_A_TIME = 50
 # is asked again for this long, in seconds, this often
 _BUSY_FOR = 3.0
 _BUSY_STEP = 0.1
+# How long a focus without a picture is held, in seconds: a Canon holds what it focused on
+# until let go of, and focuses again only after that
+_FOCUS_HELD = 2.0
+# Live view: frames on their way at most, and how long frames may fail before it stops
+# (a camera too hot stops its live view itself), in seconds
+_IN_FLIGHT = 2
+_LIVE_FAILS_FOR = 3.0
 
 
 class CameraError(Exception):
@@ -107,6 +128,47 @@ class Setting:
     value: str
     choices: tuple = ()
     readonly: bool = False
+
+
+@dataclass(frozen=True)
+class LiveView:
+    """What the camera's live view can do: magnify (the times, 1 among them), move what is
+    magnified and the focus point, and focus there."""
+
+    zooms: tuple = (1,)
+    point: bool = False
+    focus: bool = False
+    # Whether live view goes on through a capture, or is stopped for it
+    captures: bool = True
+
+
+@dataclass(frozen=True)
+class LiveState:
+    """Live view: `start` the number of this start of it (None: off, `why` says why when
+    it was not asked to), magnified `zoom` times around `point`."""
+
+    start: int | None
+    why: str | None = None
+    view: LiveView = field(default_factory=LiveView)
+    zoom: int = 1
+    point: tuple = (0.5, 0.5)
+
+    @property
+    def on(self):
+        return self.start is not None
+
+
+@dataclass(frozen=True)
+class LiveFrame:
+    """A live view frame: its number (rising), the start of live view it is of, the JPEG,
+    its Look, and how it was magnified."""
+
+    number: int
+    start: int
+    jpeg: bytes
+    look: live.Look
+    zoom: int = 1
+    point: tuple = (0.5, 0.5)
 
 
 @dataclass(frozen=True)
@@ -144,6 +206,9 @@ class GPhotoCamera:
     def __init__(self):
         self._camera = None
         self.info = None
+        # A half press held to focus, and until when
+        self._held = False
+        self._held_until = 0.0
 
     def open(self):
         """Raises CameraError: NOT_FOUND with none, BUSY when another program has it."""
@@ -178,6 +243,7 @@ class GPhotoCamera:
     def close(self):
         if self._camera is not None:
             # A capture cut short must not leave the button held
+            self._end_focus()
             self._let_go(patient=False)
             try:
                 self._camera.exit()
@@ -240,6 +306,8 @@ class GPhotoCamera:
     def wait(self, seconds):
         """The frames the camera told of within `seconds`, at the first event or the end."""
         gp = self._gp
+        if self._held and time.monotonic() >= self._held_until:
+            self._end_focus()
         frames = []
         timeout = max(1, int(seconds * 1000))
         try:
@@ -286,6 +354,7 @@ class GPhotoCamera:
     def trigger(self, focus):
         """Take a picture, focusing first or not. The frame comes as an event."""
         gp = self._gp
+        self._end_focus()
         try:
             if self._value("eosremoterelease") is not None:
                 # Canon: press the button all the way, with autofocus or without, and let go
@@ -298,6 +367,89 @@ class GPhotoCamera:
                 self._patiently(self._camera.trigger_capture)
         except gp.GPhoto2Error as error:
             raise self._error(error) from error
+
+    # Live view
+
+    def live_view(self):
+        """What its live view can do. Canon (EOS): magnified 5 and 10 times, around a point
+        that is also where it focuses (for the models whose frame is known), and it takes
+        pictures in live view; others: frames only, and out of live view for a picture."""
+        canon = self._value("eosremoterelease") is not None
+        zooms = (1, 5, 10) if canon and self._value("eoszoom") is not None else (1,)
+        point = (
+            canon
+            and self._value("eoszoomposition") is not None
+            and self.info.model in _POINT_FRAMES
+        )
+        focus = canon or self._value("autofocusdrive") is not None
+        return LiveView(zooms, point, focus, captures=canon)
+
+    def live(self, on):
+        """Start or stop its live view: a camera with a viewfinder setting (Canon, Nikon)
+        through it; others start with the first frame and stop on their own."""
+        self._end_focus()
+        if self._value("viewfinder") is None:
+            return
+        try:
+            self.set("viewfinder", 1 if on else 0)
+        except CameraError:
+            if on:
+                raise
+
+    def preview(self):
+        """The newest live view frame: a JPEG."""
+        gp = self._gp
+        try:
+            file = self._camera.capture_preview()
+            return bytes(file.get_data_and_size())
+        except gp.GPhoto2Error as error:
+            raise self._error(error) from error
+
+    def zoom(self, times):
+        """Magnify `times` times, around the point."""
+        self._no_face_tracking()
+        self.set("eoszoom", str(times))
+
+    def point(self, x, y):
+        """Move what is magnified, and where it focuses, to (x, y) as shares of the frame;
+        returns where it went."""
+        self._no_face_tracking()
+        position, placed = canon_position((x, y), _POINT_FRAMES[self.info.model])
+        self.set("eoszoomposition", f"{position[0]},{position[1]}")
+        return placed
+
+    def autofocus(self):
+        """Focus without taking a picture, as a half press of the button does: in live view
+        at its point. It returns at once, the camera focuses on its own, and the focus is
+        let go of a while later (`wait`), or before anything else is done.
+
+        Tried on the 90D: `autofocusdrive` focuses in live view only (out of it, "-1
+        Unspecified error"), and only once, even set to 0 between. A half press of the
+        remote release focuses in live view and out of it, every time once let go of."""
+        self._end_focus()
+        if self._value("eosremoterelease") is not None:
+            self.set("eosremoterelease", "Press Half AF")
+            self._held = True
+            self._held_until = time.monotonic() + _FOCUS_HELD
+        else:
+            self.set("autofocusdrive", 1)
+
+    def _end_focus(self):
+        """Let go of a focus held; quietly, as a camera may refuse it."""
+        held, self._held = self._held, False
+        if held:
+            try:
+                self.set("eosremoterelease", "Release Half")
+            except CameraError:
+                pass
+
+    def _no_face_tracking(self):
+        # Tried on the 90D: with face tracking it answers magnifying with "busy"
+        if self._value("afmethod") == "LiveFace":
+            raise CameraError(
+                "The camera can't magnify or move its focus point with face tracking AF: set "
+                "its AF method to 1-point or Spot AF"
+            )
 
     def _patiently(self, call, *args):
         """`call(*args)`, asked again while the camera says it is busy, for a while."""
@@ -336,6 +488,27 @@ class GPhotoCamera:
             return False
         port = self.info.port if self.info is not None else None
         return any(found.get_value(i) == port for i in range(len(found)))
+
+
+# The frame a Canon places what it magnifies in: its sensor's pixels, by model (measured
+# on the 90D by finding magnified frames in the whole one). A model not here is
+# magnified around where its own point is.
+_POINT_FRAMES = {"Canon EOS 90D": (6960, 4640)}
+# The share of the frame across a Canon's magnifying frame: what it shows magnified 5
+# times (10 times, the middle of it)
+_POINT_SHARE = 1 / 5
+
+
+def canon_position(point, size):
+    """Where a Canon's `eoszoomposition` goes for it to magnify around `point` (x, y as
+    shares of the frame), and the point that makes, in the frame `size` (its pixels).
+    Tried on the 90D: the position is the top left corner of its magnifying frame, a fifth
+    of the frame across, kept inside the frame, whatever the magnification; it stays when
+    the magnification changes, and reads back as 0,0 always."""
+    half = _POINT_SHARE / 2
+    left = min(max(point[0] - half, 0.0), 1 - _POINT_SHARE)
+    top = min(max(point[1] - half, 0.0), 1 - _POINT_SHARE)
+    return (round(left * size[0]), round(top * size[1])), (left + half, top + half)
 
 
 def available():
@@ -458,12 +631,13 @@ def _hash(path):
 # The session
 
 
-def serve(library_path, session, commands, events, camera=GPhotoCamera, **timing):
+def serve(library_path, session, commands, events, camera=GPhotoCamera, frames=None, **timing):
     """Run the camera session `session` (a Session) until told to stop: in a process of
     its own, with a connection of its own. `commands` and `events` are queues of the
-    tuples above; `camera` makes a camera (GPhotoCamera's methods)."""
+    tuples above, `frames` one for live view's frames (None: no live view); `camera`
+    makes a camera (GPhotoCamera's methods)."""
     with dbm.Library(library_path) as library:
-        _Session(library, session, commands, events, camera, **timing).run()
+        _Session(library, session, commands, events, camera, frames, **timing).run()
 
 
 class _Session:
@@ -474,9 +648,11 @@ class _Session:
         commands,
         events,
         camera,
+        frames=None,
         poll=_POLL,
         retry=_RETRY,
         readings_every=_READINGS_EVERY,
+        live_fails_for=_LIVE_FAILS_FOR,
         proc="/proc",
     ):
         self.library = library
@@ -488,10 +664,19 @@ class _Session:
         self.retry = retry
         self.readings_every = readings_every
         self.proc = proc
+        self.frames = frames
+        self.live_fails_for = live_fails_for
         self.camera = None
+        self.camera_live = False
         self.stopping = False
         self._told = None
         self._read_at = 0.0
+        # Live view: as wanted, kept through an unplug; the newest frame sent and the
+        # newest the app has; since when frames have failed
+        self.live = LiveState(None)
+        self._view = LiveView()
+        self._sent = self._shown = 0
+        self._failing_since = None
 
     def run(self):
         try:
@@ -505,10 +690,13 @@ class _Session:
                     self._take_commands(0)
                     if self.stopping:
                         break
-                    for frame in self.camera.wait(self.poll):
+                    # In live view not waiting for events: they are looked for between frames
+                    for frame in self.camera.wait(0 if self.live.on else self.poll):
                         self._take(frame)
                     if time.monotonic() - self._read_at >= self.readings_every:
                         self._read_settings()
+                    if self.live.on:
+                        self._show()
                 except CameraError as error:
                     if error.kind == GONE:
                         self._lost(str(error))
@@ -519,6 +707,11 @@ class _Session:
             raise
         finally:
             if self.camera is not None:
+                if self.camera_live:
+                    try:
+                        self._live_off()
+                    except CameraError:
+                        pass
                 self.camera.close()
             self.events.put((ENDED,))
 
@@ -555,13 +748,20 @@ class _Session:
             self._tell(ERROR, f"Where the camera keeps its frames could not be chosen: {error}")
         settings = camera.settings()
         self._read_at = time.monotonic()
+        self._view = camera.live_view()
         self._tell(CONNECTED, info, settings)
         self._resume()
+        if self.live.on:
+            # Live view was on when the camera was unplugged: on again
+            self._live_on(self.live.start)
+        else:
+            self._tell(LIVE_TOLD, replace(self.live, view=self._view))
 
     def _lost(self, why):
         if self.camera is not None:
             self.camera.close()
         self.camera = None
+        self.camera_live = False
         self._told = (DISCONNECTED, why)
         self._tell(DISCONNECTED, why)
 
@@ -581,12 +781,30 @@ class _Session:
             if kind == STOP:
                 self.stopping = True
                 return
+            if kind == SHOWN:
+                self._shown = max(self._shown, command[1])
+                continue
+            if kind == LIVE and self.camera is None:
+                # On, or not, when the camera is there
+                self.live = LiveState(command[1], view=self._view)
+                continue
             if self.camera is None:
                 self._tell(ERROR, "The camera is not connected")
                 continue
             try:
                 if kind == CAPTURE:
-                    self.camera.trigger(command[1])
+                    self._capture(command[1])
+                elif kind == LIVE:
+                    if command[1] is None:
+                        self._live_off()
+                    else:
+                        self._live_on(command[1])
+                elif kind == ZOOM:
+                    self._zoom(command[1])
+                elif kind == POINT:
+                    self._point(*command[1:])
+                elif kind == FOCUS:
+                    self._focus()
                 elif kind == SET:
                     self.camera.set(command[1], command[2])
                     self._read_settings()
@@ -597,6 +815,101 @@ class _Session:
                 if error.kind == GONE:
                     raise
                 self._tell(ERROR, str(error))
+
+    def _capture(self, focus):
+        if self.live.on and not self._view.captures:
+            # A camera that can't take a picture in live view: out of it for the picture
+            self.camera.live(False)
+            try:
+                self.camera.trigger(focus)
+            finally:
+                self.camera.live(True)
+        else:
+            self.camera.trigger(focus)
+
+    # Live view
+
+    def _live_on(self, start):
+        if self.frames is None:
+            raise CameraError("Live view is not available here")
+        if not self.camera_live:
+            self.camera.live(True)
+            self.camera_live = True
+        # The frames of an earlier start count as shown: they are dropped
+        self._shown = self._sent
+        self._failing_since = None
+        # A camera starts its live view unmagnified
+        self.live = replace(self.live, start=start, why=None, view=self._view, zoom=1)
+        self._tell(LIVE_TOLD, self.live)
+
+    def _live_off(self, why=None):
+        try:
+            if self.camera is not None:
+                self.camera.live(False)
+        finally:
+            self.camera_live = False
+            self.live = LiveState(None, why, self._view)
+            self._tell(LIVE_TOLD, self.live)
+
+    def _zoom(self, zoom):
+        if not self.live.on:
+            raise CameraError("Live view is off")
+        if zoom not in self._view.zooms:
+            raise CameraError(f"The camera can't magnify {zoom} times")
+        self.camera.zoom(zoom)
+        self.live = replace(self.live, zoom=zoom)
+        self._tell(LIVE_TOLD, self.live)
+
+    def _point(self, x, y, focus):
+        if not self.live.on:
+            raise CameraError("Live view is off")
+        if not self._view.point:
+            raise CameraError("The camera's focus point can't be moved from here")
+        point = self.camera.point(min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0))
+        self.live = replace(self.live, point=point)
+        self._tell(LIVE_TOLD, self.live)
+        if focus:
+            self._focus()
+
+    def _focus(self):
+        """Focus, in live view or not, at the camera's point."""
+        if not self._view.focus:
+            raise CameraError("The camera can't be focused from here")
+        self.camera.autofocus()
+
+    def _show(self):
+        """The next frame, once the app has the one before the last; waiting a moment for
+        it to say so otherwise."""
+        if self._sent - self._shown >= _IN_FLIGHT:
+            self._take_commands(self.poll / 4)
+            return
+        try:
+            jpeg = self.camera.preview()
+            look = live.examine(jpeg)
+        except CameraError as error:
+            if error.kind == GONE:
+                raise
+            self._failed_frame(str(error))
+            return
+        except ValueError as error:
+            self._failed_frame(str(error))
+            return
+        self._failing_since = None
+        self._sent += 1
+        self.frames.put(
+            LiveFrame(self._sent, self.live.start, jpeg, look, self.live.zoom, self.live.point)
+        )
+
+    def _failed_frame(self, why):
+        """A frame that did not come: live view stops after a few seconds of them (a
+        camera too hot, a menu open on it)."""
+        now = time.monotonic()
+        if self._failing_since is None:
+            self._failing_since = now
+        elif now - self._failing_since >= self.live_fails_for:
+            self._live_off(f"The camera stopped sending live view ({why})")
+            return
+        time.sleep(self.poll)
 
     # Frames
 
