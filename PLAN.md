@@ -27,7 +27,7 @@ This is the source of truth for design, current decisions and what comes next. U
 
 - **Platforms.** Linux first (Fedora/KDE). Windows and macOS only if the app is distributed, which also brings signing and installers (#37, #38).
 - **Layer rules.** `ui/` reaches core data types through names that `qt_models/` re-exports, which the import test cannot see. Either admit a small shared domain model that `ui/` may import, or make the boundary real (#109). Leaning to the first.
-- **Sidecar conflicts.** Today the newer whole state wins, compared by wall clock (#103). A per-group time or a change counter with a machine id would merge instead.
+- **Sidecar conflicts.** When both the library and a sidecar changed since they last agreed, the newer whole state wins, compared by wall clock, so a machine whose clock is ahead wins (#103). The edits it replaces are kept as virtual copies, and a sidecar with a damaged or newer edit is refused, named. A per-group time, or a change counter with a machine id, would merge instead of replacing.
 - **Deleting rejected photos.** Allowed or not, given that originals are read-only (#88).
 
 ## Architecture

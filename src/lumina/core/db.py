@@ -1291,23 +1291,28 @@ class Library:
     def apply_sidecar(self, photo_id, state, mtime_ns):
         """Take a sidecar's state (xmp.SidecarState) in when it is newer than the library's
         own change of the photo; else the library's stays, and is written to the sidecar
-        again. Returns whether the sidecar was used."""
+        again. Returns whether the sidecar was used.
+
+        Both sides changing since they last agreed is a conflict, and the newer whole
+        state wins (compared by time, from whichever machine wrote it). The edits it
+        replaces are not lost then: they stay as virtual copies after the sidecar's."""
         with self.db:
             row = self.db.execute(
-                "SELECT changed_at FROM photos WHERE id = ?", (photo_id,)
+                "SELECT changed_at, sidecar_at FROM photos WHERE id = ?", (photo_id,)
             ).fetchone()
             if row is None:
                 return False
             used = state.updated > (row[0] or 0.0)
             if used:
-                self._take_sidecar(photo_id, state)
+                conflict = row[0] is not None and row[0] > (row[1] or 0.0)
+                self._take_sidecar(photo_id, state, keep_replaced=conflict)
             self.db.execute(
                 "UPDATE photos SET sidecar_at = ?, sidecar_mtime_ns = ? WHERE id = ?",
                 (state.updated, mtime_ns, photo_id),
             )
         return used
 
-    def _take_sidecar(self, photo_id, state):
+    def _take_sidecar(self, photo_id, state, keep_replaced=False):
         flag = state.flag if state.flag in FLAGS else UNFLAGGED
         rating = state.rating if state.rating in RATINGS else 0
         self.db.execute(
@@ -1321,11 +1326,25 @@ class Library:
                 "INSERT OR IGNORE INTO photo_keywords (photo_id, keyword_id) VALUES (?, ?)",
                 (photo_id, self._keyword(path)),
             )
+        replaced = self.db.execute(
+            "SELECT copy, params FROM edits WHERE photo_id = ? ORDER BY copy", (photo_id,)
+        ).fetchall()
         self.db.execute("DELETE FROM edits WHERE photo_id = ?", (photo_id,))
         self.db.executemany(
             "INSERT OR REPLACE INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?)",
             [(photo_id, copy, params, state.updated) for copy, params in state.edits],
         )
+        if keep_replaced:
+            taken = set(state.edits)
+            number = max((copy for copy, _params in state.edits), default=0)
+            for copy, params in replaced:
+                if (copy, params) not in taken:
+                    number += 1
+                    self.db.execute(
+                        "INSERT INTO edits (photo_id, copy, params, updated_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (photo_id, number, params, state.updated),
+                    )
         if state.stack is None:
             self.db.execute(
                 "UPDATE photos SET stack_id = NULL, stack_position = 0 WHERE id = ?", (photo_id,)

@@ -13,10 +13,12 @@ sidecars, and a copied folder keeps its edits. The library's own change wins whe
 newer, and is written to the sidecar.
 """
 
+import json
 import os
 from dataclasses import dataclass, field
 
 from lumina.core import volumes, xmp
+from lumina.core.edit import params
 
 SIDECARS = "sidecars"
 _BATCH = 100
@@ -73,6 +75,22 @@ class Read:
     failures: list = field(default_factory=list)
 
 
+def _bad_edit(state):
+    """Why an edit in the sidecar can't be taken in, or None. The edits are stored as they
+    are, and a damaged one would read as no edit at all and be written back as such."""
+    for copy, text in state.edits:
+        try:
+            document = json.loads(text)
+        except (TypeError, ValueError):
+            return f"The edit of copy {copy} is damaged"
+        version = document.get("version") if isinstance(document, dict) else None
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            return f"The edit of copy {copy} is damaged"
+        if version > params.VERSION:
+            return f"The edit of copy {copy} is from a newer Lumina"
+    return None
+
+
 def read_changed(library, folder_id, locate, should_stop=lambda: False, report=None):
     """Look beside the photos of folder `folder_id` for sidecars that changed since they
     were written or read here, and take in the newer ones. `locate(relative path)` is the
@@ -101,7 +119,11 @@ def read_changed(library, folder_id, locate, should_stop=lambda: False, report=N
             except xmp.SidecarError as error:
                 result.failures.append((error.path, error.message))
             else:
-                if state is not None:
+                problem = _bad_edit(state) if state is not None else None
+                if problem is not None:
+                    # Not taken in, so that the library's edits are not replaced by nothing
+                    result.failures.append((xmp.sidecar_path(photo), problem))
+                elif state is not None:
                     if library.apply_sidecar(photo_id, state, mtime):
                         result.used += 1
                     else:
