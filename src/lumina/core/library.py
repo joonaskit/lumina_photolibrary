@@ -222,7 +222,10 @@ def _details(library, job, folder, base, should_stop, exiftool, gentle=False, re
             if not batch:
                 break
             paths = {photo: _absolute(folder.path, base, relative) for photo, relative in batch}
-            failed, stopped = read_details(library, paths, tool)
+            failed, stopped, gone = read_details(library, paths, tool)
+            if gone and not os.path.isdir(base):
+                # The drive went while its details were read: the photos wait for it
+                raise NotConnected(folder.label or folder.last_mount or folder.path)
             if stopped is not None:
                 return dbm.FAILED_JOB, f"Reading details stopped: {stopped}", failures + len(failed)
             library.add_failures(job.id, failed)
@@ -237,30 +240,62 @@ def _details(library, job, folder, base, should_stop, exiftool, gentle=False, re
     return dbm.DONE, None, failures
 
 
+def _works(tool):
+    """Whether `tool` answers for a file that is fine (this module's own)."""
+    try:
+        tool.read_many([__file__])
+    except metadata.MetadataUnavailable:
+        return False
+    return True
+
+
+def _read_apart(tool, paths):
+    """({path: Metadata or PhotoError}, the MetadataUnavailable that stopped exiftool or
+    None). When exiftool does not answer or dies on a batch while it still works for a
+    file that is fine, one of the files is the cause: the batch is read in halves, to
+    the single file that does it, which is named as failed. The rest are read."""
+    try:
+        return tool.read_many(paths), None
+    except metadata.MetadataUnavailable as error:
+        if not _works(tool):
+            return {}, error
+        if len(paths) == 1:
+            path = paths[0]
+            return {path: PhotoError(path, f"exiftool did not answer for it ({error})")}, None
+        middle = len(paths) // 2
+        first, stopped = _read_apart(tool, paths[:middle])
+        second, also = _read_apart(tool, paths[middle:])
+        return {**first, **second}, stopped or also
+
+
 def read_details(library, paths, tool):
     """Read the content ids and metadata of the photos {photo id: path} with the ExifTool
     `tool`, and write them. Returns ([(path, message)] of those that could not be read,
-    and the MetadataUnavailable that stopped exiftool, or None). When exiftool stopped,
-    the photos it did not read stay to be read."""
-    read, failed, ids = [], [], {}
+    the MetadataUnavailable that stopped exiftool or None, and the number of photos that
+    were gone). When exiftool stopped, the photos it did not read stay to be read. A
+    photo whose file is gone (a drive unplugged, a card pulled) is not a bad photo: it
+    is marked unavailable with all it has, and read when it is back."""
+    read, failed, ids, gone = [], [], {}, []
     for photo, path in paths.items():
         try:
             ids[photo] = content_id(path)
         except PhotoError as error:
-            failed.append((photo, None, error.message))
-    stopped = None
-    try:
-        results = tool.read_many([paths[photo] for photo in ids])
-    except metadata.MetadataUnavailable as error:
-        results, stopped = {}, error
+            if os.path.exists(path):
+                failed.append((photo, None, error.message))
+            else:
+                gone.append(photo)
+    results, stopped = _read_apart(tool, [paths[photo] for photo in ids])
     for photo, cid in ids.items():
         result = results.get(paths[photo])
-        if isinstance(result, PhotoError):
+        if isinstance(result, PhotoError) and not os.path.exists(paths[photo]):
+            gone.append(photo)
+        elif isinstance(result, PhotoError):
             failed.append((photo, cid, result.message))
         elif result is not None:
             read.append((photo, cid, result))
     library.write_metadata(read, failed)
-    return [(paths[photo], message) for photo, _cid, message in failed], stopped
+    library.mark_missing(gone)
+    return [(paths[photo], message) for photo, _cid, message in failed], stopped, len(gone)
 
 
 # A tethered folder (#57): photos taken in as each is written, without walking the folder

@@ -196,6 +196,67 @@ def test_a_cancel_while_reading_details_keeps_what_was_read(library, drive):
     assert library.count_pending_metadata(folder) == 0
 
 
+def test_a_drive_unplugged_while_details_are_read_leaves_them_to_read_when_it_is_back(
+    library, drive, monkeypatch
+):
+    folder = add(library, drive)
+    real = scanning.content_id
+
+    def unplugged(path):
+        # The drive goes as the first photo is read
+        shutil.rmtree(drive / "Photos", ignore_errors=True)
+        return real(path)
+
+    monkeypatch.setattr(scanning, "content_id", unplugged)
+    job = library.add_job(scanning.SCAN, folder)
+    with pytest.raises(scanning.NotConnected):
+        scanning.scan(library, job, folder, mounted(drive), exiftool=FakeExifTool)
+    monkeypatch.undo()
+
+    assert library.failures(job) == []
+    assert not any(state[3] for state in by_path(library, folder).values())
+
+    # Plugged in again
+    (drive / "Photos" / "2022").mkdir(parents=True)
+    make_jpeg(drive / "Photos" / "a.jpg")
+    make_jpeg(drive / "Photos" / "2022" / "b.jpg")
+    make_dng(drive / "Photos" / "2022" / "c.dng", preview="jpeg")
+    state, job = run(library, folder, mounted(drive))
+
+    assert state == dbm.DONE
+    assert library.failures(job.id) == []
+    assert library.count_pending_metadata(folder) == 0
+    assert all(state[3] for state in by_path(library, folder).values())
+
+
+def test_a_file_that_hangs_exiftool_is_named_and_the_rest_of_the_folder_is_read(library, drive):
+    folder = add(library, drive)
+    for n in range(60):
+        make_jpeg(drive / "Photos" / f"more{n:03}.jpg")
+    hanging = str(drive / "Photos" / "more031.jpg")
+
+    state, job = run(library, folder, mounted(drive), tool=lambda: FakeExifTool(hangs=[hanging]))
+
+    assert state == dbm.DONE
+    assert [path for path, _message in library.failures(job.id)] == [hanging]
+    assert library.count_pending_metadata(folder) == 0
+    # Not asked again: the next scan has nothing to read
+    FakeExifTool.calls = []
+    state, _job = run(library, folder, mounted(drive), tool=lambda: FakeExifTool(hangs=[hanging]))
+    assert state == dbm.DONE
+    assert FakeExifTool.calls == []
+
+
+def test_an_exiftool_that_dies_on_every_file_still_stops_the_scan_and_blames_none(library, drive):
+    folder = add(library, drive)
+
+    state, job = run(library, folder, mounted(drive), tool=lambda: FakeExifTool(dies_after=0))
+
+    assert state == dbm.FAILED_JOB
+    assert library.failures(job.id) == []
+    assert library.count_pending_metadata(folder) == 3
+
+
 def test_a_scan_interrupted_by_a_crash_is_found_and_finished(library, drive):
     folder = add(library, drive)
     job = library.add_job(scanning.SCAN, folder)

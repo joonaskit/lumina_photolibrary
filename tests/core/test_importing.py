@@ -330,6 +330,65 @@ def test_a_card_that_is_not_mounted_leaves_the_job_waiting(library, card, folder
     assert library.job(job).state == dbm.QUEUED
 
 
+def test_a_card_pulled_in_the_middle_leaves_the_rest_to_copy_when_it_is_back(
+    library, card, drive, folder, mounts, monkeypatch
+):
+    reading = read(library, card)
+    job = importing.queue(library, reading.candidates, folder, mounts, layout="none")
+    real = importing.copy_file
+    calls = []
+
+    def pulled(source, part, should_stop):
+        calls.append(source)
+        if len(calls) == 2:
+            raise OSError(5, "Input/output error", source)
+        return real(source, part, should_stop)
+
+    monkeypatch.setattr(importing, "copy_file", pulled)
+
+    with pytest.raises(NotConnected):
+        importing.run(library, job, mounts, read_mounts=lambda: mounts[1:])
+
+    assert [item.state for item in library.import_items(job)] == [
+        dbm.COPIED,
+        dbm.TO_COPY,
+        dbm.TO_COPY,
+    ]
+    assert library.failures(job) == []
+
+    monkeypatch.undo()
+    assert importing.run(library, job, mounts) == dbm.DONE
+    assert [item.state for item in library.import_items(job)] == [dbm.COPIED] * 3
+
+
+def test_a_failed_backup_copy_does_not_make_the_copy_in_the_library_a_failure(
+    library, card, drive, folder, mounts, tmp_path, monkeypatch
+):
+    real = importing.copy_file
+
+    def full_backup(source, part, should_stop):
+        if os.sep + "backup" + os.sep in part:
+            raise OSError(28, "No space left on device", part)
+        return real(source, part, should_stop)
+
+    monkeypatch.setattr(importing, "copy_file", full_backup)
+
+    job, state = import_all(
+        library, card, folder, mounts, layout="none", backup=str(tmp_path / "backup" / "b")
+    )
+
+    assert state == dbm.DONE
+    assert [item.state for item in library.import_items(job)] == [dbm.COPIED] * 3
+    assert sorted(p.name for p in (drive / "Photos").iterdir()) == [
+        "IMG_0001.JPG",
+        "IMG_0002.JPG",
+        "IMG_0003.DNG",
+    ]
+    failures = library.failures(job)
+    assert len(failures) == 3
+    assert all("not backed up" in message for _path, message in failures)
+
+
 def test_without_the_space_nothing_is_copied(library, card, drive, folder, mounts, monkeypatch):
     class Usage:
         free = 10
