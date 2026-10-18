@@ -224,7 +224,7 @@ class MainWindow(QMainWindow):
         self.resize(style.px(1280), style.px(820))
 
         self.model = LibraryModel(service, search, self)
-        self.session = DevelopSession(service, self)
+        self.session = DevelopSession(service, self, exporter)
         self.session.profile_folders = settings.profile_folders
 
         self._make_actions()

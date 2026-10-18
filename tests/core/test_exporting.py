@@ -17,6 +17,7 @@ from lumina.core import exporting
 from lumina.core import library as scanning
 from lumina.core.db import Library
 from lumina.core.edit import export as exporter
+from lumina.core.edit.export_options import ExportOptions
 from lumina.core.edit.params import Params
 from lumina.core.volumes import Mount, locate
 
@@ -294,3 +295,52 @@ def test_the_options_are_kept_with_the_job(library, drive, out):
     exporting.run(library, job, mounted(drive))
     assert files(out) == ["b.png"]
     assert max(Image.open(out / "b.png").size) == 32
+
+
+def test_one_photo_is_exported_to_the_file_named(library, drive, out):
+    photo_id = photo(library, "a.jpg")
+    destination = out / "chosen name.jpg"
+    job = exporting.queue_file(library, photo_id, 0, destination, ExportOptions())
+
+    assert exporting.run(library, job, mounted(drive)) == dbm.DONE
+
+    assert [p.name for p in out.iterdir()] == ["chosen name.jpg"]
+    assert library.job(job).message == "Exported 1 file"
+
+
+def test_one_photo_is_not_written_over_a_file_that_appeared(library, drive, out):
+    photo_id = photo(library, "a.jpg")
+    out.mkdir()
+    destination = out / "taken.jpg"
+    job = exporting.queue_file(library, photo_id, 0, destination, ExportOptions())
+    destination.write_bytes(b"someone else's")
+
+    exporting.run(library, job, mounted(drive))
+
+    assert destination.read_bytes() == b"someone else's"
+    assert library.failures(job) == [(str(destination), exporting.TAKEN)]
+
+
+def test_the_photo_open_for_editing_is_exported_from_its_decode(drive, tmp_path, monkeypatch):
+    from lumina.core.edit import session, source
+
+    path = str(drive / "Photos" / "a.jpg")
+    session.open_photo(path)
+    try:
+        decodes = []
+        monkeypatch.setattr(source, "load_for_edit", lambda *a: decodes.append(a))
+        destination = str(tmp_path / "open.jpg")
+
+        made = session.export_open(path, Params(exposure=1.0), destination, ExportOptions(), False)
+
+        assert made == destination and decodes == []
+        with Image.open(destination) as image:
+            assert image.size == (64, 48)
+        other = str(drive / "Photos" / "b.jpg")
+        assert (
+            session.export_open(other, Params(), str(tmp_path / "b.jpg"), ExportOptions(), False)
+            is None
+        )
+        assert not (tmp_path / "b.jpg").exists()
+    finally:
+        session.close()

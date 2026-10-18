@@ -12,6 +12,10 @@ An edit is saved to the library when a change is committed (a control let go, a
 point dropped, undo), not on every move. Undo and redo are a stack of committed
 parameter states. An edit back at no change at all is removed from the library:
 the photo is its original again.
+
+An export is a job of the ExportService (qt_models/exporting.py): it shows in the status
+bar with Cancel, and is finished after a restart. It is rendered from the decode the
+Develop process holds, not decoded again.
 """
 
 import json
@@ -23,14 +27,16 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QImage
 
 from lumina.core import colour_checker as _colour_checker
+from lumina.core import db as dbm
 from lumina.core import dcp as _dcp
+from lumina.core import exporting
 from lumina.core.edit import curves as _curves
-from lumina.core.edit import export as _export
 from lumina.core.edit import hsl as _hsl
 from lumina.core.edit import params as _params
 from lumina.core.edit import pipeline as _pipeline
 from lumina.core.edit import session as _session
 from lumina.qt_models import workers
+from lumina.qt_models.exporting import ExportService
 
 # What the Develop view asks of core's colour checker and camera profiles; the edit's
 # records and ranges it takes from core/edit/params.py itself
@@ -90,9 +96,15 @@ class DevelopSession(QObject):
     # An export found its destination taken at the last moment: the destination
     export_exists = Signal(str)
 
-    def __init__(self, service, parent=None):
+    def __init__(self, service, parent=None, exporter=None):
+        """`service` is the LibraryService; `exporter` the ExportService the photo is
+        exported by, as a job (without one, the session has one of its own)."""
         super().__init__(parent)
         self.service = service
+        self.exporter = exporter or ExportService(service, parent=self)
+        self.exporter.ended.connect(self._on_export_ended)
+        # Export jobs this session queued: job id -> the destination
+        self._exports = {}
         self.photo_id = None
         self.path = None
         # 0: the photo's own edit; more: a virtual copy
@@ -136,6 +148,7 @@ class DevelopSession(QObject):
         virtual copy `copy`."""
         self.close()
         self.photo_id, self.path, self.copy = photo_id, path, copy
+        self.exporter.opened_in_develop(path)
         self.size = None
         self._moving = False
         self._token += 1
@@ -178,6 +191,7 @@ class DevelopSession(QObject):
             self._before = False
             self.before_changed.emit(False)
         self.photo_id = self.path = None
+        self.exporter.opened_in_develop(None)
         self.copy = 0
         workers.submit(
             _session.close,
@@ -648,27 +662,23 @@ class DevelopSession(QObject):
     # Export
 
     def export(self, destination, options, replace=False):
-        """Export the photo with the current edit. Ends with `exported` or
-        `export_exists` (the file appeared at the last moment and Replace was not
-        chosen)."""
+        """Export the photo with the current edit, as a job: cancellable, and finished
+        after a restart if the app quits first. Ends with `exported` or `export_exists`
+        (the file appeared at the last moment and Replace was not chosen)."""
         if not self.is_open():
             return
-        destination = os.fspath(destination)
-        workers.submit(
-            _export.export,
-            self.path,
-            self.params,
-            destination,
-            options,
-            replace,
-            on_done=lambda path: self.exported.emit(path, None),
-            on_error=lambda error: self._on_export_failed(destination, error),
-            owner=self,
-            priority=workers.LATER,
-        )
+        destination = os.path.abspath(os.fspath(destination))
+        job = self.exporter.export_photo(self.photo_id, self.copy, destination, options, replace)
+        self._exports[job] = destination
 
-    def _on_export_failed(self, destination, error):
-        if isinstance(error, _export.ExportExists):
-            self.export_exists.emit(destination)
+    def _on_export_ended(self, job, status):
+        destination = self._exports.pop(job, None)
+        if destination is None or status.state == dbm.CANCELLED:
             return
-        self.exported.emit(destination, getattr(error, "message", None) or str(error))
+        failure = status.failures[0][1] if status.failures else None
+        if failure == exporting.TAKEN:
+            self.export_exists.emit(destination)
+        elif status.state == dbm.DONE and failure is None:
+            self.exported.emit(destination, None)
+        else:
+            self.exported.emit(destination, failure or status.message)

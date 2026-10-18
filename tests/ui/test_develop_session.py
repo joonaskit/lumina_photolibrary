@@ -178,3 +178,50 @@ def test_an_edit_from_a_newer_lumina_is_not_opened_or_overwritten(library, photo
 def test_saving_tells_the_grid(session, library, qtbot):
     with qtbot.waitSignal(library.edits_changed, timeout=TIMEOUT):
         session.commit(Params(exposure=1.0))
+
+
+def test_export_is_a_job_rendered_from_the_develop_process(
+    session, library, tmp_path, qtbot, monkeypatch
+):
+    from lumina.core import db as dbm
+    from lumina.qt_models import exporting, workers
+
+    lanes = []
+    call = workers.call
+
+    def recording(lane, fn, *args, **kwargs):
+        lanes.append(lane)
+        return call(lane, fn, *args, **kwargs)
+
+    monkeypatch.setattr(exporting.workers, "call", recording)
+    ended = []
+    session.exporter.ended.connect(lambda job, status: ended.append(job))
+    session.commit(Params(exposure=0.5))
+    destination = tmp_path / "out.jpg"
+
+    with qtbot.waitSignal(session.exported, timeout=TIMEOUT) as done:
+        session.export(destination, ExportOptions())
+
+    assert done.args == [str(destination), None]
+    # From the decode held there: not decoded again in another process
+    assert lanes == [workers.DEVELOP]
+    job = library.db.job(ended[0])
+    assert (job.kind, job.state, job.done) == (dbm.EXPORT, dbm.DONE, 1)
+
+
+def test_a_photo_closed_before_its_export_runs_is_decoded_for_it(library, photo, tmp_path, qtbot):
+    session = DevelopSession(library)
+    with qtbot.waitSignal(session.image_ready, timeout=TIMEOUT):
+        session.open(*photo)
+    session.commit(Params(rotate=1))
+    destination = tmp_path / "closed.jpg"
+
+    with qtbot.waitSignal(session.exported, timeout=TIMEOUT) as done:
+        session.export(destination, ExportOptions())
+        session.close()
+
+    assert done.args == [str(destination), None]
+    from PIL import Image
+
+    with Image.open(destination) as image:
+        assert image.size == (200, 300)
