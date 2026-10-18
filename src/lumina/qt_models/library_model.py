@@ -277,6 +277,7 @@ class LibraryModel(QAbstractListModel):
             _query,
             self.service.path,
             self.filter,
+            self.service.settle,
             on_done=lambda rows: self._loaded(generation, rows, reset),
             on_error=lambda _error: self._loaded(generation, [], reset),
             owner=self,
@@ -838,7 +839,10 @@ def _stacks_of(rows):
     }
 
 
-def _query(path, shown):
+def _query(path, shown, settle):
+    # The writes the window queued are in the library before it is read, so a flag just
+    # set is not read back as it was
+    settle()
     with dbm.Library(path) as library:
         return library.photos(shown)
 

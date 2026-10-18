@@ -54,6 +54,7 @@ def press(qtbot, widget, key, modifier=Qt.KeyboardModifier.NoModifier):
 
 def stored(service):
     """{name: flag} as the library has them."""
+    service.settle()
     with dbm.Library(service.path) as library:
         return {os.path.basename(photo.path): photo.flag for photo in library.photos()}
 

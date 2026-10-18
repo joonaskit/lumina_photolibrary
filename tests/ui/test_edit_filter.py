@@ -116,7 +116,10 @@ def test_saving_an_edit_updates_its_row_and_does_not_read_the_library_again(
     real = window.model._load
     monkeypatch.setattr(window.model, "_load", lambda reset: loads.append(reset) or real(reset))
     changed = []
-    window.model.dataChanged.connect(lambda first, last: changed.append((first.row(), last.row())))
+    # Thumbnails arriving meanwhile change rows too (the decoration role); not counted
+    window.model.dataChanged.connect(
+        lambda first, last, roles=(): roles or changed.append((first.row(), last.row()))
+    )
 
     edit_photo(qtbot, window, 1)
 

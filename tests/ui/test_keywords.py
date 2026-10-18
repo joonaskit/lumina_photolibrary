@@ -16,6 +16,7 @@ from lumina.ui.sidebar import KIND_ROLE
 
 def stored(service):
     """{name: sorted keyword paths} as the library has them."""
+    service.settle()
     with dbm.Library(service.path) as library:
         paths = {i: path for i, path, _count in library.keyword_list()}
         return {

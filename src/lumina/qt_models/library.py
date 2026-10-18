@@ -11,11 +11,12 @@ not running. A quit in the middle of a job leaves it queued for the next start.
 """
 
 import os
+import queue
 import threading
 import time
 from dataclasses import dataclass, replace
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
 
 from lumina.core import bursts, embed, images, lensdb, metadata, raw, similar, thumbs, volumes
 from lumina.core import db as dbm
@@ -107,6 +108,55 @@ class PasteResult:
     failed: tuple
 
 
+class _Writer:
+    """The one thread the window's point writes (flags, ratings, keywords, edits, stacks)
+    run on, with a connection of its own: a write that waits for a scan's write lock
+    waits here, not in the window. Writes run in the order they were queued."""
+
+    def __init__(self, path, done):
+        self._path = path
+        self._done = done
+        self._queue = queue.Queue()
+        self._pending = 0
+        self._idle = threading.Condition()
+        self._thread = threading.Thread(target=self._run, name="lumina-writer", daemon=True)
+        self._thread.start()
+
+    def submit(self, work, then, failed):
+        with self._idle:
+            self._pending += 1
+        self._queue.put((work, then, failed))
+
+    def settle(self):
+        """Wait until every write queued so far has been made."""
+        with self._idle:
+            while self._pending:
+                self._idle.wait()
+
+    def close(self):
+        self._queue.put(None)
+        self._thread.join()
+
+    def _run(self):
+        library = None
+        try:
+            while (item := self._queue.get()) is not None:
+                work, then, failed = item
+                try:
+                    if library is None:
+                        library = dbm.Library(self._path)
+                    outcome = (then, work(library), None)
+                except Exception as error:
+                    outcome = (then, None, (failed, error))
+                self._done(outcome)
+                with self._idle:
+                    self._pending -= 1
+                    self._idle.notify_all()
+        finally:
+            if library is not None:
+                library.close()
+
+
 class LibraryService(QObject):
     folders_changed = Signal()
     # Photos were added or changed: the grid reads them again
@@ -133,6 +183,8 @@ class LibraryService(QObject):
     thumbnails_pruned = Signal(object)
     # Something done on a thread failed: what to tell the user
     failed = Signal(str)
+    # A write made on the writer thread ended: (what to do next, its result, its error)
+    _written = Signal(object)
 
     def __init__(
         self,
@@ -148,6 +200,8 @@ class LibraryService(QObject):
         self._exiftool = exiftool
         # The main thread's connection: small reads (folders, filter choices) only
         self.db = dbm.Library(self.path)
+        self._written.connect(self._on_written)
+        self._writer = _Writer(self.path, self._written.emit)
         self.mounts = read_mounts()
         self._running = None
         self._stop = None
@@ -214,7 +268,35 @@ class LibraryService(QObject):
         self._quitting.set()
         if self._stop is not None:
             self._stop.set()
+        # The queued writes are made, not dropped
+        self._writer.close()
         self.db.close()
+
+    # Writes on the writer thread
+
+    def _write(self, work, then=None):
+        """Make `work(library)` on the writer thread, then `then(result)` here. The
+        window does not wait; a failure is told by `failed`."""
+        self._writer.submit(work, then, None)
+
+    def _on_written(self, outcome):
+        then, result, error = outcome
+        if self._quitting.is_set():
+            return
+        if error is not None:
+            self.failed.emit(str(error[1]))
+        elif then is not None:
+            then(result)
+
+    def settle(self):
+        """Wait for the writes queued so far, before reading what they change. Short
+        unless a scan holds the write lock."""
+        self._writer.settle()
+
+    def flush(self):
+        """`settle`, and hear of the writes made at once (for tests, and the exit)."""
+        self.settle()
+        QCoreApplication.sendPostedEvents(self, 0)
 
     # Folders
 
@@ -348,24 +430,25 @@ class LibraryService(QObject):
 
     def photo_details(self, photo_id):
         """Everything the library knows of one photo, as a dict, or None."""
+        self.settle()
         return self.db.photo(photo_id)
 
     # Flags and ratings
 
     def set_flags(self, flags):
         """{photo id: flag}. The grid's model keeps its rows up to date itself."""
-        self.db.set_flags(flags)
-        self.sidecars_due()
+        self._write(lambda db: db.set_flags(flags), lambda _: self.sidecars_due())
 
     def flags(self, ids):
+        self.settle()
         return self.db.flags(ids)
 
     def set_ratings(self, ratings):
         """{photo id: stars, 0 for none}."""
-        self.db.set_ratings(ratings)
-        self.sidecars_due()
+        self._write(lambda db: db.set_ratings(ratings), lambda _: self.sidecars_due())
 
     def ratings(self, ids):
+        self.settle()
         return self.db.ratings(ids)
 
     # Keywords
@@ -412,14 +495,18 @@ class LibraryService(QObject):
         return made
 
     def photo_keywords(self, ids):
+        self.settle()
         return self.db.photo_keywords(ids)
 
     def set_photo_keywords(self, values):
         """{photo id: ids of its keywords}. The grid's model keeps its rows up to date."""
-        self.db.set_photo_keywords(values)
-        self.sidecars_due()
-        self.keyword_list()
-        self.keywords_changed.emit()
+
+        def done(_):
+            self.sidecars_due()
+            self.keyword_list()
+            self.keywords_changed.emit()
+
+        self._write(lambda db: db.set_photo_keywords(values), done)
 
     def rename_keyword(self, path, new_path):
         """Rename a keyword and those below it. Returns False when there is no such
@@ -479,9 +566,11 @@ class LibraryService(QObject):
 
     def edit_json(self, photo_id, copy=0):
         """The photo's edit (its own, or virtual copy `copy`) as parameters JSON, or None."""
+        self.settle()
         return self.db.edit(photo_id, copy)
 
     def copies(self, photo_id):
+        self.settle()
         """The numbers of the photo's virtual copies, in order (its own edit is 0)."""
         return [copy for copy in self.db.copies(photo_id) if copy > 0]
 
@@ -489,6 +578,7 @@ class LibraryService(QObject):
         """A new virtual copy of the photo, with the edit of `copy` (or `params_json`, when
         the caller has an edit not stored yet). The original file is not touched, and nor
         is any edit already stored. Returns the new copy's number."""
+        self.settle()
         if params_json is None:
             params_json = self.db.edit(photo_id, copy)
         if params_json is None:
@@ -501,17 +591,18 @@ class LibraryService(QObject):
     def make_copies(self, photo_ids):
         """A virtual copy of each photo, from its own edit, in one go."""
         plain = _params.Params().to_json()
-        self.db.new_copies({photo_id: self.db.edit(photo_id) or plain for photo_id in photo_ids})
-        self.sidecars_due()
-        self.photos_changed.emit()
+        photo_ids = list(photo_ids)
+
+        def work(db):
+            db.new_copies({photo_id: db.edit(photo_id) or plain for photo_id in photo_ids})
+
+        self._write(work, lambda _: self._stacks_changed())
 
     def delete_copy(self, photo_id, copy):
         """Remove virtual copy `copy`. The photo's own edit (0) can't be removed this way."""
         if copy <= 0:
             raise ValueError("The photo's own edit is not a virtual copy")
-        self.db.delete_edit(photo_id, copy)
-        self.sidecars_due()
-        self.photos_changed.emit()
+        self._write(lambda db: db.delete_edit(photo_id, copy), lambda _: self._stacks_changed())
 
     def lens_shot(self, photo_id):
         """How the photo was taken, as the lens database wants it (lensdb.Shot), or None."""
@@ -545,8 +636,13 @@ class LibraryService(QObject):
 
     def make_stack(self, photo_ids):
         """Stack these photos, the first on top. Fewer than two make none."""
-        if self.db.make_stack(photo_ids) is not None:
-            self._stacks_changed()
+        photo_ids = list(photo_ids)
+
+        def done(made):
+            if made is not None:
+                self._stacks_changed()
+
+        self._write(lambda db: db.make_stack(photo_ids), done)
 
     def stack_bursts(self, rows, on_done, on_error):
         """Stack the bursts among `rows` (PhotoRows): shots a moment apart that look alike,
@@ -586,21 +682,23 @@ class LibraryService(QObject):
 
     def unstack(self, photo_ids):
         """Take apart the stacks these photos are in."""
-        self.db.unstack(photo_ids)
-        self._stacks_changed()
+        photo_ids = list(photo_ids)
+        self._write(lambda db: db.unstack(photo_ids), lambda _: self._stacks_changed())
 
     def leave_stack(self, photo_ids):
         """Take these photos out of their stacks."""
-        self.db.leave_stack(photo_ids)
-        self._stacks_changed()
+        photo_ids = list(photo_ids)
+        self._write(lambda db: db.leave_stack(photo_ids), lambda _: self._stacks_changed())
 
     def set_stack_top(self, photo_id):
-        self.db.set_stack_top(photo_id)
-        self._stacks_changed()
+        self._write(lambda db: db.set_stack_top(photo_id), lambda _: self._stacks_changed())
 
     def set_stacks_collapsed(self, stack_ids, collapsed):
-        self.db.set_stacks_collapsed(stack_ids, collapsed)
-        self.photos_changed.emit()
+        stack_ids = list(stack_ids)
+        self._write(
+            lambda db: db.set_stacks_collapsed(stack_ids, collapsed),
+            lambda _: self.photos_changed.emit(),
+        )
 
     def _stacks_changed(self):
         self.sidecars_due()
@@ -611,18 +709,25 @@ class LibraryService(QObject):
         The grid hears of it."""
         if params_json is None and copy > 0:
             raise ValueError("A virtual copy always has an edit")
-        if params_json is None:
-            self.db.delete_edit(photo_id)
-        else:
-            self.db.save_edit(photo_id, params_json, copy)
-        self.sidecars_due()
-        self.edits_changed.emit({photo_id})
+
+        def work(db):
+            if params_json is None:
+                db.delete_edit(photo_id)
+            else:
+                db.save_edit(photo_id, params_json, copy)
+
+        def done(_):
+            self.sidecars_due()
+            self.edits_changed.emit({photo_id})
+
+        self._write(work, done)
 
     # Copying settings from one photo to others
 
     def settings_document(self, photo_id, sections):
         """The `sections` of the photo's own edit as a document to put over other photos
         (see `paste_settings`). Raises NewerParams for an edit from a newer Lumina."""
+        self.settle()
         stored = self.db.edit(photo_id)
         edit = _params.from_json(stored) if stored else _params.Params()
         return _params.preset(edit, sections)
@@ -639,6 +744,7 @@ class LibraryService(QObject):
         they were. A photo whose edit is from a newer Lumina is left alone and named in
         the result's `failed`. The photos' files are not touched, nor is a photo on a
         drive that is not connected left out: edits live in the library."""
+        self.settle()
         document = document if document is not None else self.copied.document
         edits, failed = {}, []
         for photo_id in photo_ids:
@@ -657,15 +763,16 @@ class LibraryService(QObject):
         return os.path.basename(photo["path"]) if photo else str(photo_id)
 
     def presets(self):
+        self.settle()
         return self.db.presets()
 
     def save_preset(self, name, params_json):
-        self.db.save_preset(name, params_json)
-        self.presets_changed.emit()
+        self._write(
+            lambda db: db.save_preset(name, params_json), lambda _: self.presets_changed.emit()
+        )
 
     def delete_preset(self, name):
-        self.db.delete_preset(name)
-        self.presets_changed.emit()
+        self._write(lambda db: db.delete_preset(name), lambda _: self.presets_changed.emit())
 
     # Drives
 

@@ -73,5 +73,6 @@ def test_taking_in_the_rows_costs_the_window_little_and_an_edit_nothing_much(big
 
     photo = ids[ROWS // 2]
     took, _ = timed(lambda: service.save_edit(photo, Params(exposure=1.0).to_json()))
+    service.flush()
     assert json.loads(model.edit(model.row_of(photo)))["exposure"] == 1.0
     assert took < 0.25, f"an edit saved took {took:.2f} s on the window's thread"

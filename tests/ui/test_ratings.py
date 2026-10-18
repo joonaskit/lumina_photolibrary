@@ -25,6 +25,7 @@ KEYS = {
 
 def stored(service):
     """{name: rating} as the library has them."""
+    service.settle()
     with dbm.Library(service.path) as library:
         return {os.path.basename(photo.path): photo.rating for photo in library.photos()}
 
