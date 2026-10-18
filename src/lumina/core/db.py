@@ -12,6 +12,7 @@ A `Library` is for the thread that opened it. Open one per thread: SQLite in WAL
 mode lets the UI read while a scan writes.
 """
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -651,9 +652,22 @@ class Library:
             # One transaction for the migration and its version: DDL is transactional
             # in SQLite, so a failure rolls both back and the next start tries again
             with self.db:
-                self.db.execute("BEGIN")
+                self.db.execute("BEGIN IMMEDIATE")
+                # Another connection opening the file at the same time may have done it
+                if self.db.execute("PRAGMA user_version").fetchone()[0] != number:
+                    continue
                 _MIGRATIONS[number](self.db)
                 self.db.execute(f"PRAGMA user_version = {number + 1}")
+
+    @contextlib.contextmanager
+    def _checked_write(self):
+        """A transaction that takes the write lock at its start, for a write that first
+        reads whether it is needed: two connections (the window, a worker, the tether
+        process) can't both find the row missing and both insert it."""
+        with self.db:
+            if not self.db.in_transaction:
+                self.db.execute("BEGIN IMMEDIATE")
+            yield
 
     # Volumes and folders
 
@@ -686,12 +700,10 @@ class Library:
         photos become its photos."""
         path = path.strip("/")
         volume = self.volume_id(key, label, mount)
-        for folder in self.folders():
-            if folder.volume_key != key:
-                continue
-            if folder.path == path or _inside(path, folder.path):
-                return folder.id
-        with self.db:
+        with self._checked_write():
+            for folder in self.folders():
+                if folder.volume_key == key and (folder.path == path or _inside(path, folder.path)):
+                    return folder.id
             cursor = self.db.execute(
                 "INSERT INTO folders (volume_id, path, added_at) VALUES (?, ?, ?)",
                 (volume, path, time.time()),
@@ -1646,14 +1658,14 @@ class Library:
 
     def add_job(self, kind, folder_id):
         """Queue a job, or return the unfinished one of that kind for that folder."""
-        row = self.db.execute(
-            "SELECT id FROM jobs WHERE kind = ? AND folder_id IS ? AND state IN (?, ?)",
-            (kind, folder_id, *UNFINISHED),
-        ).fetchone()
-        if row is not None:
-            return row[0]
         now = time.time()
-        with self.db:
+        with self._checked_write():
+            row = self.db.execute(
+                "SELECT id FROM jobs WHERE kind = ? AND folder_id IS ? AND state IN (?, ?)",
+                (kind, folder_id, *UNFINISHED),
+            ).fetchone()
+            if row is not None:
+                return row[0]
             cursor = self.db.execute(
                 "INSERT INTO jobs (kind, folder_id, state, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?)",

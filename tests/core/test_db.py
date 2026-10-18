@@ -156,6 +156,39 @@ def test_an_unfinished_job_is_not_queued_twice(library):
     assert library.add_job("scan", folder) != job
 
 
+def test_two_connections_adding_the_same_folder_make_one_folder(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    path = tmp_path / "library.sqlite3"
+    real = Library.folders
+
+    def slow(self):
+        found = real(self)
+        # Long enough for the other connection to look too, were it not kept waiting
+        time.sleep(0.3)
+        return found
+
+    Library(path).close()
+    monkeypatch.setattr(Library, "folders", slow)
+    ids = []
+
+    def add():
+        with Library(path) as library:
+            ids.append(library.add_folder("uuid:A", "photos"))
+
+    threads = [threading.Thread(target=add) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    monkeypatch.undo()
+
+    with Library(path) as library:
+        assert len(library.folders()) == 1
+    assert len(set(ids)) == 1 and len(ids) == 2
+
+
 def test_a_library_from_schema_1_is_brought_up_to_date_with_its_data(tmp_path, monkeypatch):
     path = tmp_path / "library.sqlite3"
     # As the first release wrote it
