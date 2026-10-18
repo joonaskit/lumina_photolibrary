@@ -42,21 +42,21 @@ def describe_photo(photo):
     if not photo:
         return ""
     parts = []
-    taken = photo.get("captured") or photo.get("file_time")
+    taken = photo.captured or photo.file_time
     if taken:
         parts.append(taken[:16])
-    for key in ("model", "lens"):
-        if photo.get(key):
-            parts.append(photo[key])
-    if photo.get("focal_length"):
-        parts.append(f"{photo['focal_length']:g} mm")
-    exposure = photo.get("exposure_time")
+    for value in (photo.model, photo.lens):
+        if value:
+            parts.append(value)
+    if photo.focal_length:
+        parts.append(f"{photo.focal_length:g} mm")
+    exposure = photo.exposure_time
     if exposure:
         parts.append(f"1/{round(1 / exposure)} s" if exposure < 1 else f"{exposure:g} s")
-    if photo.get("aperture"):
-        parts.append(f"f/{photo['aperture']:g}")
-    if photo.get("iso"):
-        parts.append(f"ISO {photo['iso']}")
+    if photo.aperture:
+        parts.append(f"f/{photo.aperture:g}")
+    if photo.iso:
+        parts.append(f"ISO {photo.iso}")
     return "  ·  ".join(parts)
 
 

@@ -64,7 +64,7 @@ class MergingMixin:
 
     def _photo_name(self, photo_id):
         photo = self.service.photo_details(photo_id)
-        return os.path.basename(photo["path"]) if photo else str(photo_id)
+        return os.path.basename(photo.path) if photo else str(photo_id)
 
     def copy_settings(self):
         """Keep some sections of the edit of the photo shown, open or current, to paste

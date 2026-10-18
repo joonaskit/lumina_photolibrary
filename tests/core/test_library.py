@@ -70,7 +70,7 @@ def test_a_first_scan_finds_the_photos_and_reads_their_details(library, drive):
         "Photos/2022/c.dng",
     }
     assert all(p.content_id for p in library.photos())
-    assert {library.photo(p.id)["model"] for p in library.photos()} == {"Canon EOS 90D"}
+    assert {library.photo(p.id).model for p in library.photos()} == {"Canon EOS 90D"}
     assert job.message == "3 photos, 3 new"
 
 
@@ -127,12 +127,12 @@ def test_a_deleted_photo_is_marked_missing_and_comes_back(library, drive):
     row = library.photo(by_path(library, folder)["Photos/a.jpg"][0])
 
     assert job.message == "3 photos, 1 missing"
-    assert row["available"] == 0 and row["model"] == "Canon EOS 90D"
+    assert row.available == 0 and row.model == "Canon EOS 90D"
 
     photo.write_bytes(kept)
     os.utime(photo, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     run(library, folder, mounted(drive))
-    assert library.photo(row["id"])["available"] == 1
+    assert library.photo(row.id).available == 1
 
 
 def test_an_unplugged_drive_leaves_everything_as_it_was(library, drive):
@@ -398,7 +398,7 @@ def test_a_photo_whose_details_cannot_be_read_is_named(library, drive):
     assert state == dbm.DONE
     assert library.failures(job.id) == [(str(broken), "File format error")]
     row = library.photo(by_path(library, folder)["Photos/a.jpg"][0])
-    assert row["metadata_state"] == dbm.FAILED and row["metadata_error"] == "File format error"
+    assert row.metadata_state == dbm.FAILED and row.metadata_error == "File format error"
     assert "1 could not be read" in job.message
 
 
@@ -453,8 +453,8 @@ def test_scanning_leaves_every_file_as_it_was(library, drive, exiftool):
     assert after == before
     assert sorted(p for p in drive.rglob("*") if p.is_file()) == files
     row = library.photo(by_path(library, folder)["Photos/exif.jpg"][0])
-    assert (row["captured"], row["captured_offset"]) == ("2024-06-01 18:30:05.250000", "+03:00")
-    assert row["lens"] == "RF24-105mm F4 L IS USM"
+    assert (row.captured, row.captured_offset) == ("2024-06-01 18:30:05.250000", "+03:00")
+    assert row.lens == "RF24-105mm F4 L IS USM"
 
 
 class Rests:

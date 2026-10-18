@@ -2,7 +2,7 @@
 
 import time
 
-from lumina.core.dbtypes import Filter, PhotoRow
+from lumina.core.dbtypes import Choices, Filter, PhotoRow, _photo
 from lumina.core.dbutil import _inside, _metadata_columns, _where
 
 
@@ -163,7 +163,7 @@ class PhotosStore:
 
     def photo(self, photo_id):
         row = self.db.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
-        return dict(row) if row is not None else None
+        return _photo(row) if row is not None else None
 
     def photo_at(self, key, path):
         """The id of the photo at `path` (from the root) of volume `key`, or None."""
@@ -186,7 +186,7 @@ class PhotosStore:
         return max(found, key=lambda folder: len(folder.path)).id if found else None
 
     def choices(self, folder_id=None):
-        """The years, cameras and lenses there are, to filter by: within a folder, or all."""
+        """The Choices there are, to filter by: within a folder, or all."""
         where, args = ("WHERE folder_id = ?", (folder_id,)) if folder_id is not None else ("", ())
         years = [
             row[0]
@@ -208,4 +208,4 @@ class PhotosStore:
                 )
             ]
 
-        return years, distinct("model"), distinct("lens")
+        return Choices(years, distinct("model"), distinct("lens"))

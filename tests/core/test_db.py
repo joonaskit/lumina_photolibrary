@@ -1,3 +1,4 @@
+import dataclasses
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -94,6 +95,14 @@ def test_removing_a_folder_forgets_only_its_photos(library):
     assert library.unfinished_jobs() == []
 
 
+def test_a_photo_record_has_every_column(library):
+    # A column added to `photos` needs its field in dbtypes.Photo, or photo() fails
+    columns = {row[1] for row in library.db.execute("PRAGMA table_info(photos)")}
+    fields = {field.name for field in dataclasses.fields(dbm.Photo)}
+
+    assert fields == columns | {"volume_key", "taken"}
+
+
 def test_missing_photos_keep_what_is_known_of_them(library):
     volume = library.volume_id("uuid:A")
     folder = library.add_folder("uuid:A", "p")
@@ -103,8 +112,8 @@ def test_missing_photos_keep_what_is_known_of_them(library):
     library.mark_missing([ids["p/a.jpg"]])
 
     photo = library.photo(ids["p/a.jpg"])
-    assert photo["available"] == 0 and photo["missing_since"] is not None
-    assert photo["model"] == "Canon EOS 90D" and photo["content_id"] == "cid"
+    assert photo.available == 0 and photo.missing_since is not None
+    assert photo.model == "Canon EOS 90D" and photo.content_id == "cid"
 
 
 def test_capture_time_is_kept_as_local_time_and_offset(library):
@@ -116,7 +125,7 @@ def test_capture_time_is_kept_as_local_time_and_offset(library):
     library.write_metadata(read=[(ids["p/a.jpg"], "cid", Metadata(captured=taken))])
 
     photo = library.photo(ids["p/a.jpg"])
-    assert (photo["captured"], photo["captured_offset"]) == ("2022-05-09 21:03:25.960000", "+02:00")
+    assert (photo.captured, photo.captured_offset) == ("2022-05-09 21:03:25.960000", "+02:00")
 
 
 def test_photos_are_in_time_order_and_filtered(library):
@@ -188,10 +197,10 @@ def test_photos_near_finds_those_within_the_seconds_and_no_others(library):
 
     found = library.photos_near(folder, "2021-06-01 12:00:00", 5)
 
-    assert [row["path"] for row in found] == ["p/a.jpg", "p/b.jpg"]
+    assert [row.path for row in found] == ["p/a.jpg", "p/b.jpg"]
     # Across midnight
     found = library.photos_near(folder, "2021-06-01 00:00:01", 5)
-    assert [row["path"] for row in found] == ["p/d.jpg"]
+    assert [row.path for row in found] == ["p/d.jpg"]
 
 
 def test_an_unfinished_job_is_not_queued_twice(library):
@@ -317,7 +326,7 @@ def test_a_library_from_schema_5_reads_its_cr3s_again_to_find_damage(tmp_path, m
     with Library(path) as library:
         # Only the CR3 read before is read again; what was known of it stays meanwhile
         assert library.pending_metadata(folder, 10) == [(ids["p/a.cr3"], "p/a.cr3")]
-        assert library.photo(ids["p/a.cr3"])["model"] == "Canon EOS 90D"
+        assert library.photo(ids["p/a.cr3"]).model == "Canon EOS 90D"
         assert all(photo.damage_warning is None for photo in library.photos())
 
 
@@ -545,11 +554,13 @@ def test_presets_by_name(library):
     library.save_preset("Matte", '{"matte": {"black": 0.1}}')
 
     assert library.presets() == [
-        ("bright", '{"exposure": 1}'),
-        ("Matte", '{"matte": {"black": 0.1}}'),
+        dbm.Preset("bright", '{"exposure": 1}'),
+        dbm.Preset("Matte", '{"matte": {"black": 0.1}}'),
     ]
+    assert library.preset("Matte") == '{"matte": {"black": 0.1}}'
     library.delete_preset("bright")
-    assert [name for name, _ in library.presets()] == ["Matte"]
+    assert [preset.name for preset in library.presets()] == ["Matte"]
+    assert library.preset("bright") is None
 
 
 def test_flags_are_kept_and_read_back(library):

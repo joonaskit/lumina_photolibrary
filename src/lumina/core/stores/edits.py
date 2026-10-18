@@ -2,6 +2,8 @@
 
 import time
 
+from lumina.core.dbtypes import Preset
+
 
 class EditsStore:
     # Edits
@@ -77,9 +79,14 @@ class EditsStore:
         return numbers
 
     def presets(self):
-        """[(name, parameters JSON)] by name."""
+        """[Preset] by name."""
         rows = self.db.execute("SELECT name, params FROM presets ORDER BY name COLLATE NOCASE")
-        return [tuple(row) for row in rows]
+        return [Preset(*row) for row in rows]
+
+    def preset(self, name):
+        """The parameters JSON of the preset `name`, or None."""
+        row = self.db.execute("SELECT params FROM presets WHERE name = ?", (name,)).fetchone()
+        return row[0] if row is not None else None
 
     def save_preset(self, name, params_json):
         with self.transaction():

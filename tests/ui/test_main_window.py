@@ -5,6 +5,7 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QMessageBox, QToolButton
 from rawfiles import make_dng
 
+from lumina.core.dbtypes import Photo
 from lumina.qt_models.library_model import DAMAGE_ROLE
 from lumina.ui import settings
 from lumina.ui.main_window import MainWindow, describe_photo
@@ -192,15 +193,16 @@ def test_cells_keep_the_full_size_while_thumbnails_are_placeholders(qtbot, servi
 
 
 def test_describe_photo():
-    photo = {
-        "captured": "2022-05-09 21:03:25.960000",
-        "model": "Canon EOS 90D",
-        "lens": "EF-S55-250mm f/4-5.6 IS STM",
-        "focal_length": 250.0,
-        "exposure_time": 0.004,
-        "aperture": 5.6,
-        "iso": 400,
-    }
+    photo = Photo(
+        1,
+        captured="2022-05-09 21:03:25.960000",
+        model="Canon EOS 90D",
+        lens="EF-S55-250mm f/4-5.6 IS STM",
+        focal_length=250.0,
+        exposure_time=0.004,
+        aperture=5.6,
+        iso=400,
+    )
 
     assert describe_photo(photo) == (
         "2022-05-09 21:03  ·  Canon EOS 90D  ·  EF-S55-250mm f/4-5.6 IS STM  ·  250 mm"

@@ -98,14 +98,14 @@ class MergeService(QObject):
         [row] = db.photo_rows(photo_ids) or [None]
         if row is None:
             return list(photo_ids)
-        near = db.photos_near(row["folder_id"], row["taken"], _NEAR)
-        return hdr.bracket_around(near, row["id"]) or list(photo_ids)
+        near = db.photos_near(row.folder_id, row.taken, _NEAR)
+        return hdr.bracket_around(near, row.id) or list(photo_ids)
 
     def frames(self, photo_ids):
         """[Frame] of the photos, in the order a merge takes them: by exposure."""
         rows = self.library.db.photo_rows(photo_ids)
         rows.sort(key=lambda row: hdr.exposure_value(row) or 0.0)
-        return [Frame(row["id"], os.path.basename(row["path"]), _exposure(row)) for row in rows]
+        return [Frame(row.id, os.path.basename(row.path), _exposure(row)) for row in rows]
 
     def check(self, photo_ids):
         """Why the photos cannot be merged, or None when they can."""
@@ -114,9 +114,9 @@ class MergeService(QObject):
             hdr.check_frames(rows)
         except ValueError as error:
             return str(error)
-        missing = next((row for row in rows if not row["available"]), None)
+        missing = next((row for row in rows if not row.available), None)
         if missing is not None:
-            return f"{os.path.basename(missing['path'])} is missing"
+            return f"{os.path.basename(missing.path)} is missing"
         return None
 
     def merge_hdr(self, photo_ids, deghost="off", align=True):
@@ -127,7 +127,7 @@ class MergeService(QObject):
     def panorama_frames(self, photo_ids):
         """[Frame] of the photos, in the order a panorama takes them: as taken."""
         rows = self.panorama_rows(photo_ids)
-        return [Frame(row["id"], os.path.basename(row["path"]), _exposure(row)) for row in rows]
+        return [Frame(row.id, os.path.basename(row.path), _exposure(row)) for row in rows]
 
     def check_panorama(self, photo_ids):
         """Why the photos cannot be stitched into a panorama, or None when they can."""
@@ -136,9 +136,9 @@ class MergeService(QObject):
             panorama.check_frames(rows)
         except ValueError as error:
             return str(error)
-        missing = next((row for row in rows if not row["available"]), None)
+        missing = next((row for row in rows if not row.available), None)
         if missing is not None:
-            return f"{os.path.basename(missing['path'])} is missing"
+            return f"{os.path.basename(missing.path)} is missing"
         return None
 
     def preview_panorama(self, photo_ids):
@@ -146,7 +146,7 @@ class MergeService(QObject):
         when it is gone; None when a photo's drive is not connected."""
         paths = []
         for row in self.panorama_rows(photo_ids):
-            where = volumes.resolve(row["volume_key"], row["path"], self.library.mounts)
+            where = volumes.resolve(row.volume_key, row.path, self.library.mounts)
             if where is None:
                 return None
             paths.append(where)
@@ -155,7 +155,7 @@ class MergeService(QObject):
     def panorama_rows(self, photo_ids):
         """The photos' rows, in the order a panorama takes them: as taken."""
         rows = self.library.db.photo_rows(photo_ids)
-        rows.sort(key=lambda row: (row.get("taken") or "", row["path"]))
+        rows.sort(key=lambda row: (row.taken or "", row.path))
         return rows
 
     def stitch_panorama(self, photo_ids, projection=panorama.CYLINDRICAL, crop=True):
@@ -262,13 +262,13 @@ class MergeService(QObject):
 
 def _exposure(row):
     parts = []
-    time = row.get("exposure_time")
+    time = row.exposure_time
     if time:
         parts.append(f"1/{round(1 / time)} s" if time < 0.5 else f"{time:g} s")
-    if row.get("aperture"):
-        parts.append(f"f/{row['aperture']:g}")
-    if row.get("iso"):
-        parts.append(f"ISO {row['iso']}")
+    if row.aperture:
+        parts.append(f"f/{row.aperture:g}")
+    if row.iso:
+        parts.append(f"ISO {row.iso}")
     return " · ".join(parts)
 
 

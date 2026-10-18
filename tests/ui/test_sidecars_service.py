@@ -62,10 +62,10 @@ def test_turning_them_on_writes_for_the_whole_library_and_reads_those_there(qtbo
 
     with qtbot.waitSignal(service.sidecars_written, timeout=TIMEOUT):
         service.set_sidecars(True)
-    qtbot.waitUntil(lambda: service.db.photo(other.id)["rating"] == 2, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: service.db.photo(other.id).rating == 2, timeout=TIMEOUT)
 
     assert os.path.basename(marked.path) + ".xmp" in sidecar_files(drive)
-    assert service.db.photo(marked.id)["rating"] == 4
+    assert service.db.photo(marked.id).rating == 4
 
 
 def test_turning_them_off_stops_writing(qtbot, service, drive):

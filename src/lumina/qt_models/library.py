@@ -429,7 +429,7 @@ class LibraryService(QObject):
         return self.db.folder_holding(*where) if where is not None else None
 
     def photo_details(self, photo_id):
-        """Everything the library knows of one photo, as a dict, or None."""
+        """Everything the library knows of one photo (a Photo), or None."""
         self.settle()
         return self.db.photo(photo_id)
 
@@ -610,11 +610,11 @@ class LibraryService(QObject):
         if photo is None:
             return None
         return lensdb.Shot(
-            photo["make"],
-            photo["model"],
-            photo["lens"],
-            photo["focal_length"],
-            photo["aperture"],
+            photo.make,
+            photo.model,
+            photo.lens,
+            photo.focal_length,
+            photo.aperture,
         )
 
     def raw_files_of(self, model, limit, on_done, on_error):
@@ -760,11 +760,16 @@ class LibraryService(QObject):
 
     def _photo_name(self, photo_id):
         photo = self.db.photo(photo_id)
-        return os.path.basename(photo["path"]) if photo else str(photo_id)
+        return os.path.basename(photo.path) if photo else str(photo_id)
 
     def presets(self):
         self.settle()
         return self.db.presets()
+
+    def preset(self, name):
+        """The parameters JSON of the preset `name`, or None."""
+        self.settle()
+        return self.db.preset(name)
 
     def save_preset(self, name, params_json):
         self._write(

@@ -76,14 +76,13 @@ def test_a_frame_is_saved_into_the_session_and_taken_into_the_library(
         FakeCamera.shoot(root, frame(tmp_path))
 
     photo = service.db.photo(arrived.args[0])
-    assert photo["path"] == f"Photos/{day()}/Studio/20240601-183005-IMG_6000.CR3"
+    assert photo.path == f"Photos/{day()}/Studio/20240601-183005-IMG_6000.CR3"
     assert camera.saved_count == 1
     # In the session's collection
     (collection,) = [c for c in service.collections() if c.name == "Studio"]
     qtbot.waitUntil(
         lambda: (
-            [p.id for p in service.db.photos(dbm.Filter(collection_id=collection.id))]
-            == [photo["id"]]
+            [p.id for p in service.db.photos(dbm.Filter(collection_id=collection.id))] == [photo.id]
         ),
         timeout=TIMEOUT,
     )

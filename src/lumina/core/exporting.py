@@ -69,14 +69,14 @@ def queue(library, entries, folder, options, replace=False, mounts=None):
     id. `mounts` (volumes.read_mounts()) lets a photo's own folder be told from the
     destination."""
     options.check()
-    rows = {row["id"]: row for row in library.photo_rows([photo for photo, _copy in entries])}
+    rows = {row.id: row for row in library.photo_rows([photo for photo, _copy in entries])}
     photos = []
     for photo_id, copy in entries:
         row = rows.get(photo_id)
         if row is None:
             continue
-        source = volumes.resolve(row["volume_key"], row["path"], mounts) if mounts else None
-        photos.append((photo_id, copy, source or row["path"]))
+        source = volumes.resolve(row.volume_key, row.path, mounts) if mounts else None
+        photos.append((photo_id, copy, source or row.path))
     folder = os.path.abspath(os.path.expanduser(folder))
     return library.add_export_job(
         json.dumps(dataclasses.asdict(options)),
