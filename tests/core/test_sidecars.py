@@ -553,6 +553,7 @@ def test_a_schema_9_library_notes_what_was_marked_before(tmp_path):
         "ALTER TABLE photos DROP COLUMN stack_id; "
         "ALTER TABLE photos DROP COLUMN stack_position; DROP TABLE stacks; "
         "DROP TABLE tether_items; DROP TABLE tether_sessions; "
+        "DROP TABLE export_items; DROP TABLE export_jobs; "
         "PRAGMA user_version = 9;"
     )
     raw.close()

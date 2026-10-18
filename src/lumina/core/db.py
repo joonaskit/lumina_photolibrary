@@ -431,6 +431,33 @@ def _migrate_13(db):
     )
 
 
+def _migrate_14(db):
+    _script(
+        db,
+        """
+        -- An export of photos to a folder (core/exporting.py): a job, how to write the
+        -- files, and a row a file, so a quit or a crash resumes where it was. The
+        -- destinations are anywhere the user chose, not in a library volume
+        CREATE TABLE export_jobs (
+            job_id INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+            options TEXT NOT NULL,
+            replace INTEGER NOT NULL DEFAULT 0,
+            folder TEXT NOT NULL
+        );
+        CREATE TABLE export_items (
+            id INTEGER PRIMARY KEY,
+            job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+            copy INTEGER NOT NULL DEFAULT 0,
+            destination TEXT NOT NULL,
+            state INTEGER NOT NULL DEFAULT 0,
+            message TEXT
+        );
+        CREATE INDEX export_items_job ON export_items (job_id, state);
+        """,
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
 _MIGRATIONS = [
     _migrate_1,
@@ -446,6 +473,7 @@ _MIGRATIONS = [
     _migrate_11,
     _migrate_12,
     _migrate_13,
+    _migrate_14,
 ]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -529,6 +557,21 @@ class Job:
 
 # An import item's `state`
 TO_COPY, COPIED, NOT_COPIED = 0, 1, 2
+
+
+@dataclass(frozen=True)
+class ExportItem:
+    """A file to export: a photo's edit (`copy` 0 is its own) to `destination`, a full
+    path. `volume_key` and `path` say where the photo is."""
+
+    id: int
+    photo_id: int
+    copy: int
+    destination: str
+    state: int
+    message: str | None
+    volume_key: str
+    path: str
 
 
 @dataclass(frozen=True)
@@ -1808,6 +1851,55 @@ class Library:
             self.db.execute(
                 "UPDATE import_items SET state = ?, path = ?, message = ? WHERE id = ?",
                 (state, path.strip("/") if path else None, message, item_id),
+            )
+
+    # Exports
+
+    def add_export_job(self, options_json, replace, folder, items):
+        """An export job, queued, writing `items` [(photo id, copy, destination)] to
+        `folder` as `options_json` says; with `replace`, over files that exist. In one
+        transaction. Returns the job's id."""
+        now = time.time()
+        with self.db:
+            job = self.db.execute(
+                "INSERT INTO jobs (kind, state, total, created_at, updated_at) "
+                "VALUES ('export', ?, ?, ?, ?)",
+                (QUEUED, len(items), now, now),
+            ).lastrowid
+            self.db.execute(
+                "INSERT INTO export_jobs (job_id, options, replace, folder) VALUES (?, ?, ?, ?)",
+                (job, options_json, int(bool(replace)), folder),
+            )
+            self.db.executemany(
+                "INSERT INTO export_items (job_id, photo_id, copy, destination) "
+                "VALUES (?, ?, ?, ?)",
+                [(job, photo, copy, destination) for photo, copy, destination in items],
+            )
+        return job
+
+    def export_job(self, job_id):
+        """(options JSON, replace, folder) of an export job, or None."""
+        row = self.db.execute(
+            "SELECT options, replace, folder FROM export_jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        return (row[0], bool(row[1]), row[2]) if row is not None else None
+
+    def export_items(self, job_id, state=None):
+        """The ExportItems of export job `job_id`, in order; only those in `state`, with one."""
+        where, args = ("AND i.state = ?", (job_id, state)) if state is not None else ("", (job_id,))
+        rows = self.db.execute(
+            "SELECT i.id, i.photo_id, i.copy, i.destination, i.state, i.message, v.key, p.path "
+            "FROM export_items i JOIN photos p ON p.id = i.photo_id "
+            f"JOIN volumes v ON v.id = p.volume_id WHERE i.job_id = ? {where} ORDER BY i.id",
+            args,
+        )
+        return [ExportItem(*row) for row in rows]
+
+    def set_export_item(self, item_id, state, message=None):
+        with self.db:
+            self.db.execute(
+                "UPDATE export_items SET state = ?, message = ? WHERE id = ?",
+                (state, message, item_id),
             )
 
     # Shooting tethered

@@ -305,6 +305,7 @@ def test_a_schema_8_library_gets_keywords_and_collections_with_everything_kept(t
         "ALTER TABLE photos DROP COLUMN stack_id; "
         "ALTER TABLE photos DROP COLUMN stack_position; DROP TABLE stacks; "
         "DROP TABLE tether_items; DROP TABLE tether_sessions; "
+        "DROP TABLE export_items; DROP TABLE export_jobs; "
         "PRAGMA user_version = 8;"
     )
     raw.close()
