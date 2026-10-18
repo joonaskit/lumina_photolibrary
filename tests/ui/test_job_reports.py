@@ -18,6 +18,11 @@ class FakeActivities(QObject):
         super().__init__()
         self.shown = {}
         self.closed = None
+        self.cleared = 0
+
+    def clear(self):
+        self.shown.clear()
+        self.cleared += 1
 
     def set(self, activity_id, fields):
         self.shown[activity_id] = fields
@@ -201,3 +206,28 @@ def test_at_the_exit_the_island_is_told_the_jobs_carry_on(qapp):
     reports.close()
 
     assert activities.closed == QUIT_FIELDS
+
+
+def test_turned_off_the_island_is_cleared_and_shown_nothing(qtbot):
+    reports, activities, _notifier, _clock, service, _state = made(show_after_ms=0)
+    service.job_changed.emit(status())
+    qtbot.waitUntil(lambda: "scan-4" in activities.shown)
+
+    reports.set_island(False)
+    service.job_changed.emit(status(done=60))
+    service.job_changed.emit(status(FAILED_JOB, job=5))
+    assert activities.cleared == 1 and activities.shown == {}
+
+    # Turned on again: the job that runs on shows at its next progress
+    reports.set_island(True)
+    service.job_changed.emit(status(done=70))
+    assert activities.shown["scan-4"]["text"] == "70 of 200"
+
+
+def test_turned_off_no_notification_is_sent(qapp):
+    reports, _activities, notifier, _clock, service, _state = made()
+
+    reports.set_notify(False)
+    service.job_changed.emit(status(FAILED_JOB))
+
+    assert notifier.sent == []

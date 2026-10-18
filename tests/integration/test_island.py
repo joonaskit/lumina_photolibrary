@@ -219,3 +219,20 @@ def test_the_actions_go_as_ids_and_labels_and_errors_by_code():
     }
     assert island.error_code("org.quickshell.IslandActivities.Error.RateLimited") == "RateLimited"
     assert island.error_code("org.freedesktop.DBus.Error.NoReply") == "Failed"
+
+
+def test_cleared_what_we_show_is_dismissed(qapp):
+    client, activities = made()
+    activities.set("scan-1", running(1))
+    client.reply()
+    activities.set("scan-2", {"state": "failed", "title": "Could not scan", "error": "x"})
+    client.reply()
+
+    activities.clear()
+    activities.set("scan-1", running(2))
+
+    assert client.sent()[2:] == [
+        ("Dismiss", "scan-1", None),
+        ("Dismiss", "scan-2", None),
+        ("Show", "scan-1", running(2)),
+    ]

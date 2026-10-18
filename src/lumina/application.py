@@ -122,6 +122,8 @@ def run(paths=(), restore=None):
         notifier,
         lambda: app.applicationState() == Qt.ApplicationState.ApplicationActive,
         parent=app,
+        island=settings.island_jobs(),
+        notify=settings.notify_jobs(),
     )
     watch_services(reports, service, search, merge, importer, exporter)
     # Before the jobs stop: the island is told they will carry on at the next start
@@ -146,6 +148,7 @@ def run(paths=(), restore=None):
         tether=tether,
         camera=camera,
         exporter=exporter,
+        reports=reports,
     )
     backups.failed.connect(lambda text: window.statusBar().showMessage(text, 15000))
     instance.opened.connect(lambda wanted: _open(window, wanted))

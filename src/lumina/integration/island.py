@@ -255,6 +255,14 @@ class Activities(QObject):
         if activity.phase in (_Phase.SHOWING, _Phase.SHOWN) and activity.final:
             self._client.dismiss(activity_id)
 
+    def clear(self):
+        """Nothing of ours in the island any more: what it shows is dismissed."""
+        for activity in self._activities.values():
+            self._stop_timer(activity)
+            if activity.phase in (_Phase.SHOWING, _Phase.SHOWN):
+                self._client.dismiss(activity.id)
+        self._activities.clear()
+
     def close(self, fields):
         """For the app's exit: what is running in the island is told `fields` (a
         cancelled state, say), and waited for, since the process ends next."""

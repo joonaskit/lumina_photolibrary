@@ -79,10 +79,13 @@ class JobReports(QObject):
         clock=time.monotonic,
         show_after_ms=SHOW_AFTER_MS,
         notify_after=NOTIFY_AFTER_SECONDS,
+        island=True,
+        notify=True,
     ):
         """`activities` is the island's (`integration.island.Activities`), `notifier`
         the desktop's (`integration.notifications.Notifier`), `is_active()` whether
-        Lumina is the app the user is in."""
+        Lumina is the app the user is in. `island` and `notify`: whether each is used,
+        as the settings say (`set_island`, `set_notify`)."""
         super().__init__(parent)
         self._activities = activities
         self._notifier = notifier
@@ -90,9 +93,28 @@ class JobReports(QObject):
         self._clock = clock
         self._show_after = show_after_ms
         self._notify_after = notify_after
+        self.island = island
+        self.notify = notify
         # Activity id -> the job, while it runs
         self._jobs = {}
         activities.action_invoked.connect(self._on_action)
+
+    def set_island(self, on):
+        """Show the jobs in the island, or not: turned off, ours leave it at once;
+        turned on, a job that runs on shows at its next progress."""
+        if on == self.island:
+            return
+        self.island = on
+        if not on:
+            for job in self._jobs.values():
+                if job.timer is not None:
+                    job.timer.stop()
+                    job.timer = None
+                job.shown = False
+            self._activities.clear()
+
+    def set_notify(self, on):
+        self.notify = on
 
     def watch(self, signal, source):
         """Report the JobStatus `signal` tells, of `source`'s jobs."""
@@ -122,6 +144,8 @@ class JobReports(QObject):
                 return
             job = self._jobs[key] = _Job(source, self._clock(), status)
         job.status = status
+        if not self.island:
+            return
         if job.shown:
             self._activities.set(key, self._fields(source, status))
             return
@@ -136,7 +160,7 @@ class JobReports(QObject):
 
     def _show(self, key):
         job = self._jobs.get(key)
-        if job is None or job.shown:
+        if job is None or job.shown or not self.island:
             return
         if job.timer is not None:
             job.timer.stop()
@@ -149,10 +173,10 @@ class JobReports(QObject):
         if job is not None and job.timer is not None:
             job.timer.stop()
         failed = status.state == FAILED_JOB
-        if failed or (job is not None and job.shown):
+        if self.island and (failed or (job is not None and job.shown)):
             self._activities.set(key, self._fields(source, status))
         ran = self._clock() - job.started if job is not None else 0.0
-        if status.state == CANCELLED or self._is_active():
+        if not self.notify or status.state == CANCELLED or self._is_active():
             return
         if failed or ran >= self._notify_after:
             self._notifier.notify(source.words(status), self._failures(status), urgent=failed)
