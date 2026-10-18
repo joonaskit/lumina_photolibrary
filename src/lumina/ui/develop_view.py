@@ -29,9 +29,48 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from lumina.core.edit.params import (
+    BAND_FIELDS,
+    BANDS,
+    BASIC,
+    BASIC_FIELDS,
+    BLENDING,
+    COLOUR,
+    COLOUR_FIELDS,
+    DEFAULT_BLENDING,
+    DEFAULT_FEATHER,
+    DEFAULT_GRAIN_SIZE,
+    DEFAULT_MIDPOINT,
+    DEFAULT_NOISE_DETAIL,
+    DEFAULT_SHARPEN_DETAIL,
+    DEFAULT_SHARPEN_RADIUS,
+    DESATURATION,
+    EXPOSURE,
+    GRADING,
+    HSL,
+    HUE,
+    LENS,
+    MATTE_BLACK,
+    MATTE_WHITE,
+    PERCENT,
+    PERSPECTIVE,
+    PRESENCE,
+    PRESENCE_FIELDS,
+    RANGES,
+    SHARPEN_AMOUNT,
+    SHARPEN_RADIUS,
+    STRAIGHTEN,
+    VIGNETTE,
+    WARMTH,
+    WHEEL,
+    WHEEL_FIELDS,
+    Crop,
+    Curves,
+    Matte,
+    Params,
+)
 from lumina.integration import style
 from lumina.qt_models import develop
-from lumina.qt_models.develop import Crop, Curves, Matte
 from lumina.ui import settings
 from lumina.ui.controls import ScrollStrip, ValueSlider, wheel_when_focused
 from lumina.ui.crop_frame import dragged, dragged_to_ratio, reshaped
@@ -49,13 +88,13 @@ _GRAB = 12
 # view is rendered
 _REGION_DELAY = 80
 _CHANNELS = (("rgb", "RGB"), ("red", "R"), ("green", "G"), ("blue", "B"))
-_BANDS = tuple(zip(develop.BANDS, "ROYGABPM", strict=True))
+_BANDS = tuple(zip(BANDS, "ROYGABPM", strict=True))
 # The colour of a band's button border: its hue, as the band acts on it, in the middle
 # of the range of strengths. A hue is the band's meaning, not a theme colour
 _BAND_COLOUR = (0.65, 0.9)
 # How much of its colour fills the band button that is chosen
 _TINT = 0.45
-_RANGES = tuple((name, name.capitalize()) for name in develop.RANGES)
+_RANGES = tuple((name, name.capitalize()) for name in RANGES)
 # The crop's aspect ratios: what is shown, and the long side over the short (a number),
 # "original" (the photo's own), "custom" (asked for) or None (free)
 _ASPECTS = (
@@ -542,30 +581,24 @@ class DevelopView(QWidget):
         root.addWidget(self.before_button)
 
         layout = self._begin(root, "light", "LIGHT")
-        self.exposure = self._slider(
-            layout, "Exposure", *develop.EXPOSURE, unit=" EV", field="exposure"
-        )
+        self.exposure = self._slider(layout, "Exposure", *EXPOSURE, unit=" EV", field="exposure")
         # Contrast, Highlights, Shadows, Whites, Blacks
         self.basic = {
-            name: self._slider(
-                layout, name.capitalize(), *develop.BASIC, step=1, decimals=0, field=name
-            )
-            for name in develop.BASIC_FIELDS
+            name: self._slider(layout, name.capitalize(), *BASIC, step=1, decimals=0, field=name)
+            for name in BASIC_FIELDS
         }
         layout = self._begin(root, "presence", "PRESENCE")
         # Texture, Clarity, Dehaze
         self.presence = {
-            name: self._slider(
-                layout, name.capitalize(), *develop.PRESENCE, step=1, decimals=0, field=name
-            )
-            for name in develop.PRESENCE_FIELDS
+            name: self._slider(layout, name.capitalize(), *PRESENCE, step=1, decimals=0, field=name)
+            for name in PRESENCE_FIELDS
         }
         layout = self._begin(root, "sharpening", "SHARPENING")
         self.sharpening = {
             "amount": self._slider(
                 layout,
                 "Amount",
-                *develop.SHARPEN_AMOUNT,
+                *SHARPEN_AMOUNT,
                 step=1,
                 decimals=0,
                 field="sharpening.amount",
@@ -573,24 +606,24 @@ class DevelopView(QWidget):
             "radius": self._slider(
                 layout,
                 "Radius",
-                *develop.SHARPEN_RADIUS,
+                *SHARPEN_RADIUS,
                 step=0.1,
                 decimals=1,
                 unit=" px",
                 field="sharpening.radius",
-                default=develop.DEFAULT_SHARPEN_RADIUS,
+                default=DEFAULT_SHARPEN_RADIUS,
             ),
             "detail": self._slider(
                 layout,
                 "Detail",
-                *develop.PERCENT,
+                *PERCENT,
                 step=1,
                 decimals=0,
                 field="sharpening.detail",
-                default=develop.DEFAULT_SHARPEN_DETAIL,
+                default=DEFAULT_SHARPEN_DETAIL,
             ),
             "masking": self._slider(
-                layout, "Masking", *develop.PERCENT, step=1, decimals=0, field="sharpening.masking"
+                layout, "Masking", *PERCENT, step=1, decimals=0, field="sharpening.masking"
             ),
         }
         layout = self._begin(root, "noise", "NOISE REDUCTION")
@@ -598,7 +631,7 @@ class DevelopView(QWidget):
             "luminance": self._slider(
                 layout,
                 "Luminance",
-                *develop.PERCENT,
+                *PERCENT,
                 step=1,
                 decimals=0,
                 field="noise.luminance",
@@ -606,29 +639,27 @@ class DevelopView(QWidget):
             "detail": self._slider(
                 layout,
                 "Detail",
-                *develop.PERCENT,
+                *PERCENT,
                 step=1,
                 decimals=0,
                 field="noise.detail",
-                default=develop.DEFAULT_NOISE_DETAIL,
+                default=DEFAULT_NOISE_DETAIL,
             ),
             "colour": self._slider(
-                layout, "Colour", *develop.PERCENT, step=1, decimals=0, field="noise.colour"
+                layout, "Colour", *PERCENT, step=1, decimals=0, field="noise.colour"
             ),
         }
         layout = self._begin(root, "white_balance", "WHITE BALANCE")
         self.temperature = self._slider(
-            layout, "Temperature", *develop.WARMTH, step=1, decimals=0, field="temperature"
+            layout, "Temperature", *WARMTH, step=1, decimals=0, field="temperature"
         )
-        self.tint = self._slider(layout, "Tint", *develop.WARMTH, step=1, decimals=0, field="tint")
+        self.tint = self._slider(layout, "Tint", *WARMTH, step=1, decimals=0, field="tint")
 
         layout = self._begin(root, "colour", "COLOUR")
         # Vibrance, Saturation
         self.colour = {
-            name: self._slider(
-                layout, name.capitalize(), *develop.COLOUR, step=1, decimals=0, field=name
-            )
-            for name in develop.COLOUR_FIELDS
+            name: self._slider(layout, name.capitalize(), *COLOUR, step=1, decimals=0, field=name)
+            for name in COLOUR_FIELDS
         }
 
         layout = self._begin(root, "hsl", "HSL")
@@ -640,9 +671,9 @@ class DevelopView(QWidget):
         # Hue, Saturation, Luminance of the band chosen above
         self.hsl = {
             name: self._slider(
-                layout, name.capitalize(), *develop.HSL, step=1, decimals=0, field=f"hsl.{name}"
+                layout, name.capitalize(), *HSL, step=1, decimals=0, field=f"hsl.{name}"
             )
-            for name in develop.BAND_FIELDS
+            for name in BAND_FIELDS
         }
 
         layout = self._begin(root, "grading", "COLOUR GRADING")
@@ -652,25 +683,25 @@ class DevelopView(QWidget):
             name: self._slider(
                 layout,
                 name.capitalize(),
-                *{"hue": develop.HUE, "saturation": develop.WHEEL}.get(name, develop.GRADING),
+                *{"hue": HUE, "saturation": WHEEL}.get(name, GRADING),
                 step=1,
                 decimals=0,
                 unit="°" if name == "hue" else "",
                 field=f"grading.{name}",
             )
-            for name in develop.WHEEL_FIELDS
+            for name in WHEEL_FIELDS
         }
         self.blending = self._slider(
             layout,
             "Blending",
-            *develop.BLENDING,
+            *BLENDING,
             step=1,
             decimals=0,
             field="grading.blending",
-            default=develop.DEFAULT_BLENDING,
+            default=DEFAULT_BLENDING,
         )
         self.balance = self._slider(
-            layout, "Balance", *develop.GRADING, step=1, decimals=0, field="grading.balance"
+            layout, "Balance", *GRADING, step=1, decimals=0, field="grading.balance"
         )
 
         layout = self._begin(root, "curve", "TONE CURVE")
@@ -699,48 +730,48 @@ class DevelopView(QWidget):
         layout.addWidget(reset_curve, 0, Qt.AlignmentFlag.AlignRight)
 
         layout = self._begin(root, "matte", "MATTE")
-        self.matte_black = self._slider(layout, "Lift blacks", *develop.MATTE_BLACK, field="black")
-        self.matte_white = self._slider(layout, "Lower whites", *develop.MATTE_WHITE, field="white")
+        self.matte_black = self._slider(layout, "Lift blacks", *MATTE_BLACK, field="black")
+        self.matte_white = self._slider(layout, "Lower whites", *MATTE_WHITE, field="white")
         self.matte_desaturation = self._slider(
-            layout, "Desaturate shadows", *develop.DESATURATION, field="shadow_desaturation"
+            layout, "Desaturate shadows", *DESATURATION, field="shadow_desaturation"
         )
 
         layout = self._begin(root, "effects", "EFFECTS")
         self.vignette = {
             "amount": self._slider(
-                layout, "Vignette", *develop.VIGNETTE, step=1, decimals=0, field="vignette.amount"
+                layout, "Vignette", *VIGNETTE, step=1, decimals=0, field="vignette.amount"
             ),
             "midpoint": self._slider(
                 layout,
                 "Midpoint",
-                *develop.PERCENT,
+                *PERCENT,
                 step=1,
                 decimals=0,
                 field="vignette.midpoint",
-                default=develop.DEFAULT_MIDPOINT,
+                default=DEFAULT_MIDPOINT,
             ),
             "feather": self._slider(
                 layout,
                 "Feather",
-                *develop.PERCENT,
+                *PERCENT,
                 step=1,
                 decimals=0,
                 field="vignette.feather",
-                default=develop.DEFAULT_FEATHER,
+                default=DEFAULT_FEATHER,
             ),
         }
         self.grain = {
             "amount": self._slider(
-                layout, "Grain", *develop.PERCENT, step=1, decimals=0, field="grain.amount"
+                layout, "Grain", *PERCENT, step=1, decimals=0, field="grain.amount"
             ),
             "size": self._slider(
                 layout,
                 "Grain size",
-                *develop.PERCENT,
+                *PERCENT,
                 step=1,
                 decimals=0,
                 field="grain.size",
-                default=develop.DEFAULT_GRAIN_SIZE,
+                default=DEFAULT_GRAIN_SIZE,
             ),
         }
 
@@ -810,7 +841,7 @@ class DevelopView(QWidget):
             name: self._slider(
                 layout,
                 title,
-                *develop.LENS,
+                *LENS,
                 step=1,
                 decimals=0,
                 unit="%",
@@ -857,7 +888,7 @@ class DevelopView(QWidget):
         self.straighten = self._slider(
             layout,
             "Straighten",
-            *develop.STRAIGHTEN,
+            *STRAIGHTEN,
             step=0.1,
             decimals=1,
             unit="°",
@@ -870,7 +901,7 @@ class DevelopView(QWidget):
             name: self._slider(
                 layout,
                 title,
-                *develop.PERSPECTIVE,
+                *PERSPECTIVE,
                 step=1.0,
                 decimals=0,
                 field=f"perspective.{name}",
@@ -1018,15 +1049,15 @@ class DevelopView(QWidget):
             }
             values[field] = value
             return params.with_changes(matte=Matte(**values))
-        if field in develop.BASIC_FIELDS:
+        if field in BASIC_FIELDS:
             return params.with_changes(basic=replace(params.basic, **{field: value}))
         if field.startswith("sharpening."):
             return params.with_changes(sharpening=replace(params.sharpening, **{field[11:]: value}))
         if field.startswith("noise."):
             return params.with_changes(noise=replace(params.noise, **{field[6:]: value}))
-        if field in develop.PRESENCE_FIELDS:
+        if field in PRESENCE_FIELDS:
             return params.with_changes(presence=replace(params.presence, **{field: value}))
-        if field in develop.COLOUR_FIELDS:
+        if field in COLOUR_FIELDS:
             return params.with_changes(colour=replace(params.colour, **{field: value}))
         if field.startswith("vignette."):
             return params.with_changes(vignette=replace(params.vignette, **{field[9:]: value}))
@@ -1162,7 +1193,7 @@ class DevelopView(QWidget):
 
     def _show_lens(self, params=None):
         """The lens section: on or off, which lens, and the amounts."""
-        params = params if isinstance(params, develop.Params) else self.session.params
+        params = params if isinstance(params, Params) else self.session.params
         session = self.session
         usable = params.lens.profile is not None or session.detected_lens() is not None
         self.lens_on.setEnabled(usable)
@@ -1209,7 +1240,7 @@ class DevelopView(QWidget):
 
     def _show_mixers(self, params=None):
         """The sliders of the band and the range chosen, and blending and balance."""
-        params = params if isinstance(params, develop.Params) else self.session.params
+        params = params if isinstance(params, Params) else self.session.params
         band = getattr(params.hsl, self._chosen(self.band_group))
         for name, slider in self.hsl.items():
             slider.set_value(getattr(band, name))

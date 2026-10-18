@@ -2,7 +2,7 @@
 each frame the camera reports into the session's folder, run in a process of its own
 (qt_models/tether.py) and spoken to through two queues.
 
-What the author's EOS 90D does (PLAN.md has the rest): a frame from its own button or
+What the author's EOS 90D does (docs/history.md has the rest): a frame from its own button or
 from the app comes as a file event, from the card's folder ("IMG_6353.CR3") when the
 capture target is the memory card, or as "capt0000.cr3" in the camera's memory, never
 written to the card, when it is the camera's memory. So:

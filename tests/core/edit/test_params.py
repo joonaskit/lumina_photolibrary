@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from lumina.core.edit import params
+from lumina.core.edit import lenscorrect, params
 from lumina.core.edit.params import (
     Band,
     Basic,
@@ -421,7 +421,7 @@ def test_a_preset_can_keep_sharpening_and_noise_reduction():
 
 
 def with_lens():
-    from lumina.core.edit.lenscorrect import LensProfile
+    from lumina.core.edit.params import LensProfile
 
     profile = LensProfile(
         "Canon EF-S 18-135mm f/3.5-5.6 IS USM",
@@ -446,19 +446,22 @@ def test_an_edit_from_before_lens_corrections_has_them_off():
     edit = params.from_dict(old)
 
     assert edit.lens == params.Lens() and not edit.lens.enabled
-    assert edit.lens.correction() is None
+    assert lenscorrect.correction(edit.lens) is None
     assert edit.exposure == 0.5
 
 
 def test_the_lens_needs_a_profile_and_an_amount():
     edit = with_lens()
 
-    assert edit.lens.correction() is not None
-    assert edit.lens.correction().distortion == pytest.approx(0.8)
-    assert replace_lens(edit, enabled=False).lens.correction() is None
-    assert replace_lens(edit, profile=None).lens.correction() is None
+    assert lenscorrect.correction(edit.lens) is not None
+    assert lenscorrect.correction(edit.lens).distortion == pytest.approx(0.8)
+    assert lenscorrect.correction(replace_lens(edit, enabled=False).lens) is None
+    assert lenscorrect.correction(replace_lens(edit, profile=None).lens) is None
     assert (
-        replace_lens(edit, distortion=0.0, vignetting=0.0, aberration=0.0).lens.correction() is None
+        lenscorrect.correction(
+            replace_lens(edit, distortion=0.0, vignetting=0.0, aberration=0.0).lens
+        )
+        is None
     )
 
 

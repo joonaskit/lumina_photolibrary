@@ -129,7 +129,7 @@ def _read(library, added, tool, exiftool, on_read):
             # Left without details, as a scan leaves them; the next scan reads them
             on_read(added, failures)
             return None
-    failures, stopped = scanning.read_details(library, dict(added), tool)
+    failures, stopped, _gone = scanning.read_details(library, dict(added), tool)
     if stopped is not None:
         tool.close()
         tool = None

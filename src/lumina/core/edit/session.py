@@ -16,6 +16,7 @@ import numpy as np
 
 from lumina.core import colour_checker, dcp, lensdb, profile_fit, raw
 from lumina.core.edit import colour_profile, pipeline
+from lumina.core.edit import export as _export
 from lumina.core.edit import params as edit_params
 from lumina.core.edit.source import EditSource, fitted
 
@@ -282,6 +283,18 @@ def histogram(pixels):
     luma = (pixels.astype(np.float32) @ pipeline.LUMA).round().astype(np.uint8)
     counts.append(np.bincount(luma.ravel(), minlength=256))
     return np.stack(counts)
+
+
+def export_open(path, params, destination, options, replace):
+    """Export the photo open here, from the decode it is held as: no second decode of it in
+    another process. None, writing nothing, when it is not the photo open (it was closed
+    meanwhile); else the destination. Raises as edit/export.py's `export`."""
+    if _open is None or _open.path != path:
+        return None
+    source = _open
+    return _export.export(
+        path, params, destination, options, replace, linear=source.full, camera=source.camera
+    )
 
 
 def close():

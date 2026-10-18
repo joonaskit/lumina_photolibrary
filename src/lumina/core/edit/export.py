@@ -18,33 +18,16 @@ import os
 import struct
 import tempfile
 import zlib
-from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
 from PIL import Image, ImageCms
 
 from lumina.core.edit import pipeline, source
+from lumina.core.edit.export_options import ExportOptions
 from lumina.core.errors import PhotoError
 
-FORMATS = {"jpeg": (8,), "png": (8, 16), "tiff": (8, 16)}
-EXTENSIONS = {"jpeg": ".jpg", "png": ".png", "tiff": ".tif"}
 _ROWS_PER_STRIP = 64
-
-
-@dataclass(frozen=True)
-class ExportOptions:
-    format: str = "jpeg"
-    bits: int = 8
-    quality: int = 92
-    # Longest side in pixels, or None for full size
-    max_side: int | None = None
-
-    def check(self):
-        if self.format not in FORMATS:
-            raise ValueError(f"unknown format {self.format!r}")
-        if self.bits not in FORMATS[self.format]:
-            raise ValueError(f"{self.format} can't hold {self.bits} bits")
 
 
 class ExportExists(PhotoError):
@@ -53,15 +36,6 @@ class ExportExists(PhotoError):
 
 class ExportCancelled(Exception):
     pass
-
-
-def suggested_name(source_path, options, copy=0):
-    """The file name for an export: the photo's, with `-copy2` for virtual copy 2, so a
-    copy does not land on the name of the photo's own export."""
-    stem = os.path.splitext(os.path.basename(source_path))[0]
-    if copy:
-        stem += f"-copy{copy}"
-    return stem + EXTENSIONS[options.format]
 
 
 def export(
@@ -98,10 +72,28 @@ def export(
     if options.max_side:
         linear = source.fitted(linear, params, options.max_side)
     check_stop()
+    _check_size(destination, options, linear.shape[1], linear.shape[0], params)
     pixels = pipeline.render(linear, params, bits=options.bits, full=full, camera=camera)
     check_stop()
     _write(pixels, destination, options, replace, source_path, check_stop)
     return destination
+
+
+# A classic TIFF holds 32-bit offsets: its pixels and its header must end below 4 GiB
+_TIFF_LIMIT = 4 * 1024**3 - 1024**2
+
+
+def _check_size(destination, options, width, height, params):
+    """Refuse, before the render is made, a TIFF that its format can't hold."""
+    if options.format != "tiff":
+        return
+    width, height = pipeline.output_size(width, height, params)
+    if width * height * 3 * (options.bits // 8) > _TIFF_LIMIT:
+        raise PhotoError(
+            destination,
+            f"is too large for a TIFF ({width} x {height} pixels at {options.bits} bits "
+            "is over 4 GB): export a smaller size, or as PNG",
+        )
 
 
 def _refuse_original(source_path, destination):

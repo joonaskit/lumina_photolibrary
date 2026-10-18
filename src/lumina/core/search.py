@@ -1,6 +1,6 @@
 """Search: the photos' vectors in memory, ranked against a query by cosine.
 
-No vector store (PLAN.md, Phase 4 decisions): the vectors are rows of the library
+No vector store (docs/history.md, Phase 4 decisions): the vectors are rows of the library
 database, read once into one float32 matrix, and a search is one matrix product,
 about 12 ms for 200k photos. `refresh` reads only the rows written since the last
 one, so the index follows an indexing job as it goes.
@@ -13,7 +13,7 @@ import numpy as np
 
 from lumina.core import embed
 
-# Below this match probability a photo is not a result for a text (PLAN.md: tuned
+# Below this match probability a photo is not a result for a text (docs/history.md: tuned
 # on a real library in 4b)
 TEXT_FLOOR = 0.001
 
@@ -56,17 +56,21 @@ class Index:
 
     def rank(self, photos, query, floor=None):
         """[(photo, cosine)] of `photos` (rows with a `content_id`), best first. With
-        `floor`, only those of at least that cosine."""
+        `floor`, only those of at least that cosine. Equal ones keep their order.
+
+        Sorted by numpy, which lets go of the GIL: sorting 200k pairs as a list holds it
+        for a tenth of a second, which the window waits through (#106)."""
         cosines = self.cosines(query)
-        found = []
-        for photo in photos:
-            row = self._rows.get(photo.content_id)
-            if row is not None:
-                found.append((photo, float(cosines[row])))
+        get = self._rows.get
+        rows = np.fromiter((get(photo.content_id, -1) for photo in photos), np.intp, len(photos))
+        (kept,) = np.nonzero(rows >= 0)
+        scores = cosines[rows[kept]]
         if floor is not None:
-            found = [pair for pair in found if pair[1] >= floor]
-        found.sort(key=lambda pair: -pair[1])
-        return found
+            above = scores >= floor
+            kept, scores = kept[above], scores[above]
+        order = np.argsort(-scores, kind="stable")
+        best = zip(kept[order].tolist(), scores[order].tolist(), strict=True)
+        return [(photos[i], cosine) for i, cosine in best]
 
     def _grow(self, needed):
         if needed <= len(self._matrix):

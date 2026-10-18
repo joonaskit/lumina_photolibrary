@@ -25,10 +25,10 @@ import time
 
 from lumina.core import db as dbm
 from lumina.core import metadata, scanner, sidecars, volumes
-from lumina.core.errors import PhotoError
+from lumina.core.dbtypes import DETAILS, FINDING, SIDECARS
+from lumina.core.errors import NotConnected, PhotoError
 from lumina.core.fingerprint import content_id
 
-SCAN = "scan"
 _WRITE_EVERY = 500
 _DETAILS_BATCH = 50
 # How often progress is written to the database, in seconds
@@ -40,12 +40,6 @@ GENTLE_FROM = 2000
 _REST_RATIO = 1.0
 _REST_MOST = 5.0
 _REST_STEP = 0.1
-
-FINDING, DETAILS, SIDECARS = "finding", "details", sidecars.SIDECARS
-
-
-class NotConnected(Exception):
-    """The folder's volume is not mounted: the job waits for it."""
 
 
 def rest(seconds, should_stop):
@@ -84,13 +78,18 @@ def scan(
     gentle=False,
     rest=rest,
     read_sidecars=False,
+    only=None,
 ):
     """Run scan job `job_id` for folder `folder_id` to its end and return its state.
     `mounts` are the system's mounts (volumes.read_mounts()); `exiftool` makes an
     ExifTool. With `gentle`, a large scan rests between batches (`rest(seconds,
     should_stop)`) and reads at a low priority. With `read_sidecars`, the sidecars beside
-    the photos that changed are taken in last (core/sidecars.py). Raises NotConnected,
-    leaving the job queued, when the folder's volume is not mounted."""
+    the photos that changed are taken in last (core/sidecars.py). With `only`, a set of
+    directories (absolute) where something changed, just those are looked at, each
+    without what is below it, and a directory that is gone makes the photos in it and
+    below it missing: a photo copied into a folder of 100,000 does not cost a walk of
+    all of it. Raises NotConnected, leaving the job queued, when the folder's volume is
+    not mounted."""
     folder = library.folder(folder_id)
     if folder is None:
         library.update_job(job_id, state=dbm.FAILED_JOB, message="The folder is not in the library")
@@ -109,7 +108,7 @@ def scan(
         job.end(dbm.FAILED_JOB, f"Folder not found: {base}")
         return dbm.FAILED_JOB
 
-    found = _find(library, job, folder, volume, base, should_stop, gentle, rest)
+    found = _find(library, job, folder, volume, base, should_stop, gentle, rest, only)
     if found is None:
         job.end(dbm.CANCELLED, "Cancelled while finding photos")
         return dbm.CANCELLED
@@ -121,7 +120,7 @@ def scan(
         return dbm.CANCELLED
     state, note, unread = details
     if read_sidecars:
-        taken = _read_sidecars(library, job, folder, base, should_stop)
+        taken = _read_sidecars(library, job, folder, base, should_stop, only)
         if taken is None:
             job.end(dbm.CANCELLED, "Cancelled while reading sidecars")
             return dbm.CANCELLED
@@ -133,7 +132,44 @@ def scan(
     return state
 
 
-def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=rest):
+class _Scope:
+    """The directories a partial scan looks at: `directories` (absolute) of the folder
+    `folder_path` found at `base`."""
+
+    def __init__(self, folder_path, base, directories):
+        self.paths = sorted(directories)
+        self._relative = {_relative(folder_path, base, d) for d in self.paths if d == base}
+        self._relative |= {
+            _relative(folder_path, base, d) for d in self.paths if d.startswith(base + "/")
+        }
+        # Gone since: what was in them, and below them, is missing
+        self._gone = {
+            _relative(folder_path, base, d)
+            for d in self.paths
+            if (d == base or d.startswith(base + "/")) and not os.path.isdir(d)
+        }
+
+    def find(self, should_stop, on_error):
+        for directory in self.paths:
+            if should_stop():
+                return
+            if os.path.isdir(directory):
+                yield from scanner.find_photos_in(directory, on_error, _remove_stale)
+
+    def covers(self, relative):
+        """Whether the photo at `relative` is in a directory looked at, or below one gone."""
+        return relative.rpartition("/")[0] in self._relative or _under_any(relative, self._gone)
+
+
+def _remove_stale(path):
+    """Remove a part file of ours that a crash left beside the photos. Nothing else."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=rest, only=None):
     """Walk the folder. Returns ({"new", "changed", "missing"}: count, failures) or None
     when cancelled."""
     known = library.photo_states(folder.id)
@@ -154,8 +190,16 @@ def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=re
             return True
         return False
 
+    scope = _Scope(folder.path, base, only) if only is not None else None
+    if scope is None:
+        found = scanner.find_photos(
+            base, should_stop, on_error=unreadable_folder, on_stale=_remove_stale
+        )
+    else:
+        found = scope.find(should_stop, unreadable_folder)
+
     worked = time.monotonic()
-    for path in scanner.find_photos(base, should_stop, on_error=unreadable_folder):
+    for path in found:
         relative = _relative(folder.path, base, path)
         try:
             relative.encode("utf-8")
@@ -188,7 +232,10 @@ def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=re
     gone = [
         state[0]
         for relative, state in known.items()
-        if state[3] and relative not in seen and not _under_any(relative, unreadable)
+        if state[3]
+        and relative not in seen
+        and not _under_any(relative, unreadable)
+        and (scope is None or scope.covers(relative))
     ]
     library.mark_missing(gone)
     counts["missing"] = len(gone)
@@ -222,7 +269,10 @@ def _details(library, job, folder, base, should_stop, exiftool, gentle=False, re
             if not batch:
                 break
             paths = {photo: _absolute(folder.path, base, relative) for photo, relative in batch}
-            failed, stopped = read_details(library, paths, tool)
+            failed, stopped, gone = read_details(library, paths, tool)
+            if gone and not os.path.isdir(base):
+                # The drive went while its details were read: the photos wait for it
+                raise NotConnected(folder.label or folder.last_mount or folder.path)
             if stopped is not None:
                 return dbm.FAILED_JOB, f"Reading details stopped: {stopped}", failures + len(failed)
             library.add_failures(job.id, failed)
@@ -237,30 +287,62 @@ def _details(library, job, folder, base, should_stop, exiftool, gentle=False, re
     return dbm.DONE, None, failures
 
 
+def _works(tool):
+    """Whether `tool` answers for a file that is fine (this module's own)."""
+    try:
+        tool.read_many([__file__])
+    except metadata.MetadataUnavailable:
+        return False
+    return True
+
+
+def _read_apart(tool, paths):
+    """({path: Metadata or PhotoError}, the MetadataUnavailable that stopped exiftool or
+    None). When exiftool does not answer or dies on a batch while it still works for a
+    file that is fine, one of the files is the cause: the batch is read in halves, to
+    the single file that does it, which is named as failed. The rest are read."""
+    try:
+        return tool.read_many(paths), None
+    except metadata.MetadataUnavailable as error:
+        if not _works(tool):
+            return {}, error
+        if len(paths) == 1:
+            path = paths[0]
+            return {path: PhotoError(path, f"exiftool did not answer for it ({error})")}, None
+        middle = len(paths) // 2
+        first, stopped = _read_apart(tool, paths[:middle])
+        second, also = _read_apart(tool, paths[middle:])
+        return {**first, **second}, stopped or also
+
+
 def read_details(library, paths, tool):
     """Read the content ids and metadata of the photos {photo id: path} with the ExifTool
     `tool`, and write them. Returns ([(path, message)] of those that could not be read,
-    and the MetadataUnavailable that stopped exiftool, or None). When exiftool stopped,
-    the photos it did not read stay to be read."""
-    read, failed, ids = [], [], {}
+    the MetadataUnavailable that stopped exiftool or None, and the number of photos that
+    were gone). When exiftool stopped, the photos it did not read stay to be read. A
+    photo whose file is gone (a drive unplugged, a card pulled) is not a bad photo: it
+    is marked unavailable with all it has, and read when it is back."""
+    read, failed, ids, gone = [], [], {}, []
     for photo, path in paths.items():
         try:
             ids[photo] = content_id(path)
         except PhotoError as error:
-            failed.append((photo, None, error.message))
-    stopped = None
-    try:
-        results = tool.read_many([paths[photo] for photo in ids])
-    except metadata.MetadataUnavailable as error:
-        results, stopped = {}, error
+            if os.path.exists(path):
+                failed.append((photo, None, error.message))
+            else:
+                gone.append(photo)
+    results, stopped = _read_apart(tool, [paths[photo] for photo in ids])
     for photo, cid in ids.items():
         result = results.get(paths[photo])
-        if isinstance(result, PhotoError):
+        if isinstance(result, PhotoError) and not os.path.exists(paths[photo]):
+            gone.append(photo)
+        elif isinstance(result, PhotoError):
             failed.append((photo, cid, result.message))
         elif result is not None:
             read.append((photo, cid, result))
     library.write_metadata(read, failed)
-    return [(paths[photo], message) for photo, _cid, message in failed], stopped
+    library.mark_missing(gone)
+    return [(paths[photo], message) for photo, _cid, message in failed], stopped, len(gone)
 
 
 # A tethered folder (#57): photos taken in as each is written, without walking the folder
@@ -335,7 +417,7 @@ def take_in(library, folder, volume, base, files, edit_json=None):
     return [(state[0], paths[relative]) for relative, state in ids.items() if state is not None]
 
 
-def _read_sidecars(library, job, folder, base, should_stop):
+def _read_sidecars(library, job, folder, base, should_stop, only=None):
     """Take in sidecars that changed. Returns (a note for the summary, failures) or None
     when cancelled."""
     job.progress(SIDECARS, 0, None, force=True)
@@ -345,6 +427,7 @@ def _read_sidecars(library, job, folder, base, should_stop):
         lambda relative: _absolute(folder.path, base, relative),
         should_stop,
         lambda done, total: job.progress(SIDECARS, done, total),
+        within=_Scope(folder.path, base, only).covers if only is not None else None,
     )
     library.add_failures(job.id, result.failures)
     if should_stop():

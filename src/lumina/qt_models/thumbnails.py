@@ -75,10 +75,11 @@ class Thumbnails(QObject):
         icon = self._icons.get(key)
         return icon.pixmap(THUMB_SIDE) if icon is not None else None
 
-    def icon(self, key, path, content_id=None, edit_json=None):
+    def icon(self, key, path, content_id=None, edit=None):
         """The thumbnail of `key` if made, else a placeholder while it is made. `path`
         is None for a photo that can't be read now: then only the cache is looked in.
-        `edit_json` is the photo's edit: the key must change when it does."""
+        `edit` is the photo's edit as parameters JSON, or a function that reads it, called
+        only when the thumbnail is to be made: the key must change when the edit does."""
         icon = self._icons.get(key)
         if icon is not None:
             self._icons.move_to_end(key)
@@ -94,6 +95,7 @@ class Thumbnails(QObject):
                 return self._offline_icon()
             # Read here, not in the worker: a worker keeps the environment it began with
             root = thumbs.default_cache_dir()
+            edit_json = edit() if callable(edit) else edit
             if path is not None:
                 call = (thumbs.load_thumbnail, path, THUMB_SIDE, root, edit_json)
             else:

@@ -46,7 +46,7 @@ def photos_window(qtbot, service, drive, count):
     window.resize(1100, 700)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(folder)
+        window.browser.add_folder(folder)
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     return window
 
@@ -107,10 +107,10 @@ def test_the_place_in_the_view_is_kept_to_the_pixel_when_rows_come_in_above(
     row_height = grid.gridSize().height()
     bar.setValue(bar.maximum() // 2 // row_height * row_height + 17)
     qtbot.wait(100)
-    window._save_place()
-    top_id = window._place[0]
+    window.grid_page.save_place()
+    top_id = window.grid_page.place[0]
     before = grid.visualRect(model.index(model.row_of(top_id))).top()
-    assert window._place[2] != 0 or before != 0
+    assert window.grid_page.place[2] != 0 or before != 0
 
     # Photos dated before all the others
     oldest = min(os.stat(path).st_mtime for path in (drive / "Photos").iterdir())
@@ -156,7 +156,7 @@ def test_the_place_in_the_view_is_kept_when_rows_are_removed_far_down(qtbot, ser
     selection.select(model.index(top + 9), QItemSelectionModel.SelectionFlag.Select)
     before = bar.value()
 
-    window.stack_photos()
+    window.stacking.stack_photos()
     qtbot.waitUntil(lambda: model.rowCount() == count - 1, timeout=TIMEOUT)
     qtbot.wait(100)
 

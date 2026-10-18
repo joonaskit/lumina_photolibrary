@@ -7,7 +7,8 @@ from conftest import TIMEOUT
 from PySide6.QtWidgets import QStyleOptionViewItem
 from test_flags import choose, names, open_window
 
-from lumina.qt_models.library_model import PICKED, STACK_ROLE
+from lumina.core.dbtypes import PICKED
+from lumina.qt_models.library_model import STACK_ROLE
 from lumina.ui import badges
 from lumina.ui.main_window import _VIEWER
 
@@ -18,7 +19,7 @@ def wait_for_rows(qtbot, window, count):
 
 def stack_all(qtbot, window, rows=(0, 1, 2)):
     choose(window, *rows)
-    window.stack_photos()
+    window.stacking.stack_photos()
 
 
 def test_a_collapsed_stack_is_one_cell_with_its_top_and_its_size(qtbot, service, drive):
@@ -26,7 +27,7 @@ def test_a_collapsed_stack_is_one_cell_with_its_top_and_its_size(qtbot, service,
     first = names(window)[0]
     choose(window, 0, 1)
 
-    window.stack_photos()
+    window.stacking.stack_photos()
     wait_for_rows(qtbot, window, 2)
 
     assert names(window)[0] == first
@@ -42,12 +43,12 @@ def test_expanding_shows_the_members_after_the_top_and_collapsing_hides_them(qtb
     wait_for_rows(qtbot, window, 1)
     choose(window, 0)
 
-    window.toggle_stacks()
+    window.stacking.toggle_stacks()
     wait_for_rows(qtbot, window, 3)
 
     assert names(window) == before
     assert [window.model.data(window.model.index(r), STACK_ROLE)[0] for r in range(3)] == [1, 2, 3]
-    window.toggle_stacks()
+    window.stacking.toggle_stacks()
     wait_for_rows(qtbot, window, 1)
 
 
@@ -57,15 +58,15 @@ def test_a_new_top_is_the_cell_a_collapsed_stack_shows(qtbot, service, drive):
     stack_all(qtbot, window)
     wait_for_rows(qtbot, window, 1)
     choose(window, 0)
-    window.toggle_stacks()
+    window.stacking.toggle_stacks()
     wait_for_rows(qtbot, window, 3)
     choose(window, 2)
     assert window.stack_top_action.isEnabled()
 
-    window.set_stack_top()
+    window.stacking.set_stack_top()
     qtbot.waitUntil(lambda: names(window)[0] == before[2], timeout=TIMEOUT)
     choose(window, 0)
-    window.toggle_stacks()
+    window.stacking.toggle_stacks()
 
     wait_for_rows(qtbot, window, 1)
     assert names(window) == [before[2]]
@@ -78,7 +79,7 @@ def test_unstacking_gives_every_photo_its_own_cell_again(qtbot, service, drive):
     wait_for_rows(qtbot, window, 1)
     choose(window, 0)
 
-    window.unstack_photos()
+    window.stacking.unstack_photos()
 
     wait_for_rows(qtbot, window, 3)
     assert names(window) == before
@@ -92,17 +93,17 @@ def test_a_stack_is_shown_only_while_its_top_passes_the_filters(qtbot, service, 
     wait_for_rows(qtbot, window, 2)
     # The second photo, not the top, is picked
     choose(window, 0)
-    window.toggle_stacks()
+    window.stacking.toggle_stacks()
     wait_for_rows(qtbot, window, 3)
     choose(window, 1)
-    window.flag_photos(PICKED)
+    window.culling.flag_photos(PICKED)
     qtbot.waitUntil(lambda: window.model.flag(1) == PICKED, timeout=TIMEOUT)
 
-    window.set_flag_filter(PICKED)
+    window.browser.set_flag_filter(PICKED)
 
     # Picked photos only: the stack's top is not one, so the stack is not shown
     assert names(window) == []
-    window.set_flag_filter(None)
+    window.browser.set_flag_filter(None)
     assert names(window) == before
 
 
@@ -112,18 +113,18 @@ def test_an_expanded_stack_shows_only_the_members_that_pass(qtbot, service, driv
     stack_all(qtbot, window, (0, 1, 2))
     wait_for_rows(qtbot, window, 1)
     choose(window, 0)
-    window.toggle_stacks()
+    window.stacking.toggle_stacks()
     wait_for_rows(qtbot, window, 3)
     choose(window, 0)
-    window.flag_photos(PICKED)
+    window.culling.flag_photos(PICKED)
     choose(window, 2)
-    window.flag_photos(PICKED)
+    window.culling.flag_photos(PICKED)
     qtbot.waitUntil(
         lambda: window.model.flag(0) == PICKED and window.model.flag(2) == PICKED,
         timeout=TIMEOUT,
     )
 
-    window.set_flag_filter(PICKED)
+    window.browser.set_flag_filter(PICKED)
 
     assert names(window) == [before[0], before[2]]
 
@@ -134,11 +135,11 @@ def test_stepping_in_the_viewer_skips_the_photos_a_collapsed_stack_hides(qtbot, 
     stack_all(qtbot, window, (0, 1))
     wait_for_rows(qtbot, window, 2)
 
-    window.show_photo(0)
+    window.nav.show_photo(0)
     assert window.pages.currentIndex() == _VIEWER
-    window.step(1)
+    window.nav.step(1)
 
-    assert os.path.basename(window._viewed_path()) == before[2]
+    assert os.path.basename(window.nav.viewed_path()) == before[2]
     assert "2 of 2" in window.status.text()
 
 
@@ -180,13 +181,13 @@ def test_a_photo_is_taken_out_of_an_expanded_stack(qtbot, service, drive):
     stack_all(qtbot, window)
     wait_for_rows(qtbot, window, 1)
     choose(window, 0)
-    window.toggle_stacks()
+    window.stacking.toggle_stacks()
     wait_for_rows(qtbot, window, 3)
     photo = window.model.photo_id(1)
     choose(window, 1)
     assert window.leave_stack_action.isEnabled()
 
-    window.leave_stack()
+    window.stacking.leave_stack()
 
     def left():
         row = window.model.row_of(photo)
@@ -259,9 +260,10 @@ def test_stack_bursts_stacks_photos_that_look_alike_and_leaves_the_others(qtbot,
     first = names(window)[:2]
     give_vectors(service, window, [unit(1), unit(1), unit(0, 1)])
 
-    window.stack_bursts()
+    window.stacking.stack_bursts()
 
     wait_for_rows(qtbot, window, 2)
+    qtbot.waitUntil(lambda: "Stacked" in window.statusBar().currentMessage(), timeout=TIMEOUT)
     assert names(window)[0] == first[0]
     assert window.model.data(window.model.index(0), STACK_ROLE)[1] == 2
     assert window.model.data(window.model.index(1), STACK_ROLE) is None
@@ -271,10 +273,12 @@ def test_stack_bursts_stacks_photos_that_look_alike_and_leaves_the_others(qtbot,
 def test_stack_bursts_without_vectors_stacks_nothing(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
 
-    window.stack_bursts()
+    window.stacking.stack_bursts()
 
+    qtbot.waitUntil(
+        lambda: window.statusBar().currentMessage() == "No bursts found", timeout=TIMEOUT
+    )
     assert window.model.rowCount() == 3
-    assert window.statusBar().currentMessage() == "No bursts found"
 
 
 def test_stack_bursts_leaves_a_stack_made_by_hand_as_it_is(qtbot, service, drive):
@@ -283,12 +287,14 @@ def test_stack_bursts_leaves_a_stack_made_by_hand_as_it_is(qtbot, service, drive
     stack_all(qtbot, window, (0, 1))
     wait_for_rows(qtbot, window, 2)
 
-    window.stack_bursts()
+    window.stacking.stack_bursts()
 
     # The third alone is no burst: the other two are stacked already
     wait_for_rows(qtbot, window, 2)
+    qtbot.waitUntil(
+        lambda: window.statusBar().currentMessage() == "No bursts found", timeout=TIMEOUT
+    )
     assert window.model.data(window.model.index(0), STACK_ROLE)[1] == 2
-    assert window.statusBar().currentMessage() == "No bursts found"
 
 
 def test_a_wide_photo_on_top_of_a_stack_has_its_badge():

@@ -40,12 +40,11 @@ import numpy as np
 
 from lumina.core import db as dbm
 from lumina.core import derived, raw
+from lumina.core.dbtypes import DECODING, HDR, MERGING, PLANNING
 from lumina.core.derived import finish_result, start_result
 from lumina.core.edit import source
 from lumina.core.errors import PhotoError
 
-HDR = "hdr"
-DECODING, PLANNING, MERGING = derived.DECODING, "planning", "merging"
 SETTINGS_VERSION = 1
 MIN_FRAMES, MAX_FRAMES = 2, 9
 # Deghosting: how far (in stops) a frame may be from the guide before it is left out
@@ -77,22 +76,22 @@ _LEAST_SPREAD = 0.9
 
 
 def exposure_value(row):
-    """How much light a photo let in, in stops (more is brighter), from its details: a
-    dict with exposure_time, aperture and iso. None when one is not known."""
-    t, n, iso = row.get("exposure_time"), row.get("aperture"), row.get("iso")
+    """How much light a photo let in, in stops (more is brighter), from its details (a
+    Photo). None when one is not known."""
+    t, n, iso = row.exposure_time, row.aperture, row.iso
     if not t or not n or not iso or t <= 0 or n <= 0 or iso <= 0:
         return None
     return math.log2(t * iso / (n * n))
 
 
 def brackets(rows):
-    """The brackets among `rows` (photo dicts with id, taken, model, lens, focal_length
+    """The brackets among `rows` (Photo: their id, taken, model, lens, focal_length
     and the exposure's details), as lists of ids in time order: runs of photos at most
     BRACKET_GAP seconds apart, of one camera, lens and focal length, at exposures that
     differ, spread at least about a stop."""
     found = []
     group = []
-    for row in sorted(rows, key=lambda r: (r["taken"], r.get("path", ""))):
+    for row in sorted(rows, key=lambda r: (r.taken, r.path)):
         if group and _continues(group, row):
             group.append(row)
             continue
@@ -106,9 +105,9 @@ def _continues(group, row):
     last = group[-1]
     if len(group) >= MAX_FRAMES:
         return False
-    if any(last.get(key) != row.get(key) for key in ("model", "lens", "focal_length")):
+    if any(getattr(last, key) != getattr(row, key) for key in ("model", "lens", "focal_length")):
         return False
-    gap = _seconds_between(last["taken"], row["taken"])
+    gap = _seconds_between(last.taken, row.taken)
     if gap is None or gap > BRACKET_GAP:
         return False
     ev = exposure_value(row)
@@ -120,7 +119,7 @@ def _continues(group, row):
 def _keep_bracket(group, found):
     evs = [exposure_value(row) for row in group]
     if len(group) >= MIN_FRAMES and None not in evs and max(evs) - min(evs) >= _LEAST_SPREAD:
-        found.append([row["id"] for row in group])
+        found.append([row.id for row in group])
 
 
 def _seconds_between(a, b):
@@ -138,20 +137,20 @@ def bracket_around(rows, photo_id):
 
 
 def check_frames(rows):
-    """Raise ValueError saying why the photos `rows` (dicts, with their path) cannot be
+    """Raise ValueError saying why the photos `rows` (Photo) cannot be
     merged: too few or many, not RAW, or not all of one camera."""
     if len(rows) < MIN_FRAMES:
         raise ValueError(f"An HDR merge needs at least {MIN_FRAMES} photos")
     if len(rows) > MAX_FRAMES:
         raise ValueError(f"An HDR merge takes at most {MAX_FRAMES} photos")
     for row in rows:
-        if not raw.is_raw(row["path"]):
-            raise ValueError(f"{os.path.basename(row['path'])} is not a RAW file")
+        if not raw.is_raw(row.path):
+            raise ValueError(f"{os.path.basename(row.path)} is not a RAW file")
     derived.check_camera(rows)
 
 
 def settings_for(rows, deghost="off", align=True):
-    """What a merge of the photos `rows` (dicts with their details, as chosen) keeps in
+    """What a merge of the photos `rows` (Photo, as chosen) keeps in
     the library: the frames in order of exposure, darkest first, when every exposure is
     known, and as given otherwise; the reference (the middle one); and what the result
     says of itself. Returns (rows in that order, settings JSON)."""
@@ -162,7 +161,7 @@ def settings_for(rows, deghost="off", align=True):
         order = sorted(range(len(rows)), key=lambda i: evs[i])
         rows, evs = [rows[i] for i in order], [evs[i] for i in order]
     reference = rows[len(rows) // 2]
-    beside = min(range(len(rows)), key=lambda i: (rows[i].get("taken") or "", rows[i]["path"]))
+    beside = min(range(len(rows)), key=lambda i: (rows[i].taken or "", rows[i].path))
     settings = {
         "version": SETTINGS_VERSION,
         "reference": len(rows) // 2,
@@ -171,7 +170,7 @@ def settings_for(rows, deghost="off", align=True):
         "exposures": evs,
         # The result goes beside the first photo taken, named after it
         "beside": beside,
-        "name": os.path.splitext(os.path.basename(rows[beside]["path"]))[0] + "-HDR",
+        "name": os.path.splitext(os.path.basename(rows[beside].path))[0] + "-HDR",
         "tags": derived.tags_of(reference),
     }
     return rows, json.dumps(settings, sort_keys=True)
@@ -183,9 +182,9 @@ def queue(library, photo_ids, deghost="off", align=True):
     rows = derived.rows_to_queue(library, photo_ids)
     check_frames(rows)
     rows, settings = settings_for(rows, deghost, align)
-    sources = [dbm.Source(row["volume_key"], row["path"], row["content_id"]) for row in rows]
+    sources = [dbm.Source(row.volume_key, row.path, row.content_id) for row in rows]
     beside = json.loads(settings)["beside"]
-    return library.add_derived_job(HDR, settings, sources, rows[beside]["folder_id"])
+    return library.add_derived_job(HDR, settings, sources, rows[beside].folder_id)
 
 
 # The steps, in a worker process

@@ -6,7 +6,7 @@ from fakes import FakeExifTool
 from photos import make_jpeg
 
 from lumina.core import db as dbm
-from lumina.core import library as scanning
+from lumina.core.dbtypes import CANCELLED, DETAILS, DONE, FINDING
 from lumina.qt_models import library
 
 
@@ -15,7 +15,7 @@ def test_an_added_folder_is_scanned(service, drive, qtbot, wait_idle):
         folder = service.add_folder(drive / "Photos")
 
     status = ended.args[0]
-    assert status.state == library.DONE
+    assert status.state == DONE
     assert status.message == "3 photos, 3 new"
     assert [f.name for f in service.folders()] == ["Photos"]
     assert service.folders()[0].connected
@@ -54,15 +54,15 @@ def test_an_unplugged_drive_shows_as_not_connected_and_is_scanned_when_back(
 def test_a_job_left_running_by_a_crash_is_finished_at_the_next_start(make_service, drive, qtbot):
     first = make_service(start=False)
     folder = first.db.add_folder("uuid:TEST-DRIVE", "Photos")
-    job = first.db.add_job(scanning.SCAN, folder)
-    first.db.update_job(job, state=dbm.RUNNING, phase=scanning.FINDING, done=1)
+    job = first.db.add_job(dbm.SCAN, folder)
+    first.db.update_job(job, state=dbm.RUNNING, phase=dbm.FINDING, done=1)
     first.close()
 
     second = make_service(start=False)
     with qtbot.waitSignal(second.job_ended, timeout=TIMEOUT) as ended:
         second.start()
 
-    assert ended.args[0].state == library.DONE
+    assert ended.args[0].state == DONE
     assert second.db.job(job).state == dbm.DONE
 
 
@@ -77,7 +77,7 @@ def test_a_quit_in_the_middle_leaves_the_job_for_the_next_start(
     qtbot.waitUntil(lambda: len(FakeExifTool.calls) >= 1, timeout=TIMEOUT)
 
     service.close()
-    service.future.result(timeout=TIMEOUT / 1000)
+    service.jobs.future.result(timeout=TIMEOUT / 1000)
 
     with dbm.Library(service.path) as db:
         assert [job.state for job in db.unfinished_jobs()] == [dbm.QUEUED]
@@ -94,7 +94,26 @@ def test_cancel_stops_the_job(service, drive, qtbot):
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT) as ended:
         service.cancel()
 
-    assert ended.args[0].state == library.CANCELLED
+    assert ended.args[0].state == CANCELLED
+    assert service.db.unfinished_jobs() == []
+
+
+def test_a_rescan_asked_for_while_the_folder_is_scanned_runs_after_it(service, drive, qtbot):
+    for n in range(40):
+        make_jpeg(drive / "Photos" / f"more{n:03}.jpg")
+    FakeExifTool.delay = 0.05
+    ended = []
+    service.job_ended.connect(ended.append)
+    folder = service.add_folder(drive / "Photos")
+    qtbot.waitUntil(lambda: len(FakeExifTool.calls) >= 1, timeout=TIMEOUT)
+    # The scan may be past where this goes
+    make_jpeg(drive / "Photos" / "000 late.jpg", colour=(7, 7, 7))
+
+    service.rescan(folder)
+
+    qtbot.waitUntil(lambda: len(ended) == 2, timeout=TIMEOUT)
+    assert [status.state for status in ended] == [DONE, DONE]
+    assert len(service.db.photos(dbm.Filter(folder_id=folder))) == 44
     assert service.db.unfinished_jobs() == []
 
 
@@ -106,10 +125,10 @@ def test_removing_a_folder_while_it_is_scanned_waits_for_the_scan_to_stop(servic
     qtbot.waitUntil(lambda: len(FakeExifTool.calls) >= 1, timeout=TIMEOUT)
     files = sorted(p.name for p in (drive / "Photos").iterdir())
 
-    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        service.remove_folder(folder)
+    service.remove_folder(folder)
+    qtbot.waitUntil(lambda: service.folders() == [], timeout=TIMEOUT)
 
-    assert service.folders() == [] and service.db.photos() == []
+    assert service.db.photos() == []
     assert sorted(p.name for p in (drive / "Photos").iterdir()) == files
 
 
@@ -121,8 +140,8 @@ def test_progress_is_told_while_scanning(service, drive, qtbot):
         service.add_folder(drive / "Photos")
 
     phases = {status.phase for status in seen}
-    assert {library.FINDING, library.DETAILS} <= phases
-    assert seen[-1].state == library.DONE
+    assert {FINDING, DETAILS} <= phases
+    assert seen[-1].state == DONE
 
 
 def test_photos_changed_is_not_told_too_often(service, drive, qtbot):
@@ -187,7 +206,7 @@ def test_the_thumbnail_cache_is_pruned_and_a_drive_not_connected_is_kept_longest
 
     with qtbot.waitSignal(service.thumbnails_pruned, timeout=TIMEOUT) as pruned:
         service.set_thumbnail_limit(6700)
-    qtbot.waitUntil(lambda: not service._pruning, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: not service._pruning.busy(), timeout=TIMEOUT)
 
     # 9000 bytes to 6030 or less: the three of the photo here go, none of the others
     assert not any(path.exists() for path in gone)
@@ -259,14 +278,26 @@ def test_the_time_left_is_told_from_the_rate_of_the_details(service, qtbot, monk
     job = 7
 
     # The walk has no end to tell; the details tell nothing until there is a rate
-    assert service._time_left(job, library.FINDING, 300, None) is None
-    assert service._time_left(job, library.DETAILS, 0, 1000) is None
+    assert service._time_left(job, FINDING, 300, None) is None
+    assert service._time_left(job, DETAILS, 0, 1000) is None
     now[0] += 2
-    assert service._time_left(job, library.DETAILS, 200, 1000) is None
+    assert service._time_left(job, DETAILS, 200, 1000) is None
     now[0] += 8
     # 400 read in 10 seconds: 600 left take 15
-    assert service._time_left(job, library.DETAILS, 400, 1000) == pytest.approx(15)
+    assert service._time_left(job, DETAILS, 400, 1000) == pytest.approx(15)
     # Few read: not told, a new job or phase starts again
-    assert service._time_left(8, library.DETAILS, 0, 1000) is None
+    assert service._time_left(8, DETAILS, 0, 1000) is None
     now[0] += 20
-    assert service._time_left(8, library.DETAILS, 50, 1000) is None
+    assert service._time_left(8, DETAILS, 50, 1000) is None
+
+
+def test_the_raw_files_of_a_camera_are_found_on_a_thread(service, drive, qtbot):
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        service.add_folder(drive / "Photos")
+    found, failed = [], []
+
+    service.raw_files_of("Canon EOS 90D", 5, found.append, failed.append)
+
+    qtbot.waitUntil(lambda: bool(found or failed), timeout=TIMEOUT)
+    assert failed == []
+    assert [path.rsplit("/", 1)[-1] for path in found[0]] == ["c.dng"]

@@ -36,10 +36,10 @@ def open_window(qtbot, make_service, wait_idle, model_root, drive):
         window.show()
         service.start()
         search.start()
-        window.add_folder(str(drive / "Photos"))
+        window.browser.add_folder(str(drive / "Photos"))
         wait_idle(service)
         if installed:
-            qtbot.waitUntil(lambda: search.index_future is not None, timeout=TIMEOUT)
+            qtbot.waitUntil(lambda: search.jobs.future is not None, timeout=TIMEOUT)
             qtbot.waitUntil(lambda: not search.is_indexing(), timeout=TIMEOUT)
         qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
         return window
@@ -47,8 +47,8 @@ def open_window(qtbot, make_service, wait_idle, model_root, drive):
     yield open_
     for search in made:
         search.close()
-        if search.index_future is not None:
-            search.index_future.result(timeout=TIMEOUT / 1000)
+        if search.jobs.future is not None:
+            search.jobs.future.result(timeout=TIMEOUT / 1000)
 
 
 def names(window):
@@ -154,7 +154,7 @@ def test_find_similar_shows_a_chip_that_ends_it(qtbot, open_window):
 
 def test_find_similar_from_the_viewer_goes_back_to_the_grid(qtbot, open_window):
     window = open_window()
-    window.show_photo(names(window).index("b.jpg"))
+    window.nav.show_photo(names(window).index("b.jpg"))
 
     window.similar_action.trigger()
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
@@ -201,13 +201,13 @@ def test_flags_narrow_a_search_and_keep_its_order(qtbot, open_window):
 
     assert names(window) == ranked[1:]
     assert window.status.text() == "2 photos match “green”  ·  1 hidden by flags"
-    window.undo_flags()
+    window.culling.undo_flags()
     assert names(window) == ranked
 
 
 def test_a_search_typed_above_a_photo_shows_the_results_in_the_grid(qtbot, open_window):
     window = open_window()
-    window.show_photo(0)
+    window.nav.show_photo(0)
     assert window.search_field.isVisible()
 
     type_search(qtbot, window, "green")
@@ -217,3 +217,13 @@ def test_a_search_typed_above_a_photo_shows_the_results_in_the_grid(qtbot, open_
     # Still typing: the field keeps the focus and its text
     assert window.search_field.edit.hasFocus() or not window.isActiveWindow()
     assert window.search_field.text() == "green"
+
+
+def test_indexing_that_has_not_counted_yet_is_told_without_a_count():
+    from lumina.core.dbtypes import RUNNING
+    from lumina.qt_models.jobs import JobStatus
+    from lumina.ui.search import describe_indexing
+
+    status = JobStatus("", RUNNING, None, 0, None, None, (), 0)
+
+    assert describe_indexing(status) == "Indexing for search"

@@ -21,9 +21,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from lumina.core.errors import CameraBusy, NotConnected
 from lumina.integration import style
 from lumina.qt_models import importing
-from lumina.qt_models.importing import CameraBusy, NotConnected
 from lumina.ui import settings
 
 # Layouts and namings in words, with what they make of a photo taken on 14 October 2026

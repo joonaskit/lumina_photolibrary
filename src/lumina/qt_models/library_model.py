@@ -18,6 +18,7 @@ be undone, in one order, for any photo, also one no longer shown.
 
 import json
 import os
+import string
 import time
 from dataclasses import dataclass, replace
 
@@ -25,16 +26,8 @@ from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, Qt, QTime
 
 from lumina.core import db as dbm
 from lumina.core import keywords as keywordm
-from lumina.core import smart
 from lumina.qt_models import workers
 from lumina.qt_models.thumbnails import Thumbnails
-
-# For the UI, which does not import core/
-Filter = dbm.Filter
-PICKED, UNFLAGGED, REJECTED = dbm.PICKED, dbm.UNFLAGGED, dbm.REJECTED
-# Keyword paths (their names and levels), and a smart collection's saved filter
-keyword_names = keywordm
-SmartQuery = smart.SmartQuery
 
 PATH_ROLE = Qt.ItemDataRole.UserRole + 1
 ID_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -65,6 +58,8 @@ SHOW, DIM, HIDE = "show", "dim", "hide"
 _RESEARCH_EVERY = 3.0
 # Flag and rating changes that can be undone
 _HISTORY = 200
+# Edits saved for more photos than this make the grid read its rows again
+_EDITS_IN_PLACE = 50
 # The service's methods that read and write a field of many photos
 _READ = {"flag": "flags", "rating": "ratings", "keywords": "photo_keywords"}
 _WRITE = {"flag": "set_flags", "rating": "set_ratings", "keywords": "set_photo_keywords"}
@@ -142,6 +137,7 @@ class LibraryModel(QAbstractListModel):
         self.thumbnails.changed.connect(self._thumbnail_changed)
         self.failed = self.thumbnails.failed
         service.photos_changed.connect(self.refresh)
+        service.edits_changed.connect(self._on_edits_changed)
         service.mounts_changed.connect(self._on_mounts_changed)
         self._searched = 0.0
         self._research = QTimer(self)
@@ -163,6 +159,46 @@ class LibraryModel(QAbstractListModel):
     def refresh(self):
         """Read the rows again with the same filter: after a scan wrote some."""
         self._load(reset=False)
+
+    def _on_edits_changed(self, photo_ids):
+        """The edits of `photo_ids` were saved: their rows are updated where they stand,
+        not all read again (a library of 200,000 photos costs the window most of a second
+        to take a new list in)."""
+        if len(photo_ids) > _EDITS_IN_PLACE or self._querying:
+            self.refresh()
+            return
+        changed = []
+        for photo_id in photo_ids:
+            place = self._positions.get(photo_id)
+            if place is None:
+                continue
+            edited = self.service.edit_times(photo_id).get(0)
+            row = self._all[place]
+            if edited == row.edited:
+                continue
+            new = replace(row, edited=edited)
+            self._all[place] = new
+            members = self._stacks.get(row.stack)
+            if members is not None:
+                self._stacks[row.stack] = [new if m.id == photo_id else m for m in members]
+            changed.append((photo_id, row, new))
+        if not changed:
+            return
+        if self.edit_filter is not None or any(i in self._copies_open for i, _r, _n in changed):
+            # What is shown may differ: a photo edited under the edit filter stays until
+            # the user moves on
+            for photo_id, old, new in changed:
+                if self.edit_filter is not None and self._edit_passes(old) != self._edit_passes(
+                    new
+                ):
+                    self._kept.add(photo_id)
+            self._show(self._compose(), reset=False)
+            return
+        for photo_id, _old, new in changed:
+            shown = self._index.get(photo_id)
+            if shown is not None:
+                self._rows[shown] = new
+                self.dataChanged.emit(self.index(shown), self.index(shown))
 
     # Searching
 
@@ -234,10 +270,11 @@ class LibraryModel(QAbstractListModel):
             _query,
             self.service.path,
             self.filter,
+            self.service.settle,
             on_done=lambda rows: self._loaded(generation, rows, reset),
             on_error=lambda _error: self._loaded(generation, [], reset),
             owner=self,
-            process=False,
+            lane=workers.IO,
         )
 
     def _loaded(self, generation, rows, reset):
@@ -273,9 +310,9 @@ class LibraryModel(QAbstractListModel):
         for photo in shown:
             opened.append(photo)
             if photo.id in self._copies_open and photo.copies:
-                for number in self.service.copies(photo.id):
-                    edit = self.service.edit_json(photo.id, number)
-                    opened.append(replace(photo, copy=number, edit=edit))
+                times = self.service.edit_times(photo.id)
+                for number in sorted(number for number in times if number > 0):
+                    opened.append(replace(photo, copy=number, edited=times[number]))
         return opened
 
     def _fold(self, shown):
@@ -303,13 +340,13 @@ class LibraryModel(QAbstractListModel):
             return
         for photo in rows:
             shown = self._index.get(photo.id)
-            if shown is not None and self._rows[shown].edit != photo.edit:
+            if shown is not None and self._rows[shown].edited != photo.edited:
                 self._kept.add(photo.id)
 
     def _edit_passes(self, photo):
         if self.edit_filter is None:
             return True
-        return (photo.edit is not None) == (self.edit_filter == EDITED)
+        return (photo.edited is not None) == (self.edit_filter == EDITED)
 
     def _rating_passes(self, photo):
         if self.rating_filter is None:
@@ -340,7 +377,7 @@ class LibraryModel(QAbstractListModel):
             return False
         if self.flag_filter is not None:
             return photo.flag == self.flag_filter
-        return not (self.rejected == HIDE and photo.flag == REJECTED)
+        return not (self.rejected == HIDE and photo.flag == dbm.REJECTED)
 
     def _show(self, rows, reset):
         old = [(photo.id, photo.copy) for photo in self._rows]
@@ -484,12 +521,27 @@ class LibraryModel(QAbstractListModel):
     def add_keywords(self, rows, names):
         """Give the photos of `rows` the keywords `names` (as typed: "Places > Finland").
         Returns the keyword paths given, or [] for no change (nothing to add, or every
-        photo has them)."""
+        photo has them). Keywords that are new are made first, on the writer thread: the
+        photos have them once it has (`flags_changed` tells)."""
         paths = [path for path in map(keywordm.parse, names) if path]
         photos = [self._rows[row] for row in rows if 0 <= row < len(self._rows)]
         if not paths or not photos:
             return []
-        ids = self.service.ensure_keywords(paths)
+        # The keywords there are, spelt as the library compares them (NOCASE: ASCII only)
+        known = {_nocase(path): k for k, path in self.service.keyword_paths.items()}
+        ids = {path: known.get(_nocase(path)) for path in paths}
+        if None not in ids.values():
+            return paths if self._give_keywords(photos, ids) else []
+        ids = {photo.id for photo in photos}
+        self.service.ensure_keywords(paths, on_done=lambda made: self._keywords_made(ids, made))
+        return paths
+
+    def _keywords_made(self, photo_ids, made):
+        # The photos as they are now, those still in the library's rows
+        photos = [self._all[self._positions[i]] for i in photo_ids if i in self._positions]
+        self._give_keywords(photos, made)
+
+    def _give_keywords(self, photos, ids):
         wanted = set(ids.values())
         changes = {
             photo.id: tuple(sorted(set(photo.keywords) | wanted))
@@ -497,7 +549,7 @@ class LibraryModel(QAbstractListModel):
             if not wanted <= set(photo.keywords)
         }
         self._change_keywords(photos, changes)
-        return list(ids) if changes else []
+        return bool(changes)
 
     def remove_keywords(self, rows, names):
         """Take the keywords `names` off the photos of `rows` (not those below them: a
@@ -534,7 +586,7 @@ class LibraryModel(QAbstractListModel):
     def toggle_flag(self, rows, flag):
         """Give the photos of `rows` `flag`; when they all have it already, clear it, as
         pressing the key again does. Returns the flag given, or None for no change."""
-        return self._toggle("flag", rows, flag, UNFLAGGED)
+        return self._toggle("flag", rows, flag, dbm.UNFLAGGED)
 
     def toggle_rating(self, rows, stars):
         """Give the photos of `rows` `stars` (0 clears); when they all have that many
@@ -701,10 +753,16 @@ class LibraryModel(QAbstractListModel):
             place = next(n for n, m in enumerate(members, 1) if m.id == photo.id)
             return (place, len(members), photo.stack_collapsed)
         if role == DIMMED_ROLE:
-            return photo.flag == REJECTED and self.rejected != SHOW and self.flag_filter != REJECTED
+            return (
+                photo.flag == dbm.REJECTED
+                and self.rejected != SHOW
+                and self.flag_filter != dbm.REJECTED
+            )
         path = self.path(index.row())
         if role == Qt.ItemDataRole.DecorationRole:
-            return self.thumbnails.icon(self._key(photo), path, photo.content_id, photo.edit)
+            return self.thumbnails.icon(
+                self._key(photo), path, photo.content_id, lambda: self._edit_of(photo)
+            )
         if role == Qt.ItemDataRole.ToolTipRole:
             if path is None:
                 lines = [photo.path, "On a drive that is not connected"]
@@ -723,9 +781,20 @@ class LibraryModel(QAbstractListModel):
         first, last = max(0, first), min(len(self._rows) - 1, last)
         self.thumbnails.keep_only({self._key(photo) for photo in self._rows[first : last + 1]})
 
+    def is_edited(self, row):
+        """Whether the row's photo has an edit, as the grid has heard."""
+        return self._rows[row].edited is not None
+
     def edit(self, row):
         """The parameters JSON of the photo's edit, or None."""
-        return self._rows[row].edit
+        photo = self._rows[row]
+        return self.service.edit_json(photo.id, photo.copy)
+
+    def _edit_of(self, photo):
+        # For a thumbnail, while painting: not waiting for the writes queued
+        if photo.edited is None:
+            return None
+        return self.service.edit_json(photo.id, photo.copy, settle=False)
 
     def thumbnail_pixmap(self, row):
         """The thumbnail of a row if it is made already, else None."""
@@ -733,8 +802,9 @@ class LibraryModel(QAbstractListModel):
 
     @staticmethod
     def _key(photo):
-        # A new edit is a new thumbnail
-        return (photo.id, photo.edit)
+        # A new edit is a new thumbnail. The copy too: copies read from a sidecar were
+        # saved at one time
+        return (photo.id, photo.copy, photo.edited)
 
     def _thumbnail_changed(self, key):
         # The photo's cell and those of its virtual copies, which may share the thumbnail
@@ -795,9 +865,20 @@ def _stacks_of(rows):
     }
 
 
-def _query(path, shown):
+def _query(path, shown, settle):
+    # The writes the window queued are in the library before it is read, so a flag just
+    # set is not read back as it was
+    settle()
     with dbm.Library(path) as library:
         return library.photos(shown)
+
+
+def _nocase(text):
+    # As SQLite's NOCASE compares: only A to Z folded
+    return text.translate(_ASCII_LOWER)
+
+
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
 
 def damage_text(warning):

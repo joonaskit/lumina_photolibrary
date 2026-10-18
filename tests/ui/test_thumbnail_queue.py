@@ -18,7 +18,7 @@ class FakeWorkers:
     def __init__(self):
         self.submitted = []
 
-    def submit(self, fn, *args, on_done, on_error, owner, process=True):
+    def submit(self, fn, *args, on_done, on_error, owner, **_where):
         future = Future()
         self.submitted.append((args, future, on_done, on_error))
         return future
@@ -132,14 +132,14 @@ def photos_window(qtbot, service, drive, count):
     window.resize(1000, 700)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(folder)
+        window.browser.add_folder(folder)
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     return window
 
 
 def test_the_grid_asks_to_keep_only_the_thumbnails_near_the_view(qtbot, service, drive):
     window = photos_window(qtbot, service, drive, 200)
-    first, last = window.visible_rows()
+    first, last = window.grid_page.visible_rows()
     cell = window.grid.gridSize()
     columns = window.grid.viewport().width() // cell.width()
     screenful = columns * (window.grid.viewport().height() // cell.height() + 1)
@@ -155,7 +155,7 @@ def test_the_grid_asks_to_keep_only_the_thumbnails_near_the_view(qtbot, service,
     qtbot.waitUntil(lambda: bool(kept), timeout=TIMEOUT)
 
     # Scrolled to the end: the rows at the top are not waited for, the last ones are
-    first_now, last_now = window.visible_rows()
+    first_now, last_now = window.grid_page.visible_rows()
     assert first_now > 0 and last_now >= window.model.rowCount() - 1
     wanted = kept[-1]
     rows = window.model._rows
@@ -169,5 +169,5 @@ def test_nothing_is_dropped_without_rows(qtbot, service):
     qtbot.addWidget(window)
     window.show()
 
-    assert window.visible_rows() is None
-    window.trim_thumbnails()
+    assert window.grid_page.visible_rows() is None
+    window.grid_page.trim_thumbnails()

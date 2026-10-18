@@ -1,6 +1,7 @@
 import hashlib
 import os
 import shutil
+import time
 
 import pytest
 from fakes import FakeExifTool
@@ -48,7 +49,7 @@ def add(library, drive):
 
 
 def run(library, folder, mounts, tool=FakeExifTool, **kwargs):
-    job = library.add_job(scanning.SCAN, folder)
+    job = library.add_job(dbm.SCAN, folder)
     state = scanning.scan(library, job, folder, mounts, exiftool=tool, **kwargs)
     return state, library.job(job)
 
@@ -69,7 +70,7 @@ def test_a_first_scan_finds_the_photos_and_reads_their_details(library, drive):
         "Photos/2022/c.dng",
     }
     assert all(p.content_id for p in library.photos())
-    assert {library.photo(p.id)["model"] for p in library.photos()} == {"Canon EOS 90D"}
+    assert {library.photo(p.id).model for p in library.photos()} == {"Canon EOS 90D"}
     assert job.message == "3 photos, 3 new"
 
 
@@ -126,19 +127,19 @@ def test_a_deleted_photo_is_marked_missing_and_comes_back(library, drive):
     row = library.photo(by_path(library, folder)["Photos/a.jpg"][0])
 
     assert job.message == "3 photos, 1 missing"
-    assert row["available"] == 0 and row["model"] == "Canon EOS 90D"
+    assert row.available == 0 and row.model == "Canon EOS 90D"
 
     photo.write_bytes(kept)
     os.utime(photo, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     run(library, folder, mounted(drive))
-    assert library.photo(row["id"])["available"] == 1
+    assert library.photo(row.id).available == 1
 
 
 def test_an_unplugged_drive_leaves_everything_as_it_was(library, drive):
     folder = add(library, drive)
     run(library, folder, mounted(drive))
     before = by_path(library, folder)
-    job = library.add_job(scanning.SCAN, folder)
+    job = library.add_job(dbm.SCAN, folder)
 
     with pytest.raises(scanning.NotConnected):
         scanning.scan(library, job, folder, [], exiftool=FakeExifTool)
@@ -196,11 +197,159 @@ def test_a_cancel_while_reading_details_keeps_what_was_read(library, drive):
     assert library.count_pending_metadata(folder) == 0
 
 
+def test_a_drive_unplugged_while_details_are_read_leaves_them_to_read_when_it_is_back(
+    library, drive, monkeypatch
+):
+    folder = add(library, drive)
+    real = scanning.content_id
+
+    def unplugged(path):
+        # The drive goes as the first photo is read
+        shutil.rmtree(drive / "Photos", ignore_errors=True)
+        return real(path)
+
+    monkeypatch.setattr(scanning, "content_id", unplugged)
+    job = library.add_job(dbm.SCAN, folder)
+    with pytest.raises(scanning.NotConnected):
+        scanning.scan(library, job, folder, mounted(drive), exiftool=FakeExifTool)
+    monkeypatch.undo()
+
+    assert library.failures(job) == []
+    assert not any(state[3] for state in by_path(library, folder).values())
+
+    # Plugged in again
+    (drive / "Photos" / "2022").mkdir(parents=True)
+    make_jpeg(drive / "Photos" / "a.jpg")
+    make_jpeg(drive / "Photos" / "2022" / "b.jpg")
+    make_dng(drive / "Photos" / "2022" / "c.dng", preview="jpeg")
+    state, job = run(library, folder, mounted(drive))
+
+    assert state == dbm.DONE
+    assert library.failures(job.id) == []
+    assert library.count_pending_metadata(folder) == 0
+    assert all(state[3] for state in by_path(library, folder).values())
+
+
+def test_a_file_that_hangs_exiftool_is_named_and_the_rest_of_the_folder_is_read(library, drive):
+    folder = add(library, drive)
+    for n in range(60):
+        make_jpeg(drive / "Photos" / f"more{n:03}.jpg")
+    hanging = str(drive / "Photos" / "more031.jpg")
+
+    state, job = run(library, folder, mounted(drive), tool=lambda: FakeExifTool(hangs=[hanging]))
+
+    assert state == dbm.DONE
+    assert [path for path, _message in library.failures(job.id)] == [hanging]
+    assert library.count_pending_metadata(folder) == 0
+    # Not asked again: the next scan has nothing to read
+    FakeExifTool.calls = []
+    state, _job = run(library, folder, mounted(drive), tool=lambda: FakeExifTool(hangs=[hanging]))
+    assert state == dbm.DONE
+    assert FakeExifTool.calls == []
+
+
+def test_an_exiftool_that_dies_on_every_file_still_stops_the_scan_and_blames_none(library, drive):
+    folder = add(library, drive)
+
+    state, job = run(library, folder, mounted(drive), tool=lambda: FakeExifTool(dies_after=0))
+
+    assert state == dbm.FAILED_JOB
+    assert library.failures(job.id) == []
+    assert library.count_pending_metadata(folder) == 3
+
+
+def test_a_scan_removes_part_files_of_ours_that_a_crash_left_and_nothing_else(library, drive):
+    folder = add(library, drive)
+    photos = drive / "Photos"
+    old = time.time() - 2 * 3600
+    stale = [".lumina-xmp-123-a.jpg.part", ".lumina-tether-4.part", ".lumina-merge-5.part"]
+    stale += [".lumina-import-6-7.part", ".lumina-export-abc.part"]
+    kept = [
+        # Being written now
+        ".lumina-import-9-9.part",
+        # Not ours
+        ".other-tool.part",
+        ".lumina-notes.txt",
+        "keep.part",
+    ]
+    for name in stale + kept:
+        (photos / name).write_bytes(b"x")
+    for name in stale + [".other-tool.part", ".lumina-notes.txt", "keep.part"]:
+        os.utime(photos / name, (old, old))
+    before = {p.name for p in photos.iterdir()} - set(stale)
+
+    state, _job = run(library, folder, mounted(drive))
+
+    assert state == dbm.DONE
+    assert {p.name for p in photos.iterdir()} == before
+
+
+def test_a_partial_scan_looks_only_at_the_directories_given(library, drive):
+    folder = add(library, drive)
+    run(library, folder, mounted(drive))
+    photos = drive / "Photos"
+    make_jpeg(photos / "new_top.jpg")
+    make_jpeg(photos / "2022" / "new_deep.jpg")
+    # Gone in both, but only one of the directories is looked at
+    (photos / "a.jpg").unlink()
+    (photos / "2022" / "b.jpg").unlink()
+
+    state, job = run(library, folder, mounted(drive), only={str(photos / "2022")})
+
+    assert state == dbm.DONE
+    states = by_path(library, folder)
+    available = {path.rsplit("/", 1)[-1]: s[3] for path, s in states.items()}
+    assert available == {
+        "a.jpg": True,  # not looked at: still believed there
+        "b.jpg": False,
+        "c.dng": True,
+        "new_deep.jpg": True,
+    }
+    assert library.count_pending_metadata(folder) == 0
+
+
+def test_a_partial_scan_of_a_directory_that_is_gone_makes_what_was_below_it_missing(library, drive):
+    folder = add(library, drive)
+    run(library, folder, mounted(drive))
+    (drive / "Photos" / "2022" / "deeper").mkdir()
+    make_jpeg(drive / "Photos" / "2022" / "deeper" / "d.jpg")
+    run(library, folder, mounted(drive))
+    shutil.rmtree(drive / "Photos" / "2022")
+
+    run(library, folder, mounted(drive), only={str(drive / "Photos" / "2022")})
+
+    available = {path.rsplit("/", 1)[-1]: s[3] for path, s in by_path(library, folder).items()}
+    assert available == {
+        "a.jpg": True,
+        "b.jpg": False,
+        "c.dng": False,
+        "d.jpg": False,
+    }
+
+
+def test_a_partial_scan_does_not_walk_the_rest_of_the_folder(library, drive, monkeypatch):
+    folder = add(library, drive)
+    run(library, folder, mounted(drive))
+    walked = []
+    real = os.walk
+    monkeypatch.setattr(
+        os, "walk", lambda *args, **kwargs: walked.append(args) or real(*args, **kwargs)
+    )
+    listed = []
+    real_list = os.listdir
+    monkeypatch.setattr(os, "listdir", lambda path: listed.append(str(path)) or real_list(path))
+
+    run(library, folder, mounted(drive), only={str(drive / "Photos" / "2022")})
+
+    assert walked == []
+    assert listed == [str(drive / "Photos" / "2022")]
+
+
 def test_a_scan_interrupted_by_a_crash_is_found_and_finished(library, drive):
     folder = add(library, drive)
-    job = library.add_job(scanning.SCAN, folder)
+    job = library.add_job(dbm.SCAN, folder)
     # As a crash leaves it: running, half done
-    library.update_job(job, state=dbm.RUNNING, phase=scanning.FINDING, done=1)
+    library.update_job(job, state=dbm.RUNNING, phase=dbm.FINDING, done=1)
 
     unfinished = library.unfinished_jobs()
     assert [j.id for j in unfinished] == [job]
@@ -249,7 +398,7 @@ def test_a_photo_whose_details_cannot_be_read_is_named(library, drive):
     assert state == dbm.DONE
     assert library.failures(job.id) == [(str(broken), "File format error")]
     row = library.photo(by_path(library, folder)["Photos/a.jpg"][0])
-    assert row["metadata_state"] == dbm.FAILED and row["metadata_error"] == "File format error"
+    assert row.metadata_state == dbm.FAILED and row.metadata_error == "File format error"
     assert "1 could not be read" in job.message
 
 
@@ -285,9 +434,9 @@ def test_progress_is_reported_and_saved(library, drive):
 
     _state, job = run(library, folder, mounted(drive), report=lambda *args: seen.append(args[:3]))
 
-    assert (scanning.FINDING, 3, None) in seen
-    assert (scanning.DETAILS, 3, 3) in seen
-    assert (job.phase, job.done, job.total) == (scanning.DETAILS, 3, 3)
+    assert (dbm.FINDING, 3, None) in seen
+    assert (dbm.DETAILS, 3, 3) in seen
+    assert (job.phase, job.done, job.total) == (dbm.DETAILS, 3, 3)
 
 
 def test_scanning_leaves_every_file_as_it_was(library, drive, exiftool):
@@ -304,8 +453,8 @@ def test_scanning_leaves_every_file_as_it_was(library, drive, exiftool):
     assert after == before
     assert sorted(p for p in drive.rglob("*") if p.is_file()) == files
     row = library.photo(by_path(library, folder)["Photos/exif.jpg"][0])
-    assert (row["captured"], row["captured_offset"]) == ("2024-06-01 18:30:05.250000", "+03:00")
-    assert row["lens"] == "RF24-105mm F4 L IS USM"
+    assert (row.captured, row.captured_offset) == ("2024-06-01 18:30:05.250000", "+03:00")
+    assert row.lens == "RF24-105mm F4 L IS USM"
 
 
 class Rests:

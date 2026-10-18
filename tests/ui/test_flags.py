@@ -9,15 +9,8 @@ from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QStyleOptionViewItem
 
 from lumina.core import db as dbm
-from lumina.qt_models.library_model import (
-    DIM,
-    DIMMED_ROLE,
-    HIDE,
-    PICKED,
-    REJECTED,
-    SHOW,
-    UNFLAGGED,
-)
+from lumina.core.dbtypes import PICKED, REJECTED, UNFLAGGED
+from lumina.qt_models.library_model import DIM, DIMMED_ROLE, HIDE, SHOW
 from lumina.ui import settings
 from lumina.ui.main_window import MainWindow
 
@@ -27,7 +20,7 @@ def open_window(qtbot, service, folder):
     qtbot.addWidget(window)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(folder)
+        window.browser.add_folder(folder)
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     assert window.model.rowCount() == 3
     return window
@@ -54,6 +47,7 @@ def press(qtbot, widget, key, modifier=Qt.KeyboardModifier.NoModifier):
 
 def stored(service):
     """{name: flag} as the library has them."""
+    service.settle()
     with dbm.Library(service.path) as library:
         return {os.path.basename(photo.path): photo.flag for photo in library.photos()}
 
@@ -176,7 +170,7 @@ def test_in_the_viewer_flagging_steps_on_only_when_asked(qtbot, service, drive):
     settings.set_rejected_photos(HIDE)
     window = open_window(qtbot, service, drive / "Photos")
     first, second, third = names(window)
-    window.show_photo(0)
+    window.nav.show_photo(0)
 
     press(qtbot, window.viewer, Qt.Key.Key_X)
     assert window.title.text() == first
@@ -287,7 +281,7 @@ def test_the_develop_view_flags_the_photo_being_edited(qtbot, service, drive):
     first, second, _third = names(window)
     settings.set_advance_after_flag(True)
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.show_develop(0)
+        window.nav.show_develop(0)
     assert window.marking.isVisible()
 
     press(qtbot, window.develop, Qt.Key.Key_P)
@@ -311,7 +305,7 @@ def test_the_develop_view_flags_the_photo_being_edited(qtbot, service, drive):
 def test_the_develop_views_own_keys_still_work(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.show_develop(0)
+        window.nav.show_develop(0)
 
     press(qtbot, window.develop, Qt.Key.Key_C)
 

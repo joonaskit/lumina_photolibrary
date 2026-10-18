@@ -2,22 +2,23 @@
 
 import pytest
 
-from lumina.qt_models import library
+from lumina.core.dbtypes import DETAILS, FINDING, RUNNING
+from lumina.qt_models.jobs import JobStatus
 from lumina.ui import job_status
 
 
 def status(**fields):
     base = dict(
-        folder_name="Photos",
-        state=library.RUNNING,
-        phase=library.DETAILS,
+        name="Photos",
+        state=RUNNING,
+        phase=DETAILS,
         done=500,
         total=12000,
         message=None,
         failures=(),
         queued=0,
     )
-    return library.JobStatus(**{**base, **fields})
+    return JobStatus(**{**base, **fields})
 
 
 def test_the_details_say_how_far_and_how_long_is_left():
@@ -49,6 +50,6 @@ def test_a_time_left_in_words(seconds, words):
 
 
 def test_the_walk_has_no_time_left_to_tell():
-    text = job_status.describe(status(phase=library.FINDING, eta=100))
+    text = job_status.describe(status(phase=FINDING, eta=100))
 
     assert text == "Scanning Photos: 500 photos found"

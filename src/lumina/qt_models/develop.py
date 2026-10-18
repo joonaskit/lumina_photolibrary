@@ -12,6 +12,10 @@ An edit is saved to the library when a change is committed (a control let go, a
 point dropped, undo), not on every move. Undo and redo are a stack of committed
 parameter states. An edit back at no change at all is removed from the library:
 the photo is its original again.
+
+An export is a job of the ExportService (qt_models/exporting.py): it shows in the status
+bar with Cancel, and is finished after a restart. It is rendered from the decode the
+Develop process holds, not decoded again.
 """
 
 import json
@@ -23,91 +27,30 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QImage
 
 from lumina.core import colour_checker as _colour_checker
+from lumina.core import db as dbm
 from lumina.core import dcp as _dcp
+from lumina.core import exporting
 from lumina.core.edit import curves as _curves
-from lumina.core.edit import export as _export
 from lumina.core.edit import hsl as _hsl
 from lumina.core.edit import params as _params
 from lumina.core.edit import pipeline as _pipeline
 from lumina.core.edit import session as _session
 from lumina.qt_models import workers
+from lumina.qt_models.exporting import ExportService
 
-# For the UI, which does not import core/
-Params = _params.Params
-Basic = _params.Basic
-Colour = _params.Colour
-Presence = _params.Presence
-Sharpening = _params.Sharpening
-NoiseReduction = _params.NoiseReduction
-Band = _params.Band
-Hsl = _params.Hsl
-Wheel = _params.Wheel
-Vignette = _params.Vignette
-Grain = _params.Grain
-Grading = _params.Grading
-Curves = _params.Curves
-Matte = _params.Matte
-Perspective = _params.Perspective
-Crop = _params.Crop
-Lens = _params.Lens
-LENS = _params.LENS
-ColourProfile = _params.ColourProfile
+# What the Develop view asks of core's colour checker and camera profiles; the edit's
+# records and ranges it takes from core/edit/params.py itself
 patch_centres = _colour_checker.patch_centres
 CHECKER_SAMPLE_SHARE = _colour_checker.SAMPLE_SHARE
 PROFILE_FOLDERS = _dcp.default_folders
-ExportOptions = _export.ExportOptions
-FORMATS = _export.FORMATS
-EXPOSURE = _params.EXPOSURE
-WARMTH = _params.WARMTH
-BASIC = _params.BASIC
-BASIC_FIELDS = _params.BASIC_FIELDS
-COLOUR = _params.COLOUR
-PRESENCE = _params.PRESENCE
-PRESENCE_FIELDS = _params.PRESENCE_FIELDS
-SHARPEN_AMOUNT = _params.SHARPEN_AMOUNT
-SHARPEN_RADIUS = _params.SHARPEN_RADIUS
-DEFAULT_SHARPEN_RADIUS = _params.DEFAULT_SHARPEN_RADIUS
-DEFAULT_SHARPEN_DETAIL = _params.DEFAULT_SHARPEN_DETAIL
-DEFAULT_NOISE_DETAIL = _params.DEFAULT_NOISE_DETAIL
-COLOUR_FIELDS = _params.COLOUR_FIELDS
-HSL = _params.HSL
-HUE = _params.HUE
-WHEEL = _params.WHEEL
-GRADING = _params.GRADING
-BLENDING = _params.BLENDING
-DEFAULT_BLENDING = _params.DEFAULT_BLENDING
-VIGNETTE = _params.VIGNETTE
-PERCENT = _params.PERCENT
-DEFAULT_MIDPOINT = _params.DEFAULT_MIDPOINT
-DEFAULT_FEATHER = _params.DEFAULT_FEATHER
-DEFAULT_GRAIN_SIZE = _params.DEFAULT_GRAIN_SIZE
-BANDS = _params.BANDS
 # Where each band sits on the hue circle, in degrees: for showing its colour
 BAND_HUES = dict(zip(_params.BANDS, _hsl.CENTRES, strict=True))
-BAND_FIELDS = _params.BAND_FIELDS
-RANGES = _params.RANGES
-WHEEL_FIELDS = _params.WHEEL_FIELDS
-MATTE_BLACK = _params.MATTE_BLACK
-MATTE_WHITE = _params.MATTE_WHITE
-DESATURATION = _params.DESATURATION
-STRAIGHTEN = _params.STRAIGHTEN
-PERSPECTIVE = _params.PERSPECTIVE
-PRESET_SECTIONS = _params.SECTIONS
-IDENTITY_CURVE = _curves.IDENTITY
 PROXY, SCREEN, REGION = _session.PROXY, _session.SCREEN, _session.REGION
 
 
 def curve_values(points, count):
     """The curve through `points` at `count` even steps from 0 to 1: for drawing it."""
     return _curves.evaluate(points, np.linspace(0.0, 1.0, count))
-
-
-def normalize_curve(points):
-    return _curves.normalize(points)
-
-
-def suggested_name(path, options, copy=0):
-    return _export.suggested_name(path, options, copy)
 
 
 def _replaces(new, waiting):
@@ -153,17 +96,23 @@ class DevelopSession(QObject):
     # An export found its destination taken at the last moment: the destination
     export_exists = Signal(str)
 
-    def __init__(self, service, parent=None):
+    def __init__(self, service, parent=None, exporter=None):
+        """`service` is the LibraryService; `exporter` the ExportService the photo is
+        exported by, as a job (without one, the session has one of its own)."""
         super().__init__(parent)
         self.service = service
+        self.exporter = exporter or ExportService(service, parent=self)
+        self.exporter.ended.connect(self._on_export_ended)
+        # Export jobs this session queued: job id -> the destination
+        self._exports = {}
         self.photo_id = None
         self.path = None
         # 0: the photo's own edit; more: a virtual copy
         self.copy = 0
-        self.params = Params()
+        self.params = _params.Params()
         # What an edit of this photo starts as, and what a Reset goes back to: the lens
         # corrections on for a RAW file whose lens is known, else nothing (see `_on_opened`)
-        self._baseline = Params()
+        self._baseline = _params.Params()
         # How the photo was taken, for finding its lens (lensdb.Shot), and the lens
         # profile the database has for it, if any; False before it is known
         self._shot = None
@@ -199,10 +148,11 @@ class DevelopSession(QObject):
         virtual copy `copy`."""
         self.close()
         self.photo_id, self.path, self.copy = photo_id, path, copy
+        self.exporter.opened_in_develop(path)
         self.size = None
         self._moving = False
         self._token += 1
-        self._baseline = Params()
+        self._baseline = _params.Params()
         self._shot = self.service.lens_shot(photo_id)
         self._lens, self._lens_known, self._lens_data = None, False, True
         self._raw = False
@@ -226,7 +176,7 @@ class DevelopSession(QObject):
             on_done=lambda opened: self._on_opened(token, opened),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def close(self):
@@ -241,13 +191,14 @@ class DevelopSession(QObject):
             self._before = False
             self.before_changed.emit(False)
         self.photo_id = self.path = None
+        self.exporter.opened_in_develop(None)
         self.copy = 0
         workers.submit(
             _session.close,
             on_done=lambda _r: None,
             on_error=lambda _e: None,
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def is_open(self):
@@ -266,13 +217,16 @@ class DevelopSession(QObject):
             lens = _params.Lens()
             if opened.lens is not None and opened.raw:
                 lens = _params.Lens(enabled=True, profile=opened.lens)
-            self._baseline = Params(lens=lens, profile=ColourProfile(*opened.profile))
+            self._baseline = _params.Params(
+                lens=lens, profile=_params.ColourProfile(*opened.profile)
+            )
             # A copy made of a photo that had no edit holds the identity, which is not
             # where a RAW file's edit starts
             unedited = (
-                self.params == Params()
+                self.params == _params.Params()
                 if self.copy
-                else self.params == Params() and self.service.edit_json(self.photo_id) is None
+                else self.params == _params.Params()
+                and self.service.edit_json(self.photo_id) is None
             )
             if unedited:
                 self.params = self._baseline
@@ -310,8 +264,8 @@ class DevelopSession(QObject):
         # What is rendered: with the original wanted, no edit at all; in the crop view,
         # the photo without its crop
         if self._before:
-            return Params()
-        return params.with_changes(crop=Crop()) if self._crop_view else params
+            return _params.Params()
+        return params.with_changes(crop=_params.Crop()) if self._crop_view else params
 
     def set_before(self, on):
         """Show the photo as it is without the edit (`on`), or the edit again. Only what
@@ -358,7 +312,7 @@ class DevelopSession(QObject):
         try:
             return _params.from_json(stored) if stored else self._baseline
         except _params.NewerParams:
-            return Params()
+            return _params.Params()
 
     def _set(self, params):
         same_look = self._shown(params) == self._shown(self.params)
@@ -427,7 +381,7 @@ class DevelopSession(QObject):
             on_done=lambda choices: self._on_profiles(token, choices),
             on_error=lambda _error: self._on_profiles(token, []),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_profiles(self, token, choices):
@@ -440,7 +394,7 @@ class DevelopSession(QObject):
         if not self.is_open() or not self._raw:
             return
         if key in ("libraw", "standard"):
-            self.commit(self.params.with_changes(profile=ColourProfile(key, name or "")))
+            self.commit(self.params.with_changes(profile=_params.ColourProfile(key, name or "")))
             return
         token = self._token
         workers.submit(
@@ -449,12 +403,12 @@ class DevelopSession(QObject):
             on_done=lambda found: self._on_profile_stored(token, found),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_profile_stored(self, token, found):
         if token == self._token:
-            self.commit(self.params.with_changes(profile=ColourProfile(*found)))
+            self.commit(self.params.with_changes(profile=_params.ColourProfile(*found)))
 
     def is_making_profile(self):
         return self._making_profile
@@ -470,19 +424,29 @@ class DevelopSession(QObject):
         if not self.is_open() or not self._raw or self._making_profile or self._shot is None:
             return
         model = self._shot.model
-        paths = self.service.raw_files_of(model, limit)
-        if not paths:
-            self.failed.emit(f"No RAW files of the {model} are connected to learn from")
-            return
         token = self._token
         self._set_making(True)
-        workers.submit(
-            _session.fit_camera_look,
-            paths,
-            model,
-            on_done=lambda made: self._on_profile_made(token, made, "look", len(paths)),
-            on_error=lambda error: self._on_making_failed(token, error),
-            owner=self,
+
+        def found(paths):
+            if token != self._token:
+                self._set_making(False)
+                return
+            if not paths:
+                self._set_making(False)
+                self.failed.emit(f"No RAW files of the {model} are connected to learn from")
+                return
+            workers.submit(
+                _session.fit_camera_look,
+                paths,
+                model,
+                on_done=lambda made: self._on_profile_made(token, made, "look", len(paths)),
+                on_error=lambda error: self._on_making_failed(token, error),
+                owner=self,
+                priority=workers.LATER,
+            )
+
+        self.service.raw_files_of(
+            model, limit, found, lambda error: self._on_making_failed(token, error)
         )
 
     def make_checker_profile(self, corners, linear=False):
@@ -503,7 +467,7 @@ class DevelopSession(QObject):
             on_done=lambda made: self._on_profile_made(token, made, "target", 1),
             on_error=lambda error: self._on_making_failed(token, error),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_profile_made(self, token, made, kind, count):
@@ -519,7 +483,9 @@ class DevelopSession(QObject):
                 f"on average, {made.after:.1f} at most."
             )
         if token == self._token:
-            self.commit(self.params.with_changes(profile=ColourProfile(made.ident, made.name)))
+            self.commit(
+                self.params.with_changes(profile=_params.ColourProfile(made.ident, made.name))
+            )
         self.profile_made.emit(f"{told} Saved as {made.path}")
 
     def _on_making_failed(self, token, error):
@@ -559,7 +525,7 @@ class DevelopSession(QObject):
             on_done=lambda names: self._on_lenses(token, names),
             on_error=lambda _error: self._on_lenses(token, []),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_lenses(self, token, names):
@@ -578,7 +544,7 @@ class DevelopSession(QObject):
             on_done=lambda profile: self._on_lens_chosen(token, profile),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_lens_chosen(self, token, profile):
@@ -591,10 +557,10 @@ class DevelopSession(QObject):
     # Presets
 
     def presets(self):
-        return [name for name, _ in self.service.presets()]
+        return [preset.name for preset in self.service.presets()]
 
     def apply_preset(self, name):
-        document = dict(self.service.presets()).get(name)
+        document = self.service.preset(name)
         if document is None or not self.is_open():
             return
         try:
@@ -666,7 +632,7 @@ class DevelopSession(QObject):
             on_done=lambda rendered: self._on_rendered(token, job, rendered),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_rendered(self, token, job, rendered):
@@ -696,26 +662,23 @@ class DevelopSession(QObject):
     # Export
 
     def export(self, destination, options, replace=False):
-        """Export the photo with the current edit. Ends with `exported` or
-        `export_exists` (the file appeared at the last moment and Replace was not
-        chosen)."""
+        """Export the photo with the current edit, as a job: cancellable, and finished
+        after a restart if the app quits first. Ends with `exported` or `export_exists`
+        (the file appeared at the last moment and Replace was not chosen)."""
         if not self.is_open():
             return
-        destination = os.fspath(destination)
-        workers.submit(
-            _export.export,
-            self.path,
-            self.params,
-            destination,
-            options,
-            replace,
-            on_done=lambda path: self.exported.emit(path, None),
-            on_error=lambda error: self._on_export_failed(destination, error),
-            owner=self,
-        )
+        destination = os.path.abspath(os.fspath(destination))
+        job = self.exporter.export_photo(self.photo_id, self.copy, destination, options, replace)
+        self._exports[job] = destination
 
-    def _on_export_failed(self, destination, error):
-        if isinstance(error, _export.ExportExists):
-            self.export_exists.emit(destination)
+    def _on_export_ended(self, job, status):
+        destination = self._exports.pop(job, None)
+        if destination is None or status.state == dbm.CANCELLED:
             return
-        self.exported.emit(destination, getattr(error, "message", None) or str(error))
+        failure = status.failures[0][1] if status.failures else None
+        if failure == exporting.TAKEN:
+            self.export_exists.emit(destination)
+        elif status.state == dbm.DONE and failure is None:
+            self.exported.emit(destination, None)
+        else:
+            self.exported.emit(destination, failure or status.message)

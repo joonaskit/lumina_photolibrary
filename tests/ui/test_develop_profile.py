@@ -7,8 +7,9 @@ from PySide6.QtCore import QPoint, Qt
 
 from lumina.core import dcp
 from lumina.core.edit import colour_profile
+from lumina.core.edit.params import ColourProfile, Params
 from lumina.qt_models import develop, workers
-from lumina.qt_models.develop import DevelopSession, Params
+from lumina.qt_models.develop import DevelopSession
 from lumina.ui import develop_view, settings
 
 CAMERA = "Testcam One"
@@ -38,8 +39,8 @@ def profiles(tmp_path, monkeypatch):
     colour_profile.prepare.cache_clear()
     submit = workers.submit
 
-    def on_a_thread(fn, *args, on_done, on_error, owner, process=True):
-        return submit(fn, *args, on_done=on_done, on_error=on_error, owner=owner, process=False)
+    def on_a_thread(fn, *args, on_done, on_error, owner, **_where):
+        return submit(fn, *args, on_done=on_done, on_error=on_error, owner=owner, lane=workers.IO)
 
     monkeypatch.setattr(develop.workers, "submit", on_a_thread)
     yield folder
@@ -90,7 +91,7 @@ def test_a_raw_file_starts_with_its_cameras_profile(library, qtbot, profiles):
 def test_without_a_profile_a_raw_file_gets_luminas_look(library, qtbot):
     session = opened(library, qtbot, photo_named(library, "c.dng"))
 
-    assert session.params.profile == develop.ColourProfile("standard", "Lumina Standard")
+    assert session.params.profile == ColourProfile("standard", "Lumina Standard")
     assert session.profile_name() == "Lumina Standard"
     session.close()
 

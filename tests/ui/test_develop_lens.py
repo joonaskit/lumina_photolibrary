@@ -4,8 +4,9 @@ import pytest
 from conftest import TIMEOUT
 
 from lumina.core import lensdb
+from lumina.core.edit.params import Lens, Params
 from lumina.qt_models import develop, workers
-from lumina.qt_models.develop import DevelopSession, Params
+from lumina.qt_models.develop import DevelopSession
 from lumina.ui import develop_view
 from lumina.ui.lens_dialog import LensDialog
 
@@ -54,8 +55,8 @@ def lens_data(tmp_path, monkeypatch):
     lensdb._load.cache_clear()
     submit = workers.submit
 
-    def on_a_thread(fn, *args, on_done, on_error, owner, process=True):
-        return submit(fn, *args, on_done=on_done, on_error=on_error, owner=owner, process=False)
+    def on_a_thread(fn, *args, on_done, on_error, owner, **_where):
+        return submit(fn, *args, on_done=on_done, on_error=on_error, owner=owner, lane=workers.IO)
 
     monkeypatch.setattr(develop.workers, "submit", on_a_thread)
     yield folder
@@ -172,7 +173,7 @@ def test_an_unknown_lens_is_left_alone(library, qtbot):
     session = opened(library, qtbot, photo)
 
     assert session.lens_state() == "unknown"
-    assert session.params.lens == develop.Lens()
+    assert session.params.lens == Lens()
     # Nothing to do with the lens: a RAW file starts with a camera look all the same
     assert session.params.profile.id == "standard"
     session.close()
@@ -185,7 +186,7 @@ def test_without_a_lens_database_it_says_so(library, qtbot, monkeypatch):
     session = opened(library, qtbot, photo)
 
     assert session.lens_state() == "no data"
-    assert session.params.lens == develop.Lens()
+    assert session.params.lens == Lens()
     # Nothing to do with the lens: a RAW file starts with a camera look all the same
     assert session.params.profile.id == "standard"
     session.close()

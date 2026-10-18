@@ -6,9 +6,9 @@ from conftest import TIMEOUT
 from PIL import Image
 from PySide6.QtCore import QPointF, Qt
 
+from lumina.core.edit.params import Params
 from lumina.core.edit.session import Rendered
 from lumina.qt_models import develop
-from lumina.qt_models.develop import Params
 from lumina.ui.main_window import MainWindow
 
 WIDTH, HEIGHT = 3000, 2000
@@ -43,10 +43,10 @@ def window(qtbot, service, tmp_path, pixels):
     made.resize(1000, 700)
     made.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        made.add_folder(folder)
+        made.browser.add_folder(folder)
     qtbot.waitUntil(lambda: made.model.rowCount() == 2, timeout=TIMEOUT)
     with qtbot.waitSignal(made.session.image_ready, timeout=TIMEOUT):
-        made.show_develop(0)
+        made.nav.show_develop(0)
     return made
 
 
@@ -213,10 +213,10 @@ def test_stepping_keeps_the_zoom_and_coming_in_again_starts_fitted(qtbot, window
     assert window.develop.image.is_zoomed()
     qtbot.waitUntil(window.develop.image.has_detail, timeout=TIMEOUT)
 
-    window.go_back()  # fitted
-    window.go_back()  # out
+    window.nav.go_back()  # fitted
+    window.nav.go_back()  # out
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.show_develop(0)
+        window.nav.show_develop(0)
     assert not window.develop.image.is_zoomed()
 
 

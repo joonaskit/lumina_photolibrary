@@ -18,7 +18,7 @@ def open_window(qtbot, service, folder=None):
     window.show()
     if folder is not None:
         with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-            window.add_folder(folder)
+            window.browser.add_folder(folder)
         qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     return window
 

@@ -3,19 +3,21 @@ flags, the keyword filter and the sidebar's list, manual and smart collections."
 
 import json
 
-from conftest import TIMEOUT
+from conftest import TIMEOUT, written
 from PySide6.QtCore import QMimeData, Qt
 from PySide6.QtWidgets import QInputDialog
 from test_flags import choose, names, open_window, press
 
 from lumina.core import db as dbm
-from lumina.qt_models.library_model import PHOTOS_MIME, PICKED
+from lumina.core.dbtypes import PICKED
+from lumina.qt_models.library_model import PHOTOS_MIME
 from lumina.ui.keywords_dialog import KeywordsDialog
 from lumina.ui.sidebar import KIND_ROLE
 
 
 def stored(service):
     """{name: sorted keyword paths} as the library has them."""
+    service.settle()
     with dbm.Library(service.path) as library:
         paths = {i: path for i, path, _count in library.keyword_list()}
         return {
@@ -52,6 +54,7 @@ def test_chosen_photos_are_given_keywords_which_are_kept(qtbot, service, drive):
     choose(window, 0, 2)
 
     given = window.model.add_keywords([0, 2], ["Places > Helsinki", " cat ", ""])
+    window.service.flush()
 
     assert given == ["Places > Helsinki", "cat"]
     first, middle, last = names(window)
@@ -68,6 +71,7 @@ def test_chosen_photos_are_given_keywords_which_are_kept(qtbot, service, drive):
 def test_keywords_are_taken_off_the_chosen_photos_only(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
     window.model.add_keywords([0, 1, 2], ["Cat", "Dog"])
+    window.service.flush()
 
     assert window.model.remove_keywords([0, 1], ["cat"]) == 2
 
@@ -80,8 +84,10 @@ def test_keyword_changes_are_undone_in_order_with_flags_and_ratings(qtbot, servi
     window = open_window(qtbot, service, drive / "Photos")
     choose(window, 0)
     window.model.add_keywords([0], ["Cat"])
+    window.service.flush()
     window.pick_action.trigger()
     window.model.add_keywords([0], ["Dog"])
+    window.service.flush()
     assert window.model.keywords(0) == ["Cat", "Dog"] and window.model.flag(0) == PICKED
 
     window.undo_flag_action.trigger()
@@ -106,6 +112,8 @@ def test_the_keywords_dialog_adds_and_removes_for_the_chosen_photos(
     def run(dialog):
         seen.append(dialog.heading.text())
         dialog.add_requested.emit("Cat, Places > Helsinki")
+        # As the dialog's own event loop would: the keywords are made, then given
+        window.service.flush()
         seen.append([dialog.list.item(n).text() for n in range(dialog.list.count())])
         dialog.list.item(0).setSelected(True)
         dialog.remove_requested.emit([dialog.list.item(0).data(Qt.ItemDataRole.UserRole + 1)])
@@ -139,7 +147,9 @@ def test_the_sidebar_lists_keywords_with_counts_and_filters_by_one(qtbot, servic
     window = open_window(qtbot, service, drive / "Photos")
     assert window.sidebar.keyword_list.isHidden()
     window.model.add_keywords([0, 1], ["Places > Helsinki"])
+    window.service.flush()
     window.model.add_keywords([2], ["Places > Espoo"])
+    window.service.flush()
 
     qtbot.waitUntil(
         lambda: (
@@ -167,10 +177,12 @@ def test_a_photo_that_loses_the_keyword_filtered_by_stays_until_the_user_moves_o
 ):
     window = open_window(qtbot, service, drive / "Photos")
     window.model.add_keywords([0, 1], ["Cat"])
+    window.service.flush()
     window.filters.set_keyword("Cat")
     assert window.model.rowCount() == 2
 
     window.model.remove_keywords([0], ["Cat"])
+    window.service.flush()
     assert window.model.rowCount() == 2
     window.model.settle()
     assert window.model.rowCount() == 1
@@ -179,9 +191,11 @@ def test_a_photo_that_loses_the_keyword_filtered_by_stays_until_the_user_moves_o
 def test_deleting_and_renaming_a_keyword_change_the_photos_and_the_filter(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
     window.model.add_keywords([0, 1], ["Trip > Spain"])
+    window.service.flush()
     window.filters.set_keyword("Trip > Spain")
 
     service.rename_keyword("Trip", "Holiday")
+    window.service.flush()
     qtbot.waitUntil(lambda: "Holiday > Spain" in window.service.keyword_paths.values())
     # The filter's choice went with the name
     assert window.filters.keyword_value() is None
@@ -189,6 +203,7 @@ def test_deleting_and_renaming_a_keyword_change_the_photos_and_the_filter(qtbot,
     assert window.model.keywords(0) == ["Holiday > Spain"]
 
     service.delete_keyword("Holiday")
+    window.service.flush()
     assert window.model.keywords(0) == [] and stored(service)[names(window)[0]] == []
     assert sidebar_keywords(window) == []
 
@@ -196,11 +211,12 @@ def test_deleting_and_renaming_a_keyword_change_the_photos_and_the_filter(qtbot,
 def test_a_collection_holds_photos_added_by_menu_or_drop(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
     first, second, third = names(window)
-    box = service.add_collection("Best")
+    box = written(service.add_collection, "Best")
     assert collection_items(window) == [("Best", "collection")]
 
     choose(window, 0)
-    window.add_to_collection(box)
+    window.collecting.add_to_collection(box)
+    window.service.flush()
     window.sidebar.photos_dropped.emit(box, [window.model.photo_id(2)])
 
     window.sidebar.select_collection(box)
@@ -210,7 +226,8 @@ def test_a_collection_holds_photos_added_by_menu_or_drop(qtbot, service, drive):
 
     # Out of the collection, not out of the library
     choose(window, 0)
-    window.remove_from_collection(box)
+    window.collecting.remove_from_collection(box)
+    window.service.flush()
     qtbot.waitUntil(lambda: window.model.rowCount() == 1, timeout=TIMEOUT)
     assert names(window) == [third]
     window.sidebar.select(None)
@@ -220,11 +237,12 @@ def test_a_collection_holds_photos_added_by_menu_or_drop(qtbot, service, drive):
 
 def test_deleting_the_collection_shown_goes_back_to_all_photos(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
-    box = service.add_collection("Best")
+    box = written(service.add_collection, "Best")
     window.sidebar.select_collection(box)
     qtbot.waitUntil(lambda: window.model.rowCount() == 0, timeout=TIMEOUT)
 
     service.delete_collection(box)
+    window.service.flush()
 
     qtbot.waitUntil(lambda: window.model.rowCount() == 3, timeout=TIMEOUT)
     assert collection_items(window) == [] and window.sidebar.current_collection() is None
@@ -232,14 +250,15 @@ def test_deleting_the_collection_shown_goes_back_to_all_photos(qtbot, service, d
 
 def test_collection_names_are_checked(qtbot, service, drive, monkeypatch):
     window = open_window(qtbot, service, drive / "Photos")
-    service.add_collection("Best")
+    written(service.add_collection, "Best")
     warned = []
     monkeypatch.setattr(QInputDialog, "getText", lambda *_a, **_k: ("best", True))
     monkeypatch.setattr(
-        "lumina.ui.main_window.QMessageBox.warning", lambda *_a: warned.append(_a[-1])
+        "lumina.ui.controllers.collecting.QMessageBox.warning", lambda *_a: warned.append(_a[-1])
     )
 
-    assert window.new_collection() is None
+    window.collecting.new_collection()
+    service.flush()
 
     assert warned and "already" in warned[0]
     assert [c.name for c in service.collections()] == ["Best"]
@@ -266,12 +285,14 @@ def test_a_smart_collection_saves_the_filters_and_updates_itself(
     choose(window, 0)
     window.pick_action.trigger()
     window.model.add_keywords([0, 1], ["Cat"])
+    window.service.flush()
     window.filters.flag.setCurrentIndex(window.filters.flag.findData(PICKED))
     window.filters.set_keyword("Cat")
     assert window.model.rowCount() == 1
     monkeypatch.setattr(QInputDialog, "getText", lambda *_a, **_k: ("Cat picks", True))
 
-    window.new_smart_collection()
+    window.collecting.new_smart_collection()
+    window.service.flush()
 
     assert collection_items(window) == [("Cat picks", "smart")]
     assert window.sidebar.current_collection()[1] is True
@@ -287,6 +308,7 @@ def test_a_smart_collection_saves_the_filters_and_updates_itself(
     # A photo that now fits is in it with nothing saved again
     window.filters.clear()
     window.model.add_keywords([2], ["Cat"])
+    window.service.flush()
     choose(window, 2)
     window.pick_action.trigger()
     window.sidebar.select(None)
@@ -300,7 +322,8 @@ def test_nothing_set_is_not_saved_as_a_smart_collection(qtbot, service, drive, m
     monkeypatch.setattr(QInputDialog, "getText", lambda *_a, **_k: asked.append(1) or ("x", True))
 
     assert not window.filters.save_button.isEnabled()
-    window.new_smart_collection()
+    window.collecting.new_smart_collection()
+    window.service.flush()
 
     assert asked == [] and service.collections() == []
 
@@ -308,9 +331,10 @@ def test_nothing_set_is_not_saved_as_a_smart_collection(qtbot, service, drive, m
 def test_the_viewers_status_names_the_keywords(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
     window.model.add_keywords([0], ["Places > Helsinki", "Cat"])
+    window.service.flush()
     choose(window, 0)
 
-    window.show_photo(0)
+    window.nav.show_photo(0)
 
     assert "Keywords: Cat, Places > Helsinki" in window.status.text()
 
@@ -341,7 +365,7 @@ def test_the_last_import_is_a_view_of_the_photos_it_copied(qtbot, service, drive
         # The photo is in the library under that name already: the scan found it
         assert any(p.path.endswith(second) for p in library.photos())
 
-    window._refresh_last_import()
+    window.browser.refresh_last_import()
     window.sidebar.select_import()
 
     qtbot.waitUntil(lambda: window.model.rowCount() == 1, timeout=TIMEOUT)

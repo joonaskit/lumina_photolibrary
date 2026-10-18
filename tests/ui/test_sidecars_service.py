@@ -53,6 +53,7 @@ def test_turning_them_on_writes_for_the_whole_library_and_reads_those_there(qtbo
         service.add_folder(drive / "Photos")
     marked, other = service.db.photos()[:2]
     service.set_ratings({marked.id: 4})
+    service.settle()
     # A sidecar made elsewhere, newer than anything here
     xmp.write(
         str(drive / "Photos" / os.path.basename(other.path)),
@@ -61,10 +62,10 @@ def test_turning_them_on_writes_for_the_whole_library_and_reads_those_there(qtbo
 
     with qtbot.waitSignal(service.sidecars_written, timeout=TIMEOUT):
         service.set_sidecars(True)
-    qtbot.waitUntil(lambda: service.db.photo(other.id)["rating"] == 2, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: service.db.photo(other.id).rating == 2, timeout=TIMEOUT)
 
     assert os.path.basename(marked.path) + ".xmp" in sidecar_files(drive)
-    assert service.db.photo(marked.id)["rating"] == 4
+    assert service.db.photo(marked.id).rating == 4
 
 
 def test_turning_them_off_stops_writing(qtbot, service, drive):
@@ -99,7 +100,7 @@ def test_a_sidecar_that_could_not_be_written_is_said_in_the_status_bar(qtbot, se
     qtbot.addWidget(window)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(drive / "Photos")
+        window.browser.add_folder(drive / "Photos")
     qtbot.waitUntil(lambda: window.model.rowCount() == 3, timeout=TIMEOUT)
     service._sidecar_timer.setInterval(50)
     service.sidecars = True

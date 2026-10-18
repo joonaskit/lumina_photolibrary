@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-from lumina.core.edit.lenscorrect import LensProfile
+from lumina.core.edit.params import LensProfile
 
 # A lens whose name is at least this like the photo's is the lens
 MATCH_RATIO = 0.85

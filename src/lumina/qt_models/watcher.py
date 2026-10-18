@@ -84,7 +84,8 @@ class FolderWatcher(QObject):
         # Folder ids with a walk running, those too large to watch, and those changed
         self._walking = set()
         self.unwatched = set()
-        self._changed = set()
+        # Folder id -> the directories changed since its last scan
+        self._changed = {}
         self._queue = []
         self._quitting = False
         self._timer = QTimer(self)
@@ -144,7 +145,7 @@ class FolderWatcher(QObject):
             on_done=lambda found: self._walked(folder, found),
             on_error=lambda _error: self._walked(folder, None),
             owner=self,
-            process=workers.WATCH,
+            lane=workers.WATCH,
         )
 
     def _walked(self, folder, found):
@@ -181,7 +182,7 @@ class FolderWatcher(QObject):
         if paths:
             self._watcher.removePaths(list(paths))
         self._queue = [item for item in self._queue if item[0] != folder]
-        self._changed.discard(folder)
+        self._changed.pop(folder, None)
 
     def _on_changed(self, path):
         folder = self._owner.get(path)
@@ -192,7 +193,7 @@ class FolderWatcher(QObject):
             for directory in (path, *made):
                 self.hot_changed.emit(folder, directory)
         if self.enabled:
-            self._changed.add(folder)
+            self._changed.setdefault(folder, set()).update((path, *made))
             self._timer.start()
 
     def _add_new_directories(self, folder, path):
@@ -220,13 +221,15 @@ class FolderWatcher(QObject):
         return made
 
     def _scan(self):
-        changed, self._changed = self._changed, set()
-        # What Qt let go of when its directory went
+        changed, self._changed = self._changed, {}
+        # What Qt let go of when its directory went: what was in it is missing now
         gone = set(self._owner) - set(self._watcher.directories())
         for path in gone:
             folder = self._owner.pop(path)
             if folder in self._dirs:
                 self._dirs[folder].discard(path)
+            if self.enabled:
+                changed.setdefault(folder, set()).add(path)
         for folder in sorted(changed):
             if self.service.is_connected(folder):
-                self.service.rescan(folder)
+                self.service.rescan(folder, directories=changed[folder])

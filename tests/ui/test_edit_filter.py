@@ -13,7 +13,7 @@ def open_window(qtbot, service, folder):
     qtbot.addWidget(window)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(folder)
+        window.browser.add_folder(folder)
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     assert window.model.rowCount() == 3
     return window
@@ -31,7 +31,7 @@ def edit_photo(qtbot, window, row, edit=True):
 
     def heard():
         shown = window.model.row_of(photo_id)
-        return shown is not None and (window.model.edit(shown) is not None) == edit
+        return shown is not None and window.model.is_edited(shown) == edit
 
     qtbot.waitUntil(heard, timeout=TIMEOUT)
     return name
@@ -106,3 +106,26 @@ def test_the_edit_filter_works_with_the_flag_filter_and_the_hidden_count(qtbot, 
     # The unedited third photo is not hidden by the flags, only by the edit filter
     assert window.model.hidden_count() == 1
     assert third not in names(window)
+
+
+def test_saving_an_edit_updates_its_row_and_does_not_read_the_library_again(
+    qtbot, service, drive, monkeypatch
+):
+    window = open_window(qtbot, service, drive / "Photos")
+    loads = []
+    real = window.model._load
+    monkeypatch.setattr(window.model, "_load", lambda reset: loads.append(reset) or real(reset))
+    changed = []
+    # Thumbnails arriving meanwhile change rows too (the decoration role); not counted
+    window.model.dataChanged.connect(
+        lambda first, last, roles=(): roles or changed.append((first.row(), last.row()))
+    )
+
+    edit_photo(qtbot, window, 1)
+
+    assert window.model.is_edited(1) and window.model.edit(1) is not None
+    assert [window.model.is_edited(row) for row in (0, 2)] == [False, False]
+    assert loads == []
+    assert changed == [(1, 1)]
+    edit_photo(qtbot, window, 1, edit=False)
+    assert not window.model.is_edited(1) and window.model.edit(1) is None and loads == []

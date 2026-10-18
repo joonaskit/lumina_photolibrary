@@ -6,9 +6,8 @@ import numpy as np
 import pytest
 
 from lumina.core.edit import lenscorrect, params, perspective, pipeline
-from lumina.core.edit.lenscorrect import Correction, LensProfile
-from lumina.core.edit.params import Crop, Params
-from lumina.core.edit.perspective import Perspective
+from lumina.core.edit.lenscorrect import Correction
+from lumina.core.edit.params import Crop, LensProfile, Params, Perspective
 
 WIDTH, HEIGHT = 120, 80
 

@@ -19,7 +19,7 @@ def window(qtbot, service, drive):
     made.resize(1200, 800)
     made.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        made.add_folder(drive / "Photos")
+        made.browser.add_folder(drive / "Photos")
     qtbot.waitUntil(lambda: made.model.rowCount() == 3, timeout=TIMEOUT)
     return made
 
@@ -35,7 +35,7 @@ def choose(window, *rows):
 def open_editor(qtbot, window):
     choose(window, 0)
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.edit_current()
+        window.nav.edit_current()
 
 
 def shortcut_actions(window):

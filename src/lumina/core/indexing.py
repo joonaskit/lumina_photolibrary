@@ -41,13 +41,15 @@ def index(
     library.update_job(job_id, state=dbm.RUNNING, phase=ENCODING, done=0, total=None, message=None)
     keys = volumes.mounted_ids(mounts)
     total = library.count_pending_embeddings(model, keys)
-    done = skipped = failures = 0
+    done = failures = 0
+    # Passed over (not reachable now): left for the next run, not asked for again in this
+    passed = set()
     job.progress(ENCODING, 0, total, force=True)
     while True:
         if should_stop():
             job.end(dbm.CANCELLED, "Cancelled while indexing for search")
             return dbm.CANCELLED
-        pending = library.pending_embeddings(model, keys, batch, skip=skipped)
+        pending = library.pending_embeddings(model, keys, batch, skip=passed)
         if not pending:
             break
         paths = {}
@@ -55,7 +57,7 @@ def index(
             where = volumes.resolve(key, relative, mounts)
             if where is None:
                 # On a connected drive, but not where any mount shows it: left for later
-                skipped += 1
+                passed.add(cid)
             else:
                 paths[cid] = where
         try:
@@ -68,7 +70,7 @@ def index(
         for (cid, path), result in zip(paths.items(), results, strict=True):
             if isinstance(result, PhotoError) and not os.path.exists(path):
                 # Gone while the job ran (a drive unplugged): not the photo's fault
-                skipped += 1
+                passed.add(cid)
             elif isinstance(result, PhotoError):
                 failed.append((cid, path, result.message))
             else:
@@ -79,7 +81,7 @@ def index(
         done += len(pending)
         job.progress(ENCODING, done, total, changed=True)
     job.progress(ENCODING, done, total, force=True)
-    job.end(dbm.DONE, _summary(done - skipped - failures, failures, skipped))
+    job.end(dbm.DONE, _summary(done - len(passed) - failures, failures, len(passed)))
     return dbm.DONE
 
 

@@ -10,7 +10,8 @@ from PySide6.QtWidgets import QMenu, QStyleOptionViewItem
 from test_flags import choose, names, open_window, press
 
 from lumina.core import db as dbm
-from lumina.qt_models.library_model import NOT_RATED, PICKED, REJECTED, UNFLAGGED
+from lumina.core.dbtypes import PICKED, REJECTED, UNFLAGGED
+from lumina.qt_models.library_model import NOT_RATED
 from lumina.ui import settings
 
 KEYS = {
@@ -25,6 +26,7 @@ KEYS = {
 
 def stored(service):
     """{name: rating} as the library has them."""
+    service.settle()
     with dbm.Library(service.path) as library:
         return {os.path.basename(photo.path): photo.rating for photo in library.photos()}
 
@@ -175,7 +177,7 @@ def test_the_number_keys_do_nothing_while_typing_a_search(qtbot, service, drive)
 def test_the_viewer_rates_the_photo_shown_and_says_so(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
     first, second, _third = names(window)
-    window.show_photo(0)
+    window.nav.show_photo(0)
 
     press(qtbot, window.viewer, KEYS[3])
     assert window.title.text() == first
@@ -195,7 +197,7 @@ def test_the_develop_view_rates_the_photo_being_edited_and_never_steps_on(qtbot,
     first, second, _third = names(window)
     settings.set_advance_after_flag(True)
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.show_develop(0)
+        window.nav.show_develop(0)
 
     press(qtbot, window.develop, KEYS[4])
     press(qtbot, window.develop, Qt.Key.Key_P)
@@ -210,7 +212,7 @@ def test_the_develop_view_rates_the_photo_being_edited_and_never_steps_on(qtbot,
 def test_in_the_develop_view_undo_is_the_edits_not_the_flags(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.show_develop(0)
+        window.nav.show_develop(0)
     press(qtbot, window.develop, Qt.Key.Key_X)
     assert not window.undo_flag_action.isEnabled()
 
@@ -218,7 +220,7 @@ def test_in_the_develop_view_undo_is_the_edits_not_the_flags(qtbot, service, dri
 
     assert window.model.flag(0) == REJECTED
     # Back in the grid the change can be undone
-    window.go_back()
+    window.nav.go_back()
     assert window.undo_flag_action.isEnabled()
     window.undo_flag_action.trigger()
     assert window.model.flag(0) == UNFLAGGED
@@ -328,12 +330,12 @@ def test_the_toolbar_stars_follow_the_photo_chosen_and_are_off_without_one(qtbot
 
 def test_the_toolbar_stars_are_there_in_the_viewer_and_the_develop_view(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
-    window.show_photo(0)
+    window.nav.show_photo(0)
     qtbot.mouseClick(window.rating_bar, Qt.MouseButton.LeftButton, pos=star_point(window, 3))
     assert window.model.rating(0) == 3
 
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.show_develop(0)
+        window.nav.show_develop(0)
     assert window.marking.isVisible() and window.rating_bar.rating() == 3
     qtbot.mouseClick(window.rating_bar, Qt.MouseButton.LeftButton, pos=star_point(window, 5))
     assert window.model.rating(0) == 5

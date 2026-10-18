@@ -29,13 +29,11 @@ from datetime import datetime
 
 from lumina.core import capture_time, derived, metadata, scanner, tether, volumes
 from lumina.core import db as dbm
-from lumina.core.errors import PhotoError
+from lumina.core.dbtypes import COPYING
+from lumina.core.errors import CameraBusy, NotConnected, PhotoError
 from lumina.core.fingerprint import content_id, content_id_of
-from lumina.core.library import NotConnected, _Job
+from lumina.core.library import _Job
 from lumina.core.range_file import RangeFile
-
-IMPORT = "import"
-READING, COPYING = "reading", "copying"
 
 # Where in the library folder a photo goes, by the day it was taken (strftime)
 LAYOUTS = {
@@ -134,10 +132,6 @@ def read_source(
     known = library.imported(candidate.content_id for candidate in read)
     candidates = tuple(replace(c, imported=c.content_id in known) for c in read)
     return Reading(candidates, tuple(failures))
-
-
-class CameraBusy(NotConnected):
-    """Another program has the camera: the message says which and how to let it go."""
 
 
 def camera_key(serial):
@@ -342,11 +336,20 @@ def queue(
     return library.add_import_job(folder_id, items)
 
 
-def run(library, job_id, mounts, should_stop=lambda: False, report=None, make_camera=None):
+def run(
+    library,
+    job_id,
+    mounts,
+    should_stop=lambda: False,
+    report=None,
+    make_camera=None,
+    read_mounts=None,
+):
     """Run import job `job_id` to its end and return its state. Raises NotConnected,
     leaving the job queued, when the card's or a destination's drive is not mounted, or a
     camera it copies from is not there (`make_camera()` makes the camera: the first on
-    USB) or is not the one it was queued with."""
+    USB) or is not the one it was queued with. `read_mounts()` gives the mounts as they are
+    now: a photo that cannot be read from a card no longer there is waited for, not failed."""
     report = report or (lambda phase, done, total, changed: None)
     job = _Job(library, job_id, report)
     items = library.import_items(job_id)
@@ -357,7 +360,7 @@ def run(library, job_id, mounts, should_stop=lambda: False, report=None, make_ca
                 raise NotConnected(path)
     camera = _camera_for(waiting, make_camera)
     try:
-        return _copy_all(library, job, items, waiting, mounts, should_stop, camera)
+        return _copy_all(library, job, items, waiting, mounts, should_stop, camera, read_mounts)
     finally:
         if camera is not None:
             camera.close()
@@ -378,7 +381,7 @@ def _camera_for(waiting, make_camera):
     return camera
 
 
-def _copy_all(library, job, items, waiting, mounts, should_stop, camera):
+def _copy_all(library, job, items, waiting, mounts, should_stop, camera, read_mounts):
     job_id = job.id
     total = len(items)
     done = total - len(waiting)
@@ -400,6 +403,10 @@ def _copy_all(library, job, items, waiting, mounts, should_stop, camera):
             source = volumes.resolve(item.source_key, item.source_path, mounts)
         try:
             path = _copy_item(item, source, mounts, job_id, should_stop, camera)
+        except _BackupFailed as error:
+            # In the library, and safe there: only the second copy is to be made again
+            library.set_import_item(item.id, dbm.COPIED, path=error.path, message=error.message)
+            library.add_failures(job_id, [(error.backup, error.message)])
         except tether.CameraError as error:
             if error.kind in (tether.GONE, tether.NOT_FOUND, tether.BUSY):
                 # Unplugged: the job waits, and goes on from this photo when it is back
@@ -409,6 +416,9 @@ def _copy_all(library, job, items, waiting, mounts, should_stop, camera):
             library.add_failures(job_id, [(error.path, error.message)])
             failed += 1
         except (PhotoError, OSError) as error:
+            if not on_camera and _source_gone(item, read_mounts() if read_mounts else mounts):
+                # The card was pulled: the photo is not at fault, the job waits for it
+                raise NotConnected(item.source_path) from error
             if not isinstance(error, PhotoError):
                 error = PhotoError(error.filename or source, error.strerror or str(error))
             library.set_import_item(item.id, dbm.NOT_COPIED, message=error.message)
@@ -424,6 +434,19 @@ def _copy_all(library, job, items, waiting, mounts, should_stop, camera):
     job.progress(COPYING, done, total, force=True)
     job.end(dbm.DONE, _summary(total - failed, failed))
     return dbm.DONE
+
+
+def _source_gone(item, mounts):
+    """Whether the volume the item is copied from is no longer mounted or its folder is
+    gone."""
+    where = volumes.resolve(item.source_key, item.source_path, mounts)
+    return where is None or not os.path.isdir(os.path.dirname(where))
+
+
+class _BackupFailed(Exception):
+    def __init__(self, path, backup, message):
+        super().__init__(message)
+        self.path, self.backup, self.message = path, backup, message
 
 
 def _places(item):
@@ -457,6 +480,15 @@ def _copy_item(item, source, mounts, job_id, should_stop, camera=None):
             placed = derived.place(
                 part, where, stem, suffix, same=lambda path, d=digest: _same(path, item.size, d)
             )
+        except (PhotoError, OSError) as error:
+            derived.remove(part)
+            if result is None:
+                raise
+            if not isinstance(error, PhotoError):
+                error = PhotoError(error.filename or part, error.strerror or str(error))
+            raise _BackupFailed(
+                result, error.path, f"Copied, but not backed up: {error.message}"
+            ) from error
         except BaseException:
             derived.remove(part)
             raise

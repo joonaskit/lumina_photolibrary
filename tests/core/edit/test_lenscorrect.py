@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from lumina.core.edit import lenscorrect, pipeline
-from lumina.core.edit.lenscorrect import Correction, LensProfile
-from lumina.core.edit.params import Lens, Params
+from lumina.core.edit.lenscorrect import Correction
+from lumina.core.edit.params import Lens, LensProfile, Params
 
 PTLENS = ("ptlens", 0.03, -0.08, 0.05)
 BARREL = ("ptlens", -0.06, 0.0, 0.0)

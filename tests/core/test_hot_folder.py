@@ -45,7 +45,7 @@ def studio(library, drive):
     mounts = [Mount(DRIVE, str(drive), "/", "exfat", "/dev/sdz1", "Photos drive")]
     key, inside = locate(drive / "Studio", mounts)
     folder_id = library.add_folder(key, inside, "Photos drive", str(drive))
-    job = library.add_job(scanning.SCAN, folder_id)
+    job = library.add_job(dbm.SCAN, folder_id)
     assert scanning.scan(library, job, folder_id, mounts, exiftool=FakeExifTool) == dbm.DONE
     folder = library.folder(folder_id)
     return folder, library.volume_id(key), str(drive / "Studio")
@@ -175,7 +175,7 @@ def test_a_photo_with_an_edit_already_keeps_it(library, studio):
     )
 
     assert library.edit(old) == '{"mine": 1}'
-    assert library.photo(old)["content_id"] is None
+    assert library.photo(old).content_id is None
 
 
 def test_a_scan_that_finds_a_photo_already_taken_in_leaves_it_as_it_is(library, studio):
@@ -249,8 +249,8 @@ def test_a_file_written_in_pieces_is_read_once_it_is_complete(library, studio, m
     assert written == path
     assert read == [([(photo, path)], [])]
     stored = library.photo(photo)
-    assert stored["content_id"] and stored["model"] == "Canon EOS 90D"
-    assert stored["size"] == len(data)
+    assert stored.content_id and stored.model == "Canon EOS 90D"
+    assert stored.size == len(data)
     assert "Studio/IMG_0001.jpg" in paths(library, folder)
 
 
@@ -313,7 +313,7 @@ def test_without_exiftool_a_photo_is_taken_in_and_its_details_left_for_the_scan(
 
     (((photo, _path),),) = added
     assert read == [([(photo, os.path.join(base, "new.jpg"))], [])]
-    assert library.photo(photo)["metadata_state"] == 0
+    assert library.photo(photo).metadata_state == 0
     assert library.pending_metadata(folder.id, 10) == [(photo, "Studio/new.jpg")]
 
 

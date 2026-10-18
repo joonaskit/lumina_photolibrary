@@ -8,7 +8,7 @@ import json
 from dataclasses import asdict, dataclass, fields
 
 from lumina.core import keywords as keywordm
-from lumina.core.db import Filter
+from lumina.core.dbtypes import Filter
 
 VERSION = 1
 
@@ -57,7 +57,7 @@ class SmartQuery:
                 return False
             if self.rating and photo.rating < self.rating:
                 return False
-        if self.edit is not None and (photo.edit is not None) != (self.edit == "edited"):
+        if self.edit is not None and (photo.edited is not None) != (self.edit == "edited"):
             return False
         if self.keyword is not None:
             return any(

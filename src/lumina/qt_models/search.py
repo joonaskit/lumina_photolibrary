@@ -3,9 +3,10 @@
 Nothing is fetched until the user asks: `download()` is the only way the model
 comes. Once it is there, an indexing job (core/indexing.py) runs whenever there may
 be photos without a vector: at the start, after every scan, and when a drive comes.
-It runs on a thread of its own and encodes in a worker process of its own at low
-priority, apart from the scans, so a drive plugged in is scanned at once, not
-after hours of indexing. A quit in the middle leaves it queued for the next start.
+It runs on a thread of its own (by the JobRunner of qt_models/jobs.py) and encodes in a
+worker process of its own at low priority, apart from the scans, so a drive plugged in
+is scanned at once, not after hours of indexing. A quit in the middle leaves it queued
+for the next start.
 
 Searches run on one thread that keeps the vectors in memory (core/search.py). The
 words of a search are encoded in a worker process that keeps the text half of the
@@ -13,9 +14,7 @@ model loaded; the first search loads it, which takes a second or two. The newest
 search wins: an older one's results are dropped.
 """
 
-import threading
 import time
-from dataclasses import dataclass
 from functools import partial
 
 from PySide6.QtCore import QObject, Signal
@@ -24,18 +23,10 @@ from lumina.core import db as dbm
 from lumina.core import embed, indexing, models
 from lumina.core import search as searching
 from lumina.qt_models import workers
+from lumina.qt_models.jobs import JobRunner
 
 # How often the download's progress reaches the UI, in seconds
 _PROGRESS_EVERY = 0.2
-
-
-@dataclass(frozen=True)
-class IndexStatus:
-    state: str
-    done: int
-    total: int | None
-    message: str | None
-    failures: tuple
 
 
 class SearchService(QObject):
@@ -45,7 +36,7 @@ class SearchService(QObject):
     download_progress = Signal(int, int)
     # The reason, naming the file
     download_failed = Signal(str)
-    # An IndexStatus, while indexing runs and when it ends
+    # A JobStatus, while indexing runs and when it ends
     indexing_changed = Signal(object)
     # More photos can be found
     index_changed = Signal()
@@ -58,18 +49,26 @@ class SearchService(QObject):
         self.model_root = model_root
         self.folder = models.directory(embed.MODEL, model_root)
         self._encode = encode or _encode_in_process
-        self._quitting = threading.Event()
+        self._quitting = workers.Token()
         self._download_stop = None
-        self._index_stop = None
-        self._indexing = None
-        self._again = False
+        self.jobs = JobRunner(
+            self,
+            library,
+            {indexing.EMBED},
+            workers.INDEXING,
+            prepare=lambda _job: partial(_index, partial(self._encode, self.folder)),
+            name=lambda _job: "",
+            changed=self.indexing_changed.emit,
+            ended=lambda _job, _status: self.index_changed.emit(),
+            progress=self._on_progress,
+        )
         self._removing = False
         self._generation = 0
         # Whether a search has loaded the text half of the model yet
         self._text_loaded = False
         self._searcher = _Searcher(library.path, self.folder, encode_text)
         # Kept for the tests, which wait for them
-        self.download_future = self.index_future = self.remove_future = None
+        self.download_future = self.remove_future = None
         library.job_ended.connect(lambda _status: self.index())
         library.mounts_changed.connect(self.index)
 
@@ -80,10 +79,9 @@ class SearchService(QObject):
     def close(self):
         """For the app's exit: a download or indexing in progress stops; indexing is
         queued for the next start."""
-        self._quitting.set()
-        for stop in (self._download_stop, self._index_stop):
-            if stop is not None:
-                stop.set()
+        self._quitting.cancel()
+        self.jobs.close()
+        self.cancel_download()
 
     # The model
 
@@ -100,7 +98,7 @@ class SearchService(QObject):
         """Fetch the model, continuing a download that stopped. Then index."""
         if self.is_downloading() or self.is_ready() or self._removing:
             return
-        stop = threading.Event()
+        stop = workers.Token(self._quitting)
         self._download_stop = stop
         told = [0.0]
 
@@ -111,17 +109,17 @@ class SearchService(QObject):
                 workers.call_on_main(self, self.download_progress.emit, done, total)
 
         self.download_future = workers.submit(
-            partial(models.download, embed.MODEL, self.model_root, report, stop.is_set),
+            partial(models.download, embed.MODEL, self.model_root, report, stop),
             on_done=lambda _none: self._downloaded(None),
             on_error=self._downloaded,
             owner=self,
-            process=workers.INDEXING,
+            lane=workers.INDEXING,
         )
         self.model_changed.emit()
 
     def cancel_download(self):
         if self._download_stop is not None:
-            self._download_stop.set()
+            self._download_stop.cancel()
 
     def remove_model(self):
         """Delete the model's files, stopping a download or indexing first: on the
@@ -139,7 +137,7 @@ class SearchService(QObject):
             on_done=lambda _none: self._removed(),
             on_error=lambda _error: self._removed(),
             owner=self,
-            process=workers.INDEXING,
+            lane=workers.INDEXING,
         )
         self.model_changed.emit()
 
@@ -155,14 +153,14 @@ class SearchService(QObject):
             on_done=lambda _none: None,
             on_error=lambda _error: None,
             owner=self,
-            process=workers.SEARCH,
+            lane=workers.SEARCH,
         )
-        if not self._quitting.is_set():
+        if not self._quitting.cancelled():
             self.model_changed.emit()
 
     def _downloaded(self, error):
         self._download_stop = None
-        if self._quitting.is_set():
+        if self._quitting.cancelled():
             return
         self.model_changed.emit()
         if error is None:
@@ -173,75 +171,28 @@ class SearchService(QObject):
     # Indexing
 
     def is_indexing(self):
-        return self._indexing is not None
+        return self.jobs.is_busy()
 
     def index(self):
         """Give every photo without a vector one. Run again when it ends if it is
         running now: what a scan added since it started is not in its count."""
         if (
-            self._quitting.is_set()
+            self._quitting.cancelled()
             or self._removing
             or not self.is_ready()
             or self.is_downloading()
         ):
             return
-        if self._indexing is not None:
-            self._again = True
-            return
-        self._again = False
-        job_id = self.library.db.add_job(indexing.EMBED, None)
-        stop = threading.Event()
-        self._index_stop = stop
-        self._indexing = job_id
-        quitting = self._quitting
-        self.index_future = workers.submit(
-            _run_index,
-            self.library.path,
-            job_id,
-            self.library.mounts,
-            partial(self._encode, self.folder),
-            stop,
-            quitting,
-            lambda *args: workers.call_on_main(self, self._on_progress, job_id, *args),
-            on_done=lambda _state: self._on_ended(job_id),
-            on_error=lambda error: self._on_failed(job_id, error),
-            owner=self,
-            process=workers.INDEXING,
-        )
+        self.jobs.add(indexing.EMBED)
 
     def cancel_indexing(self):
         """Stop it until the next start or scan."""
-        if self._index_stop is not None:
-            self._again = False
-            self._index_stop.set()
+        self.jobs.cancel()
 
-    def _on_progress(self, job_id, _phase, _done, _total, changed):
-        if self._quitting.is_set() or self._indexing != job_id:
-            return
-        self.indexing_changed.emit(self._status(job_id))
+    def _on_progress(self, _job, status, changed):
+        self.indexing_changed.emit(status)
         if changed:
             self.index_changed.emit()
-
-    def _on_ended(self, job_id):
-        self._indexing = self._index_stop = None
-        if self._quitting.is_set():
-            return
-        self.indexing_changed.emit(self._status(job_id))
-        self.index_changed.emit()
-        if self._again:
-            self.index()
-
-    def _on_failed(self, job_id, error):
-        if not self._quitting.is_set():
-            self.library.db.update_job(
-                job_id, state=dbm.FAILED_JOB, message=f"{type(error).__name__}: {error}"
-            )
-        self._on_ended(job_id)
-
-    def _status(self, job_id):
-        job = self.library.db.job(job_id)
-        failures = tuple(self.library.db.failures(job_id)[:20]) if job.failures else ()
-        return IndexStatus(job.state, job.done, job.total, job.message, failures)
 
     # Searching
 
@@ -285,7 +236,7 @@ class SearchService(QObject):
             on_done=done,
             on_error=error,
             owner=self,
-            process=workers.SEARCH,
+            lane=workers.SEARCH,
         )
 
 
@@ -328,13 +279,6 @@ def _encode_in_process(folder, paths):
     return workers.call(workers.EMBED, embed.encode_files, folder, paths)
 
 
-def _run_index(path, job_id, mounts, encode, stop, quitting, report):
-    """On the indexing thread, with a connection of its own."""
-    with dbm.Library(path) as library:
-        state = indexing.index(
-            library, job_id, mounts, encode, should_stop=stop.is_set, report=report
-        )
-        if state == dbm.CANCELLED and quitting.is_set():
-            # Stopped by a quit, not by the user: run again at the next start
-            library.update_job(job_id, state=dbm.QUEUED, message=None)
-        return state
+def _index(encode, library, job_id, mounts, should_stop, report):
+    """On the indexing thread."""
+    return indexing.index(library, job_id, mounts, encode, should_stop=should_stop, report=report)

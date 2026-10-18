@@ -14,10 +14,9 @@ import shutil
 
 from lumina.core import db as dbm
 from lumina.core import linear_tiff, volumes
-from lumina.core.errors import PhotoError
-from lumina.core.library import NotConnected, _Job
-
-DECODING = "decoding"
+from lumina.core.dbtypes import DECODING
+from lumina.core.errors import NotConnected, PhotoError
+from lumina.core.library import _Job
 
 
 def default_work_root():
@@ -160,11 +159,11 @@ def tags_of(row):
     """The linear_tiff.Tags (as a dict) a result takes from the photo `row`: its camera,
     lens and time."""
     return {
-        "make": row.get("make"),
-        "model": row.get("model"),
-        "lens": row.get("lens"),
-        "captured": exif_time(row.get("captured")),
-        "subseconds": subseconds(row.get("captured")),
+        "make": row.make,
+        "model": row.model,
+        "lens": row.lens,
+        "captured": exif_time(row.captured),
+        "subseconds": subseconds(row.captured),
     }
 
 
@@ -187,20 +186,20 @@ def check_camera(rows):
     the first one's."""
     first = rows[0]
     for row in rows[1:]:
-        if (row.get("make"), row.get("model")) != (first.get("make"), first.get("model")):
+        if (row.make, row.model) != (first.make, first.model):
             raise ValueError(
-                f"{os.path.basename(row['path'])} is from another camera "
-                f"({row.get('model') or 'unknown'}, not {first.get('model') or 'unknown'})"
+                f"{os.path.basename(row.path)} is from another camera "
+                f"({row.model or 'unknown'}, not {first.model or 'unknown'})"
             )
 
 
 def rows_to_queue(library, photo_ids):
-    """The photos `photo_ids` as dicts, in that order. Raises ValueError when one is no
+    """The photos `photo_ids` as Photo, in that order. Raises ValueError when one is no
     longer in the library or is missing."""
     rows = library.photo_rows(photo_ids)
     if len(rows) != len(set(photo_ids)):
         raise ValueError("Some of the photos are no longer in the library")
     for row in rows:
-        if not row["available"]:
-            raise ValueError(f"{os.path.basename(row['path'])} is missing")
+        if not row.available:
+            raise ValueError(f"{os.path.basename(row.path)} is missing")
     return rows

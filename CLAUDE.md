@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Lumina: a local desktop photo library with semantic search and a small non-destructive editor, built for large libraries including Canon `.CR3` RAW files. [PLAN.md](PLAN.md) is the source of truth for design, phases and open decisions; read the relevant section before implementing anything, and update it when a decision changes.
+Lumina: a local desktop photo library with semantic search and a small non-destructive editor, built for large libraries including Canon `.CR3` RAW files. [PLAN.md](PLAN.md) is the source of truth for design, current decisions and what comes next ([docs/history.md](docs/history.md) is the record of how it was built); read the relevant section before implementing anything, and update it when a decision changes.
 
 The sibling project `../filehouse` uses the same stack and conventions; look there for patterns (thread pool, thumbnails, theme, layer test) before inventing new ones.
 
@@ -42,8 +42,8 @@ ui/  →  qt_models/  →  core/
 ```
 
 - `core/` imports **no Qt**. Plain Python, numpy, OpenCV, rawpy, sqlite3, onnxruntime. It reports through callbacks.
-- `qt_models/` is the only place that runs core work on threads or processes and turns callbacks into queued Qt signals.
-- `ui/` never calls the DB, rawpy, exiftool or onnxruntime directly.
+- `qt_models/` is the only place that runs core work on threads or processes and turns callbacks into queued Qt signals: through the scheduler in `qt_models/workers.py`, on a lane declared there, never a pool or thread of its own (a camera session's process and the threads that read its queues aside). A job kept in the `jobs` table runs on a `JobRunner` (`qt_models/jobs.py`); work is stopped with a `workers.Token`.
+- `ui/` never calls the DB, rawpy, exiftool or onnxruntime directly. From `core/` it imports only the domain model: `core/edit/params.py`, `core/dbtypes.py`, `core/keywords.py`, `core/smart.py`, `core/edit/export_options.py` and `core/errors.py`, which are plain data and import only the standard library and each other. Don't re-export core names from `qt_models/` for the UI.
 - `tests/test_layers.py` enforces these import rules.
 
 ## Safety rules

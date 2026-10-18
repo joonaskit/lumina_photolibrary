@@ -1,4 +1,5 @@
 from conftest import TIMEOUT
+from fakes import work_or_die
 from photos import make_jpeg
 from PySide6.QtCore import QObject
 from shiboken6 import delete
@@ -17,7 +18,7 @@ def test_a_result_for_a_deleted_owner_is_dropped(qtbot):
     owner = QObject()
     called = []
     future = workers.submit(
-        sum, [1, 2], on_done=called.append, on_error=called.append, owner=owner, process=False
+        sum, [1, 2], on_done=called.append, on_error=called.append, owner=owner, lane=workers.IO
     )
     delete(owner)
 
@@ -56,3 +57,79 @@ def test_an_offline_photo_seen_before_has_its_thumbnail(qtbot, tmp_path):
     assert thumbnails.pixmap(1).width() == 200
     thumbnails.icon(2, None, "never-seen")
     qtbot.waitUntil(lambda: thumbnails.error(2) is not None, timeout=TIMEOUT)
+
+
+def test_a_call_that_kills_its_worker_does_not_fail_those_in_flight_with_it(qtbot):
+    owner = QObject()
+    done, failed = [], []
+    for value in (1, 2, 0, 3, 4):
+        workers.submit(
+            work_or_die,
+            value,
+            on_done=done.append,
+            on_error=lambda error, value=value: failed.append((value, type(error).__name__)),
+            owner=owner,
+        )
+
+    qtbot.waitUntil(lambda: len(done) + len(failed) == 5, timeout=TIMEOUT)
+
+    assert sorted(done) == [1, 2, 3, 4]
+    assert failed == [(0, "BrokenProcessPool")]
+
+
+def test_a_lane_takes_the_soonest_priority_first_then_the_order_asked():
+    import threading
+
+    lane = workers.Lane("test-order", False, 1)
+    hold = threading.Event()
+    ran = []
+    first = workers.schedule(lane, hold.wait, 5)
+    later = workers.schedule(lane, ran.append, "later", priority=workers.LATER)
+    soon = [workers.schedule(lane, ran.append, f"soon {i}") for i in range(2)]
+    now = workers.schedule(lane, ran.append, "now", priority=workers.NOW)
+
+    hold.set()
+    for future in (first, later, *soon, now):
+        future.result(timeout=5)
+
+    assert ran == ["now", "soon 0", "soon 1", "later"]
+
+
+def test_a_request_cancelled_while_it_waits_never_runs():
+    import threading
+
+    lane = workers.Lane("test-cancel", False, 1)
+    hold = threading.Event()
+    ran = []
+    first = workers.schedule(lane, hold.wait, 5)
+    dropped = workers.schedule(lane, ran.append, "dropped")
+    kept = workers.schedule(lane, ran.append, "kept")
+
+    assert dropped.cancel()
+    hold.set()
+    first.result(timeout=5)
+    kept.result(timeout=5)
+
+    assert ran == ["kept"]
+
+
+def test_a_token_is_cancelled_with_its_parent():
+    quitting = workers.Token()
+    job = workers.Token(quitting)
+    other = workers.Token(quitting)
+
+    job.cancel()
+    assert job() and not other.cancelled() and not quitting.cancelled()
+    quitting.cancel()
+    assert other.cancelled()
+
+
+def test_coalescing_runs_once_more_however_often_it_was_asked():
+    work = workers.Coalescing()
+
+    assert work.begin()
+    assert not work.begin() and not work.begin()
+    assert work.end()
+    assert work.begin()
+    assert not work.end()
+    assert not work.busy()

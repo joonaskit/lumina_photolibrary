@@ -143,3 +143,61 @@ def test_the_budget_is_a_share_of_the_systems_limit(monkeypatch):
     assert watching.default_budget() == watching._MOST
     monkeypatch.setattr(watching, "system_limit", lambda: None)
     assert watching.default_budget() == 0
+
+
+def test_a_change_scans_only_the_directory_that_changed(qtbot, watched, drive, monkeypatch):
+    from lumina.core import library as scanning
+
+    service, found, folder = watched
+    trip = drive / "Photos" / "trip"
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        trip.mkdir()
+    qtbot.waitUntil(lambda: str(trip) in found._owner, timeout=TIMEOUT)
+    asked = []
+    real = scanning.scan
+
+    def recording(*args, **kwargs):
+        asked.append(kwargs.get("only"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(scanning, "scan", recording)
+
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        make_jpeg(trip / "new.jpg", colour=(5, 5, 5))
+
+    assert asked == [{str(trip)}]
+    assert count(service, folder) == 4
+
+
+def test_a_change_while_a_scan_runs_is_scanned_when_it_ends(qtbot, watched, drive, monkeypatch):
+    import threading
+
+    from lumina.core import library as scanning
+
+    service, found, folder = watched
+    # Told by hand below, not by the watcher
+    found.set_enabled(False)
+    asked = []
+    hold, passed = threading.Event(), threading.Event()
+    real = scanning.scan
+
+    def recording(*args, **kwargs):
+        asked.append(kwargs.get("only"))
+        state = real(*args, **kwargs)
+        # The first scan has passed the directory, and is still running when it changes
+        passed.set()
+        hold.wait(TIMEOUT / 1000)
+        return state
+
+    monkeypatch.setattr(scanning, "scan", recording)
+    service.rescan(folder)
+    qtbot.waitUntil(passed.is_set, timeout=TIMEOUT)
+    make_jpeg(drive / "Photos" / "late.jpg", colour=(7, 7, 7))
+    service.rescan(folder, directories={str(drive / "Photos")})
+    assert asked == [None]
+
+    hold.set()
+
+    qtbot.waitUntil(lambda: len(asked) == 2 and not service.is_busy(), timeout=TIMEOUT)
+    assert asked == [None, {str(drive / "Photos")}]
+    assert count(service, folder) == 4

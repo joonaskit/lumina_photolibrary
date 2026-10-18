@@ -45,7 +45,7 @@ def mounted(path):
 def scanned(library, drive):
     key, inside = locate(drive / "Photos", mounted(drive))
     folder = library.add_folder(key, inside, "Photos drive", str(drive))
-    job = library.add_job(scanning.SCAN, folder)
+    job = library.add_job(dbm.SCAN, folder)
     assert scanning.scan(library, job, folder, mounted(drive), exiftool=FakeExifTool) == dbm.DONE
     return folder
 
@@ -173,6 +173,34 @@ def test_a_photo_gone_while_indexing_is_not_marked_unreadable(library, drive):
     assert library.count_pending_embeddings(MODEL, {DRIVE}) == 1
 
 
+def test_a_photo_added_while_indexing_is_not_passed_over(library, drive):
+    scanned(library, drive)
+    with library.db:
+        library.db.execute("UPDATE photos SET captured = '2024-01-01' WHERE path LIKE '%blue%'")
+    (drive / "Photos" / "blue.jpg").unlink()
+    inner = FakeEncoder()
+    calls = []
+
+    def encode(paths):
+        calls.append(paths)
+        if len(calls) == 1:
+            # A scan finds a new, newer photo while the job runs
+            make_jpeg(drive / "Photos" / "new.jpg", colour=(90, 90, 90))
+            scanned(library, drive)
+            with library.db:
+                library.db.execute(
+                    "UPDATE photos SET captured = '2030-01-01' WHERE path LIKE '%new%'"
+                )
+        return inner(paths)
+
+    state, job = run(library, mounted(drive), encode, batch=1)
+
+    assert state == dbm.DONE
+    # The new photo has its vector in this run, not the next
+    assert library.count_pending_embeddings(MODEL, {DRIVE}) == 0
+    assert len(library.embeddings(MODEL)) == 3
+
+
 def test_a_missing_photo_keeps_its_vector_and_a_forgotten_folder_drops_it(library, drive):
     folder = scanned(library, drive)
     run(library, mounted(drive), FakeEncoder())
@@ -224,3 +252,32 @@ def test_the_index_reads_only_what_is_new(library, drive):
     run(library, mounted(drive), FakeEncoder())
     assert index.refresh(library) == 2 and len(index) == 3
     assert index.refresh(library) == 0
+
+
+def test_rank_is_best_first_keeps_ties_in_order_and_leaves_out_photos_without_vectors():
+    from collections import namedtuple
+
+    Row = namedtuple("Row", "id content_id")
+    index = Index()
+    vectors = {"a": [1.0, 0.0], "b": [0.6, 0.8], "c": [1.0, 0.0], "d": [0.0, 1.0]}
+    index._grow(len(vectors))
+    for row, (cid, vector) in enumerate(vectors.items()):
+        index._matrix[row, :2] = vector
+        index._rows[cid] = row
+    index._count = len(vectors)
+    query = np.zeros(embed.DIMENSIONS, np.float32)
+    query[0] = 1.0
+    photos = [Row(1, "d"), Row(2, "c"), Row(3, None), Row(4, "b"), Row(5, "a"), Row(6, "x")]
+
+    found = index.rank(photos, query)
+
+    # "c" and "a" are equally good: in the order they were given
+    assert [(photo.id, cosine) for photo, cosine in found] == [
+        (2, 1.0),
+        (5, 1.0),
+        (4, pytest.approx(0.6)),
+        (1, 0.0),
+    ]
+    assert all(type(cosine) is float for _photo, cosine in found)
+    assert [photo.id for photo, _ in index.rank(photos, query, floor=0.5)] == [2, 5, 4]
+    assert index.rank([], query) == []

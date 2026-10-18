@@ -5,6 +5,7 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QMessageBox, QToolButton
 from rawfiles import make_dng
 
+from lumina.core.dbtypes import Photo
 from lumina.qt_models.library_model import DAMAGE_ROLE
 from lumina.ui import settings
 from lumina.ui.main_window import MainWindow, describe_photo
@@ -19,7 +20,7 @@ def open_window(qtbot, service):
 
 def add_and_wait(qtbot, window, folder):
     with qtbot.waitSignal(window.service.job_ended, timeout=TIMEOUT):
-        window.add_folder(folder)
+        window.browser.add_folder(folder)
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
 
 
@@ -88,7 +89,7 @@ def test_the_viewer_shows_a_photo_and_what_it_was_taken_with(qtbot, service, dri
     add_and_wait(qtbot, window, drive / "Photos")
     row = next(r for r in range(3) if window.model.name(r) == "a.jpg")
 
-    window.show_photo(row)
+    window.nav.show_photo(row)
     qtbot.waitUntil(
         lambda: window.viewer.pixmap() is not None and window.viewer.pixmap().width() == 300,
         timeout=TIMEOUT,
@@ -97,7 +98,7 @@ def test_the_viewer_shows_a_photo_and_what_it_was_taken_with(qtbot, service, dri
     assert window.navigation.isVisible()
     assert "Canon EOS 90D" in window.status.text()
     assert "EF-S55-250mm" in window.status.text()
-    window.show_grid()
+    window.nav.show_grid()
     assert window.grid.currentIndex().row() == row
 
 
@@ -123,7 +124,7 @@ def test_photos_on_an_unplugged_drive_keep_their_thumbnails(qtbot, service, driv
     assert "not connected" in tooltip
     folder_item = window.sidebar.list.item(1)
     assert "not connected" in folder_item.toolTip()
-    window.show_photo(0)
+    window.nav.show_photo(0)
     assert "(not connected)" in window.status.text()
 
 
@@ -146,9 +147,9 @@ def test_a_photo_exiftool_warns_of_damage_in_is_marked_in_the_grid(qtbot, servic
     ask_for_thumbnails(window)
     qtbot.waitUntil(lambda: window.model.thumbnail_pixmap(damaged) is not None, timeout=TIMEOUT)
     assert not window.grid.grab().isNull()
-    window.show_photo(damaged)
+    window.nav.show_photo(damaged)
     assert "Raw data may be damaged" in window.status.text()
-    window.show_photo(fine)
+    window.nav.show_photo(fine)
     assert "damaged" not in window.status.text()
 
 
@@ -158,11 +159,11 @@ def test_removing_a_folder_asks_first(qtbot, service, drive, monkeypatch):
     folder = window.sidebar.current_folder()
 
     monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Cancel)
-    window.remove_folder(folder)
+    window.browser.remove_folder(folder)
     assert len(service.folders()) == 1
 
     monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Ok)
-    window.remove_folder(folder)
+    window.browser.remove_folder(folder)
     qtbot.waitUntil(lambda: window.pages.currentIndex() == 0, timeout=TIMEOUT)
     assert sorted(p.name for p in (drive / "Photos").iterdir()) == ["a.jpg", "b.jpg", "c.dng"]
 
@@ -172,7 +173,7 @@ def test_a_folder_that_cannot_be_added_is_explained(qtbot, service, tmp_path, mo
     monkeypatch.setattr(QMessageBox, "warning", lambda _parent, title, text: told.append(text))
     window = open_window(qtbot, service)
 
-    assert window.add_folder(tmp_path / "missing") is None
+    assert window.browser.add_folder(tmp_path / "missing") is None
     assert "Not a folder" in told[0]
 
 
@@ -192,15 +193,16 @@ def test_cells_keep_the_full_size_while_thumbnails_are_placeholders(qtbot, servi
 
 
 def test_describe_photo():
-    photo = {
-        "captured": "2022-05-09 21:03:25.960000",
-        "model": "Canon EOS 90D",
-        "lens": "EF-S55-250mm f/4-5.6 IS STM",
-        "focal_length": 250.0,
-        "exposure_time": 0.004,
-        "aperture": 5.6,
-        "iso": 400,
-    }
+    photo = Photo(
+        1,
+        captured="2022-05-09 21:03:25.960000",
+        model="Canon EOS 90D",
+        lens="EF-S55-250mm f/4-5.6 IS STM",
+        focal_length=250.0,
+        exposure_time=0.004,
+        aperture=5.6,
+        iso=400,
+    )
 
     assert describe_photo(photo) == (
         "2022-05-09 21:03  ·  Canon EOS 90D  ·  EF-S55-250mm f/4-5.6 IS STM  ·  250 mm"
@@ -226,9 +228,7 @@ def test_a_selected_thumbnail_keeps_its_colours(qtbot, service, drive):
 def test_folders_are_added_from_the_sidebar_and_with_ctrl_o(qtbot, service, monkeypatch):
     window = open_window(qtbot, service)
     asked = []
-    monkeypatch.setattr(window, "choose_folder", lambda: asked.append(True))
-    window.add_action.triggered.disconnect()
-    window.add_action.triggered.connect(window.choose_folder)
+    monkeypatch.setattr(window.browser, "choose_folder", lambda: asked.append(True))
 
     toolbar_buttons = [
         button.defaultAction()
