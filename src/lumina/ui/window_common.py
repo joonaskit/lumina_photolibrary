@@ -4,8 +4,8 @@ import os
 
 from PySide6.QtCore import QMargins, QPoint, QSize
 
+from lumina.core.dbtypes import PICKED, REJECTED
 from lumina.integration import style
-from lumina.qt_models.library_model import PICKED, REJECTED
 
 APP_NAME = "Lumina"
 # Size of a thumbnail in the grid, unscaled, by the size chosen. Large stays within the

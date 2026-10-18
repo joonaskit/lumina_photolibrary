@@ -10,8 +10,9 @@ from PySide6.QtGui import QAction, QActionGroup, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QMenu, QToolButton
 
+from lumina.core.dbtypes import PICKED, REJECTED
 from lumina.integration import style
-from lumina.qt_models.library_model import DIM, HIDE, PICKED, REJECTED, SHOW
+from lumina.qt_models.library_model import DIM, HIDE, SHOW
 
 # A thumb on a 24 pixel square: the cuff, and the hand with the thumb up
 _THUMB = (

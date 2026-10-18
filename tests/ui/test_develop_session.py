@@ -4,8 +4,10 @@ import numpy as np
 import pytest
 from conftest import TIMEOUT
 
+from lumina.core.edit.export_options import ExportOptions
+from lumina.core.edit.params import Matte, Params
 from lumina.qt_models import develop
-from lumina.qt_models.develop import DevelopSession, Matte, Params
+from lumina.qt_models.develop import DevelopSession
 
 
 @pytest.fixture
@@ -141,7 +143,7 @@ def test_export_writes_the_edited_photo(session, tmp_path, qtbot):
     session.commit(Params(rotate=1))
 
     with qtbot.waitSignal(session.exported, timeout=TIMEOUT) as done:
-        session.export(destination, develop.ExportOptions())
+        session.export(destination, ExportOptions())
 
     assert done.args == [str(destination), None]
     from PIL import Image
@@ -155,7 +157,7 @@ def test_export_tells_when_the_file_appeared_and_keeps_it(session, tmp_path, qtb
     destination.write_bytes(b"someone else's")
 
     with qtbot.waitSignal(session.export_exists, timeout=TIMEOUT):
-        session.export(destination, develop.ExportOptions())
+        session.export(destination, ExportOptions())
 
     assert destination.read_bytes() == b"someone else's"
 

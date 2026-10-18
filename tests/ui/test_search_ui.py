@@ -39,7 +39,7 @@ def open_window(qtbot, make_service, wait_idle, model_root, drive):
         window.browser.add_folder(str(drive / "Photos"))
         wait_idle(service)
         if installed:
-            qtbot.waitUntil(lambda: search.index_future is not None, timeout=TIMEOUT)
+            qtbot.waitUntil(lambda: search.jobs.future is not None, timeout=TIMEOUT)
             qtbot.waitUntil(lambda: not search.is_indexing(), timeout=TIMEOUT)
         qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
         return window
@@ -47,8 +47,8 @@ def open_window(qtbot, make_service, wait_idle, model_root, drive):
     yield open_
     for search in made:
         search.close()
-        if search.index_future is not None:
-            search.index_future.result(timeout=TIMEOUT / 1000)
+        if search.jobs.future is not None:
+            search.jobs.future.result(timeout=TIMEOUT / 1000)
 
 
 def names(window):
@@ -217,3 +217,13 @@ def test_a_search_typed_above_a_photo_shows_the_results_in_the_grid(qtbot, open_
     # Still typing: the field keeps the focus and its text
     assert window.search_field.edit.hasFocus() or not window.isActiveWindow()
     assert window.search_field.text() == "green"
+
+
+def test_indexing_that_has_not_counted_yet_is_told_without_a_count():
+    from lumina.core.dbtypes import RUNNING
+    from lumina.qt_models.jobs import JobStatus
+    from lumina.ui.search import describe_indexing
+
+    status = JobStatus("", RUNNING, None, 0, None, None, (), 0)
+
+    assert describe_indexing(status) == "Indexing for search"

@@ -14,10 +14,9 @@ import shutil
 
 from lumina.core import db as dbm
 from lumina.core import linear_tiff, volumes
-from lumina.core.errors import PhotoError
-from lumina.core.library import NotConnected, _Job
-
-DECODING = "decoding"
+from lumina.core.dbtypes import DECODING
+from lumina.core.errors import NotConnected, PhotoError
+from lumina.core.library import _Job
 
 
 def default_work_root():

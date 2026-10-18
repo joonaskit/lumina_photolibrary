@@ -9,8 +9,9 @@ from conftest import TIMEOUT
 from fakes import FakeCamera
 from PIL import Image
 
+from lumina.core.dbtypes import DONE
+from lumina.core.errors import CameraBusy, NotConnected
 from lumina.qt_models import importing as importing_models
-from lumina.qt_models import library
 from lumina.qt_models.importing import ImportService
 from lumina.ui import main_window
 from lumina.ui.import_dialog import ImportDialog
@@ -57,7 +58,7 @@ def make_importer(root, monkeypatch):
     yield make
     for importer in made:
         importer.close()
-        for future in (importer.future, importer.read_future):
+        for future in (importer.jobs.future, importer.read_future):
             if future is not None:
                 # A read or an import that ended in an error has been told of it already
                 future.exception(timeout=TIMEOUT / 1000)
@@ -105,7 +106,7 @@ def test_a_camera_that_is_not_there_is_told_not_connected(service, make_importer
 
     error = read_camera(qtbot, importer)
 
-    assert isinstance(error, importing_models.NotConnected)
+    assert isinstance(error, NotConnected)
 
 
 def test_the_dialog_lists_the_camera_beside_the_cards_and_reads_it_when_chosen(
@@ -163,7 +164,7 @@ def test_importing_from_the_camera_puts_the_photos_in_the_library(
     wait_idle(service)
 
     assert snapshot(root) == before
-    assert statuses[-1].state == library.DONE
+    assert statuses[-1].state == DONE
     assert describe_import(statuses[-1]) == "Imported 3 photos into Photos"
     # The folder had three photos of its own
     names = sorted(p.name for p in (drive / "Photos").rglob("IMG_*"))
@@ -193,7 +194,7 @@ def test_an_import_waits_for_the_camera_and_goes_on_when_it_is_plugged_in(
 
     # No mount changes when a camera is plugged in: it is looked for now and then
     FakeCamera.unplug(root, False)
-    qtbot.waitUntil(lambda: statuses[-1].state == library.DONE, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: statuses[-1].state == DONE, timeout=TIMEOUT)
     assert len(list((drive / "Photos").glob("IMG_*"))) == 3
 
 
@@ -211,7 +212,7 @@ def test_the_camera_is_not_read_for_the_dialog_while_an_import_has_it(
     finally:
         importer._camera_lock.release()
 
-    assert isinstance(error, importing_models.CameraBusy)
+    assert isinstance(error, CameraBusy)
     assert "importing from the camera" in str(error)
     assert reading.candidates
 

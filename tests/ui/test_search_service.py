@@ -4,6 +4,7 @@ import pytest
 from conftest import TIMEOUT
 from fakes import FakeEncoder, install_model
 
+from lumina.core.dbtypes import QUEUED
 from lumina.qt_models import library as lib
 from lumina.qt_models.search import SearchService
 
@@ -27,13 +28,13 @@ def make_search(qtbot, model_root):
     yield make
     for search in made:
         search.close()
-        for future in (search.index_future, search.download_future):
+        for future in (search.jobs.future, search.download_future):
             if future is not None:
                 future.result(timeout=TIMEOUT / 1000)
 
 
 def wait_indexed(qtbot, search):
-    qtbot.waitUntil(lambda: search.index_future is not None, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: search.jobs.future is not None, timeout=TIMEOUT)
     qtbot.waitUntil(lambda: not search.is_indexing(), timeout=TIMEOUT)
 
 
@@ -44,7 +45,7 @@ def test_without_the_model_nothing_is_indexed_or_fetched(qtbot, service, wait_id
     qtbot.wait(100)
 
     assert not search.is_ready() and not search.is_downloading()
-    assert search.index_future is None and search.download_future is None
+    assert search.jobs.future is None and search.download_future is None
     assert search.download_size() > 700_000_000
 
 
@@ -106,12 +107,12 @@ def test_a_quit_while_indexing_leaves_it_queued(
     service.start()
     wait_idle(service)
     qtbot.waitUntil(lambda: bool(entered), timeout=TIMEOUT)
-    job = search._indexing
+    job = search.jobs.running.id
 
     search.close()
-    search.index_future.result(timeout=TIMEOUT / 1000)
+    search.jobs.future.result(timeout=TIMEOUT / 1000)
 
-    assert service.db.job(job).state == lib.QUEUED
+    assert service.db.job(job).state == QUEUED
 
 
 def test_a_scan_cancel_leaves_indexing_alone(
@@ -124,4 +125,4 @@ def test_a_scan_cancel_leaves_indexing_alone(
 
     service.cancel()
 
-    assert service.db.job(job).state == lib.QUEUED
+    assert service.db.job(job).state == QUEUED

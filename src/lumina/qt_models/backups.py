@@ -21,7 +21,7 @@ from lumina.core import backup
 from lumina.core import db as dbm
 from lumina.qt_models import workers
 
-# For the UI, which does not import core/: a backup's kinds, and how many are kept
+# A backup's kinds, and how many are kept: the settings show them
 DAILY, BEFORE_MIGRATION, BEFORE_RESTORE, DAMAGED = (
     backup.DAILY,
     backup.BEFORE_MIGRATION,
@@ -149,7 +149,7 @@ class BackupService(QObject):
             on_done=self._on_done,
             on_error=lambda error: self._on_done([str(error)]),
             owner=self,
-            process=workers.BACKUP,
+            lane=workers.BACKUP,
         )
 
     def _on_done(self, problems):
@@ -166,7 +166,7 @@ class BackupService(QObject):
             on_done=on_done,
             on_error=lambda _error: on_done(None),
             owner=self,
-            process=workers.BACKUP,
+            lane=workers.BACKUP,
         )
 
     def request_restore(self, backup_path):

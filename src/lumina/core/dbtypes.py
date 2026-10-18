@@ -8,6 +8,15 @@ PENDING, READ, FAILED = 0, 1, 2
 # A job's `state`
 QUEUED, RUNNING, DONE, FAILED_JOB, CANCELLED = "queued", "running", "done", "failed", "cancelled"
 UNFINISHED = (QUEUED, RUNNING)
+# A job's `kind`
+SCAN, IMPORT, EXPORT, HDR, PANORAMA = "scan", "import", "export", "hdr", "panorama"
+# A job's `phase`: what it is doing now. A scan finds the files, reads their details and
+# reads their sidecars; an import reads the card and copies; a merge decodes, plans and
+# merges or stitches; an export exports
+FINDING, DETAILS, SIDECARS = "finding", "details", "sidecars"
+READING, COPYING = "reading", "copying"
+DECODING, PLANNING, MERGING, STITCHING = "decoding", "planning", "merging", "stitching"
+EXPORTING = "exporting"
 # A photo's `flag`: thumbs up, none, thumbs down
 PICKED, UNFLAGGED, REJECTED = 1, 0, -1
 FLAGS = (PICKED, UNFLAGGED, REJECTED)

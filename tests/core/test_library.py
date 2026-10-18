@@ -49,7 +49,7 @@ def add(library, drive):
 
 
 def run(library, folder, mounts, tool=FakeExifTool, **kwargs):
-    job = library.add_job(scanning.SCAN, folder)
+    job = library.add_job(dbm.SCAN, folder)
     state = scanning.scan(library, job, folder, mounts, exiftool=tool, **kwargs)
     return state, library.job(job)
 
@@ -139,7 +139,7 @@ def test_an_unplugged_drive_leaves_everything_as_it_was(library, drive):
     folder = add(library, drive)
     run(library, folder, mounted(drive))
     before = by_path(library, folder)
-    job = library.add_job(scanning.SCAN, folder)
+    job = library.add_job(dbm.SCAN, folder)
 
     with pytest.raises(scanning.NotConnected):
         scanning.scan(library, job, folder, [], exiftool=FakeExifTool)
@@ -209,7 +209,7 @@ def test_a_drive_unplugged_while_details_are_read_leaves_them_to_read_when_it_is
         return real(path)
 
     monkeypatch.setattr(scanning, "content_id", unplugged)
-    job = library.add_job(scanning.SCAN, folder)
+    job = library.add_job(dbm.SCAN, folder)
     with pytest.raises(scanning.NotConnected):
         scanning.scan(library, job, folder, mounted(drive), exiftool=FakeExifTool)
     monkeypatch.undo()
@@ -347,9 +347,9 @@ def test_a_partial_scan_does_not_walk_the_rest_of_the_folder(library, drive, mon
 
 def test_a_scan_interrupted_by_a_crash_is_found_and_finished(library, drive):
     folder = add(library, drive)
-    job = library.add_job(scanning.SCAN, folder)
+    job = library.add_job(dbm.SCAN, folder)
     # As a crash leaves it: running, half done
-    library.update_job(job, state=dbm.RUNNING, phase=scanning.FINDING, done=1)
+    library.update_job(job, state=dbm.RUNNING, phase=dbm.FINDING, done=1)
 
     unfinished = library.unfinished_jobs()
     assert [j.id for j in unfinished] == [job]
@@ -434,9 +434,9 @@ def test_progress_is_reported_and_saved(library, drive):
 
     _state, job = run(library, folder, mounted(drive), report=lambda *args: seen.append(args[:3]))
 
-    assert (scanning.FINDING, 3, None) in seen
-    assert (scanning.DETAILS, 3, 3) in seen
-    assert (job.phase, job.done, job.total) == (scanning.DETAILS, 3, 3)
+    assert (dbm.FINDING, 3, None) in seen
+    assert (dbm.DETAILS, 3, 3) in seen
+    assert (job.phase, job.done, job.total) == (dbm.DETAILS, 3, 3)
 
 
 def test_scanning_leaves_every_file_as_it_was(library, drive, exiftool):

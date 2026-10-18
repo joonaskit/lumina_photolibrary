@@ -17,8 +17,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from lumina.core.edit.export_options import FORMATS, ExportOptions, suggested_name
 from lumina.integration import style
-from lumina.qt_models.develop import FORMATS, ExportOptions, suggested_name
 from lumina.ui import settings
 
 _FORMAT_NAMES = (("jpeg", "JPEG"), ("png", "PNG"), ("tiff", "TIFF"))

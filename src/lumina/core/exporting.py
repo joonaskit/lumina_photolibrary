@@ -19,13 +19,12 @@ import os
 
 from lumina.core import db as dbm
 from lumina.core import volumes
+from lumina.core.dbtypes import EXPORTING
 from lumina.core.edit import export as _export
 from lumina.core.edit import params as _params
-from lumina.core.errors import PhotoError
-from lumina.core.library import NotConnected, _Job
-
-EXPORT = "export"
-EXPORTING = "exporting"
+from lumina.core.edit.export_options import ExportOptions, suggested_name
+from lumina.core.errors import NotConnected, PhotoError
+from lumina.core.library import _Job
 
 # An item's `state`
 TO_DO, EXPORTED, NOT_EXPORTED = 0, 1, 2
@@ -33,12 +32,12 @@ TO_DO, EXPORTED, NOT_EXPORTED = 0, 1, 2
 
 def destinations(photos, folder, options):
     """The files to write: [(photo id, copy, destination)] for `photos`, [(photo id, copy,
-    the photo's path)], named as `export.suggested_name` says. Two photos that would have
+    the photo's path)], named as `export_options.suggested_name` says. Two photos that would have
     one name get "-2", "-3" and so on; a name that is the photo's own, in its own folder,
     gets "-edit": an export never writes to the original."""
     taken, planned = set(), []
     for photo_id, copy, source in photos:
-        name = _export.suggested_name(source, options, copy)
+        name = suggested_name(source, options, copy)
         stem, extension = os.path.splitext(name)
 
         def free(candidate, source=source):
@@ -105,7 +104,7 @@ def run(library, job_id, mounts, should_stop=lambda: False, report=None, render=
     report = report or (lambda phase, done, total, changed: None)
     job = _Job(library, job_id, report)
     options_json, replace, folder = library.export_job(job_id)
-    options = _export.ExportOptions(**json.loads(options_json))
+    options = ExportOptions(**json.loads(options_json))
     items = library.export_items(job_id)
     waiting = [item for item in items if item.state == TO_DO]
     for item in waiting:

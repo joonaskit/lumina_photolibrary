@@ -10,8 +10,9 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
+from lumina.core.edit.params import IDENTITY_CURVE, normalize_curve
 from lumina.integration import style
-from lumina.qt_models.develop import IDENTITY_CURVE, curve_values, normalize_curve
+from lumina.qt_models.develop import curve_values
 
 # How near the pointer must be to take a point, and how far past the edge removes it
 _GRAB = 9

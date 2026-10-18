@@ -238,7 +238,7 @@ def geometry(image, params, region=None):
         x0, y0, x1, y1 = region
         left, right = left + x0, min(right, left + x1)
         top, bottom = top + y0, min(bottom, top + y1)
-    correction = params.lens.correction()
+    correction = lenscorrect.correction(params.lens)
     box = (top, bottom, left, right)
     if not params.perspective.is_identity():
         degrees = params.straighten
@@ -432,7 +432,7 @@ def _per_pixel(dtype, params, frame, camera=None):
     shadows' desaturation. `frame` is the (width, height) of the turned photo the lens
     corrections were made in: they leave the light vignetting brings up divided by their
     `headroom`, put back here."""
-    scale = np.float32(lenscorrect.headroom(params.lens.correction(), *frame))
+    scale = np.float32(lenscorrect.headroom(lenscorrect.correction(params.lens), *frame))
     if dtype == np.uint16:
         scale = scale / np.float32(65535.0)
     # The tone LUT spans [0, tone_range] in linear light: scaled to [0, 1] with the gains

@@ -9,8 +9,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from lumina.core.edit.params import SECTIONS
 from lumina.integration import style
-from lumina.qt_models import develop
 from lumina.ui import settings
 
 # In the order of the Develop view, with what each is called there
@@ -109,7 +109,7 @@ class SectionsDialog(QDialog):
 
     def sections(self):
         """The sections chosen, in the order the edit has them."""
-        return [name for name in develop.PRESET_SECTIONS if self.boxes[name].isChecked()]
+        return [name for name in SECTIONS if self.boxes[name].isChecked()]
 
     def set_sections(self, sections):
         for name, box in self.boxes.items():

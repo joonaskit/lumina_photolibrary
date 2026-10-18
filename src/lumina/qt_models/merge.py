@@ -1,34 +1,31 @@
 """Merging photos for the UI: HDR merges of brackets (core/hdr.py) and panoramas
 (core/panorama.py), as jobs.
 
-One merge or panorama at a time, on a thread of its own (workers.MERGE), its steps in a worker
-process of its own (workers.MERGING), so neither a scan nor the grid's thumbnails wait
-for it, nor it for them. Jobs are in the library's database: one queued or stopped by
-a quit is run again at the next start, from the frames it had decoded; one whose drive
-is not connected waits for it. When a merge is done its folder is scanned, which
+One merge or panorama at a time, on a thread of its own (workers.MERGE, by the JobRunner of
+qt_models/jobs.py), its steps in a worker process of its own (workers.MERGING), so
+neither a scan nor the grid's thumbnails wait for it, nor it for them. A job queued or
+stopped by a quit is run again at the next start, from the frames it had decoded; one
+whose drive is not connected waits for it. When a merge is done its folder is scanned, which
 puts the new photo in the grid.
 """
 
 import json
 import os
-import threading
 from dataclasses import dataclass
+from functools import partial
 
 from PySide6.QtCore import QObject, Signal
 
 from lumina.core import db as dbm
 from lumina.core import hdr, panorama, volumes
-from lumina.core import library as scanning
 from lumina.qt_models import workers
+from lumina.qt_models.jobs import JobRunner
 from lumina.qt_models.panorama_preview import PanoramaPreview
 
-DECODING, PLANNING, MERGING = hdr.DECODING, hdr.PLANNING, hdr.MERGING
-STITCHING = panorama.STITCHING
-HDR, PANORAMA = hdr.HDR, panorama.PANORAMA
 DEGHOSTING = tuple(hdr.DEGHOST)
 PROJECTIONS = panorama.PROJECTIONS
 # What runs each kind of job
-_RUN = {HDR: hdr.run, PANORAMA: panorama.run}
+_RUN = {dbm.HDR: hdr.run, dbm.PANORAMA: panorama.run}
 # How far around a photo a bracket is looked for, in seconds
 _NEAR = 60
 
@@ -43,24 +40,8 @@ class Frame:
     exposure: str
 
 
-@dataclass(frozen=True)
-class MergeStatus:
-    # The photo the result is named after
-    name: str
-    state: str
-    phase: str | None
-    done: int
-    total: int | None
-    message: str | None
-    failures: tuple
-    # Merges waiting after this one
-    queued: int
-    # HDR or PANORAMA
-    kind: str = HDR
-
-
 class MergeService(QObject):
-    # A MergeStatus, while one runs and when it ends
+    # A JobStatus (its kind HDR or PANORAMA), while one runs and when it ends
     job_changed = Signal(object)
 
     def __init__(self, library, work_root=None, parent=None):
@@ -68,24 +49,27 @@ class MergeService(QObject):
         super().__init__(parent)
         self.library = library
         self.work_root = work_root or hdr.default_work_root()
-        self._quitting = threading.Event()
-        self._stop = None
-        self._running = None
-        # Jobs whose drive was not connected when last tried: waiting for the drives
-        self._waiting = set()
-        self.future = None
-        library.mounts_changed.connect(self._drives_changed)
+        self.jobs = JobRunner(
+            self,
+            library,
+            set(_RUN),
+            workers.MERGE,
+            prepare=self._prepare,
+            name=self._name,
+            changed=self.job_changed.emit,
+            ended=self._ended,
+            failed=_failed,
+        )
+        library.mounts_changed.connect(self.jobs.wake)
 
     def start(self):
         """Resume the merges a quit or a crash stopped."""
-        self._next_job()
+        self.jobs.start()
 
     def close(self):
         """For the app's exit: a merge in progress stops and is queued for the next start,
         its decoded frames kept."""
-        self._quitting.set()
-        if self._stop is not None:
-            self._stop.set()
+        self.jobs.close()
 
     # Choosing
 
@@ -122,7 +106,7 @@ class MergeService(QObject):
     def merge_hdr(self, photo_ids, deghost="off", align=True):
         """Queue an HDR merge of the photos. Raises ValueError saying why they cannot be."""
         hdr.queue(self.library.db, photo_ids, deghost, align)
-        self._next_job()
+        self.jobs.next()
 
     def panorama_frames(self, photo_ids):
         """[Frame] of the photos, in the order a panorama takes them: as taken."""
@@ -161,103 +145,37 @@ class MergeService(QObject):
     def stitch_panorama(self, photo_ids, projection=panorama.CYLINDRICAL, crop=True):
         """Queue a panorama of the photos. Raises ValueError saying why they cannot be."""
         panorama.queue(self.library.db, photo_ids, projection, crop)
-        self._next_job()
+        self.jobs.next()
 
     # Jobs
 
     def is_busy(self):
-        return self._running is not None
+        return self.jobs.is_busy()
 
     def cancel(self):
         """Stop the running merge and drop those waiting."""
-        for job in self._merges():
-            if job.id != self._running:
-                self.library.db.update_job(job.id, state=dbm.CANCELLED, message="Cancelled")
-        if self._stop is not None:
-            self._stop.set()
+        self.jobs.cancel()
 
-    def _drives_changed(self):
-        self._waiting.clear()
-        self._next_job()
-
-    def _next_job(self):
-        if self._running is not None or self._quitting.is_set():
-            return
-        job = next((job for job in self._merges() if job.id not in self._waiting), None)
-        if job is not None:
-            self._run(job)
-
-    def _run(self, job):
-        stop = threading.Event()
-        self._stop = stop
-        self._running = job.id
-        name = self._name(job)
-        self.job_changed.emit(self._status(job.id, name))
-        self.future = workers.submit(
-            _run_merge,
-            self.library.path,
-            job.kind,
-            job.id,
-            self.library.mounts,
-            self.work_root,
-            stop,
-            self._quitting,
-            lambda *args: workers.call_on_main(self, self._on_progress, job.id, name, *args),
-            on_done=lambda _state: self._on_ended(job, name),
-            on_error=lambda error: self._on_failed(job, name, error),
-            owner=self,
-            process=workers.MERGE,
+    def _prepare(self, job):
+        return partial(
+            _merge, job.kind, self.work_root, call=_call_in_process, keep_work=self.jobs.quitting
         )
 
-    def _on_progress(self, job_id, name, phase, done, total, _changed):
-        if self._quitting.is_set() or self._running != job_id:
-            return
-        status = self._status(job_id, name)
-        self.job_changed.emit(
-            MergeStatus(name, dbm.RUNNING, phase, done, total, None, (), status.queued, status.kind)
-        )
-
-    def _on_ended(self, job, name):
-        self._running = self._stop = None
-        if self._quitting.is_set():
-            return
-        status = self._status(job.id, name)
-        self.job_changed.emit(status)
+    def _ended(self, job, status):
         if status.state == dbm.DONE and job.folder_id is not None:
             # The new photo goes in the grid with the folder's next scan
             self.library.rescan(job.folder_id)
-        self._next_job()
-
-    def _on_failed(self, job, name, error):
-        if isinstance(error, scanning.NotConnected):
-            self._running = self._stop = None
-            self._waiting.add(job.id)
-            self._next_job()
-            return
-        if not self._quitting.is_set():
-            doing = "stitch" if job.kind == PANORAMA else "merge"
-            self.library.db.update_job(
-                job.id, state=dbm.FAILED_JOB, message=f"Could not {doing}: {error}"
-            )
-        self._on_ended(job, name)
-
-    def _status(self, job_id, name):
-        db = self.library.db
-        job = db.job(job_id)
-        failures = tuple(db.failures(job_id)[:20]) if job.failures else ()
-        queued = sum(1 for other in self._merges() if other.id != job_id)
-        return MergeStatus(
-            name, job.state, job.phase, job.done, job.total, job.message, failures, queued, job.kind
-        )
-
-    def _merges(self):
-        return [job for job in self.library.db.unfinished_jobs() if job.kind in _RUN]
 
     def _name(self, job):
         derived = self.library.db.derived(job.derived_id) if job.derived_id else None
         if derived is None:
             return "photos"
         return json.loads(derived.settings).get("name", "photos")
+
+
+def _failed(job, error):
+    doing = "stitch" if job.kind == dbm.PANORAMA else "merge"
+    return f"Could not {doing}: {error}"
 
 
 def _exposure(row):
@@ -276,20 +194,15 @@ def _call_in_process(fn, *args):
     return workers.call(workers.MERGING, fn, *args)
 
 
-def _run_merge(path, kind, job_id, mounts, work_root, stop, quitting, report):
-    """On the merge thread, with a connection of its own."""
-    with dbm.Library(path) as library:
-        state = _RUN[kind](
-            library,
-            job_id,
-            mounts,
-            call=_call_in_process,
-            should_stop=stop.is_set,
-            report=report,
-            work_root=work_root,
-            keep_work=quitting.is_set,
-        )
-        if state == dbm.CANCELLED and quitting.is_set():
-            # Stopped by a quit, not by the user: run again at the next start
-            library.update_job(job_id, state=dbm.QUEUED, message=None)
-        return state
+def _merge(kind, work_root, library, job_id, mounts, should_stop, report, call, keep_work):
+    """On the merge thread."""
+    return _RUN[kind](
+        library,
+        job_id,
+        mounts,
+        call=call,
+        should_stop=should_stop,
+        report=report,
+        work_root=work_root,
+        keep_work=keep_work,
+    )

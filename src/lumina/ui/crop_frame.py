@@ -3,7 +3,7 @@ ratio, and fitting it to one. In shares of the photo as shown (after any turning
 `aspect` is the photo's width over its height and a `ratio` is a frame's width over its
 height in pixels."""
 
-from lumina.qt_models.develop import Crop
+from lumina.core.edit.params import Crop
 
 # The smallest crop, as a share of the photo
 MIN_CROP = 0.02

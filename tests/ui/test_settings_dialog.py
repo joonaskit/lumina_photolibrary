@@ -93,7 +93,7 @@ def test_the_model_is_deleted_after_asking(qtbot, service, tmp_path, monkeypatch
     assert dialog.download.isEnabled() and not dialog.remove.isEnabled()
     # Nothing is indexed without it
     search.index()
-    assert search.index_future is None
+    assert search.jobs.future is None
     search.close()
 
 

@@ -4,8 +4,8 @@ session that shoots into one, with its bar, its live view and the last photo tak
 from PySide6.QtCore import QObject, Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from lumina.core.edit.params import NewerParams
 from lumina.qt_models import tether as camera_service
-from lumina.qt_models.library import NewerParams
 from lumina.qt_models.previews import PreviewLoader
 from lumina.ui import settings, shortcuts
 from lumina.ui.camera import CameraDialog

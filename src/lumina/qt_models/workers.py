@@ -1,25 +1,130 @@
-"""Running core work away from the UI thread.
+"""Running core work away from the UI thread: one scheduler, and the lanes it runs on.
 
-Decoding runs in worker processes, so the GIL does not stall the UI; scanning, which
-waits on the disk, runs on threads. Either way the result comes back to the main
-thread through a queued signal, and a callback runs there, but only while the
-QObject that asked for it still exists: a window can be closed while its work runs.
+A lane is a pool of worker processes or threads for one kind of work, made when first
+used. Decoding runs in processes, so the GIL does not stall the UI; what waits on the
+disk or the database runs on threads. Work that keeps something loaded between calls (the
+open photo, the search model) has a process of its own, and so does work that must never
+wait behind a scan or a thumbnail. Each lane takes its requests in order of priority,
+then in the order they came; a request still waiting can be cancelled.
+
+When a worker process dies (a decoder crashes on a broken file), every call in flight in
+its lane fails with it, and only one of them did it. Those are run again one at a time,
+before anything else in that lane: the one that kills its worker again fails, with
+BrokenProcessPool; the others succeed.
+
+The result comes back to the main thread through a queued signal, and a callback runs
+there, but only while the QObject that asked for it still exists: a window can be
+closed while its work runs.
 """
 
+import heapq
+import itertools
 import multiprocessing
 import os
 import threading
 from collections import deque
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from dataclasses import dataclass
 from functools import partial
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from shiboken6 import isValid
 
+# Priorities, the first the soonest: what the user looks at, what is in view, and work
+# that may wait (an export's files, a profile fitted from many photos)
+NOW = 0
+SOON = 1
+LATER = 2
+
+
+@dataclass(frozen=True)
+class Lane:
+    name: str
+    processes: bool
+    size: int
+
+
 # One process is left for the UI and the system
-_PROCESS_COUNT = max(1, (os.cpu_count() or 2) - 1)
-_THREAD_COUNT = 2
+DECODE = Lane("decode", True, max(1, (os.cpu_count() or 2) - 1))
+# Short work for the window: queries, stacks, keyword counts, reading a card
+IO = Lane("io", False, 2)
+# One process for the Develop view: it keeps the open photo decoded between renders
+# (core/edit/session.py), and thumbnails never queue in front of a render
+DEVELOP = Lane("develop", True, 1)
+# One process for indexing for search, keeping the model loaded between batches
+# (core/embed.py); it never holds up thumbnails or a render
+EMBED = Lane("embed", True, 1)
+# One process for the text half of the model, which a search's words are encoded by,
+# kept loaded between searches (core/embed.py)
+QUERY = Lane("query", True, 1)
+# One process for the steps of merges and their previews (core/hdr.py,
+# core/panorama.py): a merge never holds up a scan, a thumbnail or a render
+MERGING = Lane("merging", True, 1)
+# One thread for searches, which keeps the vectors in memory and its connection
+SEARCH = Lane("search", False, 1)
+# A thread for each kind of job (qt_models/jobs.py), which run one at a time and wait
+# on the disk or on a process for minutes or hours: none waits for another. The
+# indexing thread fetches and removes the model too, in turn with the indexing
+SCAN = Lane("scan", False, 1)
+INDEXING = Lane("indexing", False, 1)
+IMPORT = Lane("import", False, 1)
+MERGE = Lane("merge", False, 1)
+EXPORT = Lane("export", False, 1)
+# A thread for each chore that runs on its own: looking after the thumbnail cache,
+# walking a folder to watch it, writing sidecars, backing up the database, and a
+# tethered folder's photos, which never wait for a scan
+CACHE = Lane("cache", False, 1)
+WATCH = Lane("watch", False, 1)
+SIDECARS = Lane("sidecars", False, 1)
+BACKUP = Lane("backup", False, 1)
+TETHER = Lane("tether", False, 1)
+
+
+class Token:
+    """Asks work to stop. Work checks `cancelled()`, or is handed the token itself as its
+    `should_stop`. A token made with a `parent` is cancelled when the parent is: a job's
+    with the app's quitting."""
+
+    def __init__(self, parent=None):
+        self._event = threading.Event()
+        self._parent = parent
+
+    def cancel(self):
+        self._event.set()
+
+    def cancelled(self):
+        return self._event.is_set() or (self._parent is not None and self._parent.cancelled())
+
+    __call__ = cancelled
+
+
+class Coalescing:
+    """Work that runs one at a time: asked for again while it runs, it runs once more
+    when it ends, however often it was asked. On the main thread."""
+
+    def __init__(self):
+        self._busy = False
+        self._again = False
+
+    def begin(self):
+        """Whether to start it now; when not, it runs again after this one."""
+        if self._busy:
+            self._again = True
+            return False
+        self._busy, self._again = True, False
+        return True
+
+    def end(self):
+        """It ended: whether to start it again."""
+        again, self._busy, self._again = self._again, False, False
+        return again
+
+    def busy(self):
+        return self._busy
+
+    def drop_again(self):
+        self._again = False
 
 
 class _Relay(QObject):
@@ -40,44 +145,66 @@ class _Relay(QObject):
             call()
 
 
+@dataclass
+class _Request:
+    fn: object
+    args: tuple
+    # What the caller holds: done when the work is, cancelled while it waits
+    future: Future
+
+
+class _Pool:
+    """A lane's workers and its queue."""
+
+    def __init__(self, lane):
+        self.lane = lane
+        self.executor = None
+        self.waiting = []
+        # Calls that were in flight when a worker died, to run again one at a time
+        self.suspects = deque()
+        self.in_flight = 0
+        self.lock = threading.Lock()
+
+    def make(self):
+        if self.executor is None:
+            if self.lane.processes:
+                # Not fork: a forked copy of a process with Qt's threads in it can hang
+                context = multiprocessing.get_context("forkserver")
+                self.executor = ProcessPoolExecutor(max_workers=self.lane.size, mp_context=context)
+            else:
+                self.executor = ThreadPoolExecutor(
+                    max_workers=self.lane.size, thread_name_prefix=f"lumina-{self.lane.name}"
+                )
+        return self.executor
+
+    def broken(self, executor):
+        """Its worker died: a new one for what comes next."""
+        with self.lock:
+            if self.executor is executor:
+                self.executor = None
+
+    def next(self):
+        """The requests to start now, with the lock held: a suspect alone, or the
+        soonest waiting up to the lane's size."""
+        if self.suspects:
+            if self.in_flight:
+                return []
+            self.in_flight = 1
+            return [(self.suspects.popleft(), True)]
+        chosen = []
+        while self.waiting and self.in_flight < self.lane.size:
+            request = heapq.heappop(self.waiting)[2]
+            # False when it was cancelled while it waited
+            if request.future.set_running_or_notify_cancel():
+                self.in_flight += 1
+                chosen.append((request, False))
+        return chosen
+
+
 _relay = None
-_processes = None
-_threads = None
-# Pools of their own, by name: made when first used, from any thread
-_named = {}
-_named_lock = threading.Lock()
-# One process for the Develop view: it keeps the open photo decoded between renders
-# (core/edit/session.py), and thumbnails never queue in front of a render
-DEVELOP = "develop"
-# One process for indexing for search, at low priority, keeping the model loaded
-# between batches (core/embed.py); it never holds up thumbnails or a render
-EMBED = "embed"
-# One process for the text half of the model, which a search's words are encoded by,
-# kept loaded between searches (core/embed.py)
-QUERY = "query"
-# One thread for indexing jobs, which wait on EMBED for hours, and one for searches,
-# so neither waits behind a scan or the grid's reads
-INDEXING = "indexing"
-SEARCH = "search"
-# One thread for looking after the thumbnail cache, apart from the scans
-CACHE = "cache"
-# One thread for walking a library folder to watch it
-WATCH = "watch"
-# One thread for merge jobs (core/hdr.py), which wait on MERGING for minutes, and one
-# process for their steps: a merge never holds up a scan, a thumbnail or a render
-MERGE = "merge"
-MERGING = "merging"
-# One thread for writing XMP sidecars (core/sidecars.py), apart from the scans
-SIDECARS = "sidecars"
-# One thread for import jobs, which copy from a card: a copy never waits for a scan
-IMPORT = "import"
-# One thread for backing up the library's database, which reads all of it
-BACKUP = "backup"
-# One thread for export jobs, which wait on the process pool for each file
-EXPORT = "export"
-# One thread for a tethered folder's photos, which never wait for a scan
-TETHER = "tether"
-_NAMED_PROCESSES = {DEVELOP, EMBED, QUERY, MERGING}
+_pools = {}
+_pools_lock = threading.Lock()
+_order = itertools.count()
 
 
 def _the_relay():
@@ -88,157 +215,106 @@ def _the_relay():
     return _relay
 
 
-def _process_pool():
-    global _processes
-    if _processes is None:
-        # Not fork: a forked copy of a process with Qt's threads in it can hang
-        context = multiprocessing.get_context("forkserver")
-        _processes = ProcessPoolExecutor(max_workers=_PROCESS_COUNT, mp_context=context)
-    return _processes
+def _pool(lane):
+    with _pools_lock:
+        pool = _pools.get(lane)
+        if pool is None:
+            pool = _pools[lane] = _Pool(lane)
+        return pool
 
 
-def _named_pool(name):
-    def pick():
-        with _named_lock:
-            return _named.get(name) or _make(name)
+def schedule(lane, fn, *args, priority=SOON):
+    """Run `fn(*args)` on `lane`, from any thread: returns its Future, which can be
+    cancelled while it waits."""
+    future = Future()
+    pool = _pool(lane)
+    with pool.lock:
+        heapq.heappush(pool.waiting, (priority, next(_order), _Request(fn, args, future)))
+    _dispatch(pool)
+    return future
 
-    return pick
+
+def _dispatch(pool):
+    with pool.lock:
+        chosen = pool.next()
+    for request, alone in chosen:
+        _start(pool, request, alone)
 
 
-def _make(name):
-    if name in _NAMED_PROCESSES:
-        context = multiprocessing.get_context("forkserver")
-        pool = ProcessPoolExecutor(max_workers=1, mp_context=context)
+def _start(pool, request, alone):
+    with pool.lock:
+        executor = pool.make()
+    try:
+        inner = executor.submit(request.fn, *request.args)
+    except BrokenProcessPool:
+        # It died before this was given to it
+        pool.broken(executor)
+        _start(pool, request, alone)
+        return
+    except RuntimeError as error:
+        # Shut down: the app is quitting
+        _settle(pool, request, error=error)
+        return
+    inner.add_done_callback(lambda done: _finished(pool, request, alone, executor, done))
+
+
+def _finished(pool, request, alone, executor, done):
+    if done.cancelled():
+        _settle(pool, request, error=RuntimeError("Shut down"))
+        return
+    error = done.exception()
+    if isinstance(error, BrokenProcessPool):
+        pool.broken(executor)
+        if not alone:
+            # One of those in flight did it: this runs again, alone
+            with pool.lock:
+                pool.suspects.append(request)
+                pool.in_flight -= 1
+            _dispatch(pool)
+            return
+    if error is not None:
+        _settle(pool, request, error=error)
     else:
-        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"lumina-{name}")
-    _named[name] = pool
-    return pool
+        _settle(pool, request, result=done.result())
 
 
-def _thread_pool():
-    global _threads
-    if _threads is None:
-        _threads = ThreadPoolExecutor(max_workers=_THREAD_COUNT, thread_name_prefix="lumina")
-    return _threads
+def _settle(pool, request, result=None, error=None):
+    with pool.lock:
+        pool.in_flight -= 1
+    if error is not None:
+        request.future.set_exception(error)
+    else:
+        request.future.set_result(result)
+    _dispatch(pool)
 
 
-def submit(fn, *args, on_done, on_error, owner, process=True):
-    """Run `fn(*args)` in a worker process (or a thread, with `process=False`, or one
-    of the named pools above, with `process=DEVELOP` and so on), then `on_done(result)` or
-    `on_error(exception)` on the main thread, unless the QObject `owner` has been
-    deleted by then. Call from the main thread. Returns the future; cancelling it
-    before it starts calls neither.
-
-    When a worker dies, every call in flight in its pool fails with BrokenProcessPool,
-    and only one of them did it. Those are run again, one at a time in a new pool: the
-    one that kills its worker again is the one that fails (with that error)."""
+def submit(fn, *args, on_done, on_error, owner, lane=DECODE, priority=SOON):
+    """Run `fn(*args)` on `lane`, then `on_done(result)` or `on_error(exception)` on the
+    main thread, unless the QObject `owner` has been deleted by then. Call from the main
+    thread. Returns the Future; cancelling it before it starts calls neither."""
     relay = _the_relay()
-    pick = _pool_for(process)
 
     def deliver(done):
+        if done.cancelled():
+            return
         error = done.exception()
         call = partial(on_error, error) if error else partial(on_done, done.result())
         relay.deliver.emit(owner, call)
 
-    def finished(done, pool):
-        if done.cancelled():
-            return
-        if isinstance(done.exception(), BrokenProcessPool):
-            _forget_pool(pool)
-            _run_alone(pick, fn, args, deliver)
-        else:
-            deliver(done)
-
-    return _submit_to(pick, fn, args, finished)
-
-
-def _submit_to(pick, fn, args, finished):
-    pool = pick()
-    try:
-        future = pool.submit(fn, *args)
-    except BrokenProcessPool:
-        # A worker died (a decoder crashed on a broken file): start over with a new pool
-        _forget_pool(pool)
-        pool = pick()
-        future = pool.submit(fn, *args)
-    future.add_done_callback(lambda done: finished(done, pool))
+    future = schedule(lane, fn, *args, priority=priority)
+    future.add_done_callback(deliver)
     return future
 
 
-_alone = deque()
-_alone_busy = False
-_alone_lock = threading.Lock()
-
-
-def _run_alone(pick, fn, args, deliver):
-    """Run a call that was in flight when its pool broke, after those queued before it
-    and with nothing else of this kind running."""
-    with _alone_lock:
-        _alone.append((pick, fn, args, deliver))
-    _run_next_alone()
-
-
-def _run_next_alone():
-    global _alone_busy
-    with _alone_lock:
-        if _alone_busy or not _alone:
-            return
-        _alone_busy = True
-        pick, fn, args, deliver = _alone.popleft()
-
-    def finished(done, pool):
-        global _alone_busy
-        if isinstance(done.exception(), BrokenProcessPool):
-            _forget_pool(pool)
-        if not done.cancelled():
-            deliver(done)
-        with _alone_lock:
-            _alone_busy = False
-        _run_next_alone()
-
-    try:
-        _submit_to(pick, fn, args, finished)
-    except Exception:
-        with _alone_lock:
-            _alone_busy = False
-        raise
-
-
-def _pool_for(process):
-    if isinstance(process, str):
-        return _named_pool(process)
-    return _process_pool if process else _thread_pool
-
-
-def _forget_pool(pool):
-    global _processes
-    if _processes is pool:
-        _processes = None
-    with _named_lock:
-        for name, named in list(_named.items()):
-            if named is pool:
-                del _named[name]
-
-
-def call(process, fn, *args):
-    """From a worker thread: run `fn(*args)` in the pool `process` (as submit()'s) and
-    wait for it. A worker that died is replaced, and the call made again once; if that
-    kills its worker too, the BrokenProcessPool is raised."""
-    pick = _pool_for(process)
-    for attempt in (1, 2):
-        pool = pick()
-        try:
-            return pool.submit(fn, *args).result()
-        except BrokenProcessPool:
-            # Others in flight may have been the cause: once more in a new pool
-            _forget_pool(pool)
-            if attempt == 2:
-                raise
+def call(lane, fn, *args, priority=SOON):
+    """From a worker thread: run `fn(*args)` on `lane` and wait for it. Raises what it
+    raised: BrokenProcessPool when it killed its worker on its own."""
+    return schedule(lane, fn, *args, priority=priority).result()
 
 
 def start_process(target, *args):
     """Run `target(*args)` in a process of its own, for work that lasts (a camera session)
-    and is spoken to through queues from `make_queue()`. Started as the pools' are (not
+    and is spoken to through queues from `make_queue()`. Started as the lanes' are (not
     forked: Qt's threads); a daemon, so it never outlives the app. Returns the Process."""
     context = multiprocessing.get_context("forkserver")
     process = context.Process(target=target, args=args, daemon=True)
@@ -259,10 +335,16 @@ def call_on_main(owner, fn, *args):
 
 def shutdown():
     """Drop what has not started and let the workers go. For the app's exit."""
-    global _processes, _threads
-    for pool in (_processes, _threads, *_named.values()):
-        if pool is not None:
-            pool.shutdown(wait=False, cancel_futures=True)
-    _processes = _threads = None
-    with _named_lock:
-        _named.clear()
+    with _pools_lock:
+        pools = list(_pools.values())
+        _pools.clear()
+    for pool in pools:
+        with pool.lock:
+            waiting = [entry[2] for entry in pool.waiting] + list(pool.suspects)
+            pool.waiting.clear()
+            pool.suspects.clear()
+            executor, pool.executor = pool.executor, None
+        for request in waiting:
+            request.future.cancel()
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)

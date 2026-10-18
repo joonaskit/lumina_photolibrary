@@ -40,12 +40,11 @@ import numpy as np
 
 from lumina.core import db as dbm
 from lumina.core import derived, raw
+from lumina.core.dbtypes import DECODING, HDR, MERGING, PLANNING
 from lumina.core.derived import finish_result, start_result
 from lumina.core.edit import source
 from lumina.core.errors import PhotoError
 
-HDR = "hdr"
-DECODING, PLANNING, MERGING = derived.DECODING, "planning", "merging"
 SETTINGS_VERSION = 1
 MIN_FRAMES, MAX_FRAMES = 2, 9
 # Deghosting: how far (in stops) a frame may be from the guide before it is left out

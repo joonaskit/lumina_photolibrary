@@ -45,7 +45,7 @@ def studio(library, drive):
     mounts = [Mount(DRIVE, str(drive), "/", "exfat", "/dev/sdz1", "Photos drive")]
     key, inside = locate(drive / "Studio", mounts)
     folder_id = library.add_folder(key, inside, "Photos drive", str(drive))
-    job = library.add_job(scanning.SCAN, folder_id)
+    job = library.add_job(dbm.SCAN, folder_id)
     assert scanning.scan(library, job, folder_id, mounts, exiftool=FakeExifTool) == dbm.DONE
     folder = library.folder(folder_id)
     return folder, library.volume_id(key), str(drive / "Studio")

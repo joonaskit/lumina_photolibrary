@@ -6,9 +6,9 @@ from conftest import TIMEOUT
 from PIL import Image
 from PySide6.QtCore import QPointF, Qt
 
+from lumina.core.edit.params import Params
 from lumina.core.edit.session import Rendered
 from lumina.qt_models import develop
-from lumina.qt_models.develop import Params
 from lumina.ui.main_window import MainWindow
 
 WIDTH, HEIGHT = 3000, 2000

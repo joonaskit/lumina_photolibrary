@@ -10,8 +10,9 @@ from photos import make_jpeg
 from rawfiles import make_dng
 
 from lumina.core import volumes
-from lumina.qt_models import library
-from lumina.qt_models.importing import ImportService, ImportStatus
+from lumina.core.dbtypes import CANCELLED, DONE, FAILED_JOB, QUEUED, RUNNING
+from lumina.qt_models.importing import ImportService
+from lumina.qt_models.jobs import JobStatus
 from lumina.ui import main_window, settings
 from lumina.ui.import_dialog import ImportDialog
 from lumina.ui.job_status import describe_import
@@ -75,7 +76,7 @@ def make_importer():
     yield make
     for importer in made:
         importer.close()
-        for future in (importer.future, importer.read_future):
+        for future in (importer.jobs.future, importer.read_future):
             if future is not None:
                 future.result(timeout=TIMEOUT / 1000)
 
@@ -239,28 +240,26 @@ def test_an_import_waits_for_its_card_and_resumes_at_the_next_start(
 
     importer.start()
     qtbot.waitUntil(lambda: bool(statuses), timeout=TIMEOUT)
-    assert statuses[-1].state == library.QUEUED
+    assert statuses[-1].state == QUEUED
     assert "Waiting for" in describe_import(statuses[-1])
     assert not any((drive / "Photos").glob("IMG_*"))
 
     mounts.card_in = True
     service.check_mounts()
-    qtbot.waitUntil(lambda: statuses[-1].state == library.DONE, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: statuses[-1].state == DONE, timeout=TIMEOUT)
     assert len(list((drive / "Photos").glob("IMG_*"))) == 3
 
 
 def test_an_import_in_words():
     def status(state, phase=None, done=0, total=None, message=None, queued=0):
-        return ImportStatus("Photos", state, phase, done, total, message, (), queued)
+        return JobStatus("Photos", state, phase, done, total, message, (), queued)
 
-    assert describe_import(status(library.QUEUED)) == "Waiting to import into Photos"
-    assert describe_import(status(library.RUNNING, "copying", 2, 9, queued=1)) == (
+    assert describe_import(status(QUEUED)) == "Waiting to import into Photos"
+    assert describe_import(status(RUNNING, "copying", 2, 9, queued=1)) == (
         "Importing into Photos: 2 of 9  ·  1 more waiting"
     )
-    assert describe_import(status(library.DONE, message="Imported 9 photos")) == (
+    assert describe_import(status(DONE, message="Imported 9 photos")) == (
         "Imported 9 photos into Photos"
     )
-    assert describe_import(status(library.CANCELLED)) == "Stopped importing into Photos"
-    assert describe_import(status(library.FAILED, message="Not enough space")) == (
-        "Not enough space"
-    )
+    assert describe_import(status(CANCELLED)) == "Stopped importing into Photos"
+    assert describe_import(status(FAILED_JOB, message="Not enough space")) == ("Not enough space")

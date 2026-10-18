@@ -47,7 +47,7 @@ def library(tmp_path, drive):
     with Library(tmp_path / "library.sqlite3") as opened:
         key, inside = locate(drive / "Photos", mounted(drive))
         folder = opened.add_folder(key, inside, "Photos drive", str(drive))
-        job = opened.add_job(scanning.SCAN, folder)
+        job = opened.add_job(dbm.SCAN, folder)
         assert scanning.scan(opened, job, folder, mounted(drive), exiftool=FakeExifTool) == "done"
         yield opened
 

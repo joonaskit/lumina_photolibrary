@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from lumina.core import volumes, xmp
 from lumina.core.edit import params
 
-SIDECARS = "sidecars"
 _BATCH = 100
 
 

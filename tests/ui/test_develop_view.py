@@ -6,8 +6,7 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from lumina.integration import style
-from lumina.qt_models.develop import (
+from lumina.core.edit.params import (
     Band,
     Basic,
     Colour,
@@ -23,6 +22,7 @@ from lumina.qt_models.develop import (
     Vignette,
     Wheel,
 )
+from lumina.integration import style
 from lumina.ui import controls, develop_view, settings
 from lumina.ui.controls import ScrollStrip, ValueSlider
 from lumina.ui.curve_editor import CurveEditor

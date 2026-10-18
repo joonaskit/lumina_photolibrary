@@ -18,7 +18,7 @@ class FakeWorkers:
     def __init__(self):
         self.submitted = []
 
-    def submit(self, fn, *args, on_done, on_error, owner, process=True):
+    def submit(self, fn, *args, on_done, on_error, owner, **_where):
         future = Future()
         self.submitted.append((args, future, on_done, on_error))
         return future

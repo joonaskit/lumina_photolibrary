@@ -8,7 +8,7 @@ import json
 from dataclasses import asdict, dataclass, fields
 
 from lumina.core import keywords as keywordm
-from lumina.core.db import Filter
+from lumina.core.dbtypes import Filter
 
 VERSION = 1
 

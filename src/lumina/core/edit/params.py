@@ -12,12 +12,8 @@ default, field by field: a damaged edit still renders.
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field, replace
-
-from lumina.core.edit import curves
-from lumina.core.edit.lenscorrect import Correction, LensProfile
-from lumina.core.edit.perspective import AMOUNT as PERSPECTIVE
-from lumina.core.edit.perspective import Perspective
 
 VERSION = 11
 
@@ -47,6 +43,7 @@ MATTE_BLACK = (0.0, 0.5)  # how far black is raised, as a share of white
 MATTE_WHITE = (0.0, 0.5)  # how far white is lowered
 DESATURATION = (0.0, 1.0)
 STRAIGHTEN = (-45.0, 45.0)  # degrees, clockwise
+PERSPECTIVE = (-100.0, 100.0)  # see perspective.py
 LENS = (0.0, 100.0)  # how much of a lens correction to make: see lenscorrect.py
 CHANNELS = ("rgb", "red", "green", "blue")
 BASIC_FIELDS = ("contrast", "highlights", "shadows", "whites", "blacks")
@@ -57,6 +54,114 @@ BANDS = ("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"
 BAND_FIELDS = ("hue", "saturation", "luminance")
 RANGES = ("shadows", "midtones", "highlights")
 WHEEL_FIELDS = ("hue", "saturation", "luminance")
+# How many terms each of lensfun's distortion models has
+_DISTORTION_TERMS = {"ptlens": 3, "poly3": 1, "poly5": 2}
+# A tone curve that changes nothing
+IDENTITY_CURVE = ((0.0, 0.0), (1.0, 1.0))
+
+
+def normalize_curve(points):
+    """The points as a sorted tuple of (x, y) pairs in [0, 1], with one point per x
+    (the last given wins) and the two ends present. Fewer than two points: identity."""
+    clean = {}
+    for point in points or ():
+        try:
+            x, y = float(point[0]), float(point[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            clean[round(min(max(x, 0.0), 1.0), 6)] = round(min(max(y, 0.0), 1.0), 6)
+    if len(clean) < 2:
+        return IDENTITY_CURVE
+    xs = sorted(clean)
+    if xs[0] > 0.0:
+        clean[0.0] = clean[xs[0]]
+    if xs[-1] < 1.0:
+        clean[1.0] = clean[xs[-1]]
+    return tuple((x, clean[x]) for x in sorted(clean))
+
+
+@dataclass(frozen=True)
+class LensProfile:
+    name: str
+    # Crop factor of the sensor the lens was measured on over this camera's
+    scale: float = 1.0
+    # ("ptlens", a, b, c), ("poly3", k1) or ("poly5", k1, k2); or None
+    distortion: tuple | None = None
+    # (vr, vb, cr, cb, br, bb); or None
+    tca: tuple | None = None
+    # (k1, k2, k3); or None
+    vignetting: tuple | None = None
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "scale": float(self.scale),
+            "distortion": None
+            if self.distortion is None
+            else {"model": self.distortion[0], "terms": [float(t) for t in self.distortion[1:]]},
+            "tca": None if self.tca is None else [float(t) for t in self.tca],
+            "vignetting": None if self.vignetting is None else [float(t) for t in self.vignetting],
+        }
+
+    @staticmethod
+    def from_dict(data):
+        """A profile from stored JSON, or None when it is not one (a damaged edit renders
+        without it)."""
+        if not isinstance(data, dict) or not isinstance(data.get("name"), str):
+            return None
+        scale = _finite(data.get("scale"))
+        if scale is None or not 0.2 <= scale <= 5.0:
+            return None
+        distortion = None
+        stored = data.get("distortion")
+        if isinstance(stored, dict) and stored.get("model") in _DISTORTION_TERMS:
+            terms = _numbers(stored.get("terms"), _DISTORTION_TERMS[stored["model"]])
+            distortion = (stored["model"], *terms) if terms is not None else None
+        return LensProfile(
+            name=data["name"],
+            scale=scale,
+            distortion=distortion,
+            tca=_numbers(data.get("tca"), 6),
+            vignetting=_numbers(data.get("vignetting"), 3),
+        )
+
+
+def _finite(value):
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def _numbers(values, count):
+    if not isinstance(values, list | tuple) or len(values) != count:
+        return None
+    numbers = tuple(_finite(v) for v in values)
+    return None if None in numbers else numbers
+
+
+@dataclass(frozen=True)
+class Perspective:
+    vertical: float = 0.0
+    horizontal: float = 0.0
+
+    def __post_init__(self):
+        for name in ("vertical", "horizontal"):
+            object.__setattr__(self, name, round(float(getattr(self, name)), 6))
+
+    def is_identity(self):
+        return self.vertical == 0 and self.horizontal == 0
+
+    def turned(self):
+        """The correction of the same photo turned a quarter turn clockwise."""
+        return Perspective(-self.horizontal, self.vertical)
+
+    def flipped(self, horizontal):
+        """The correction of the same photo mirrored left to right (`horizontal`) or top
+        to bottom."""
+        if horizontal:
+            return Perspective(self.vertical, -self.horizontal)
+        return Perspective(-self.vertical, self.horizontal)
 
 
 class NewerParams(Exception):
@@ -209,15 +314,15 @@ class Grain:
 @dataclass(frozen=True)
 class Curves:
     # Points (x, y) in [0, 1]: "rgb" for all channels, then each channel on its own
-    rgb: tuple = curves.IDENTITY
-    red: tuple = curves.IDENTITY
-    green: tuple = curves.IDENTITY
-    blue: tuple = curves.IDENTITY
+    rgb: tuple = IDENTITY_CURVE
+    red: tuple = IDENTITY_CURVE
+    green: tuple = IDENTITY_CURVE
+    blue: tuple = IDENTITY_CURVE
 
     def __post_init__(self):
         # However they were given, as the same floats: equal curves, equal JSON
         for name in CHANNELS:
-            object.__setattr__(self, name, curves.normalize(getattr(self, name)))
+            object.__setattr__(self, name, normalize_curve(getattr(self, name)))
 
 
 @dataclass(frozen=True)
@@ -250,15 +355,6 @@ class Lens:
     def is_identity(self):
         # Nothing to correct with, or nothing asked for
         return not self.enabled or self.profile is None
-
-    def correction(self):
-        """The `lenscorrect.Correction` to make, or None for none."""
-        if self.is_identity():
-            return None
-        correction = Correction(
-            self.profile, self.distortion / 100, self.vignetting / 100, self.aberration / 100
-        )
-        return None if correction.is_identity() else correction
 
 
 @dataclass(frozen=True)
@@ -508,7 +604,7 @@ def from_dict(data):
             blending=_number(grading.get("blending"), DEFAULT_BLENDING, BLENDING),
             balance=_number(grading.get("balance"), 0.0, GRADING),
         ),
-        curves=Curves(**{name: curves.normalize(curve_data.get(name)) for name in CHANNELS}),
+        curves=Curves(**{name: normalize_curve(curve_data.get(name)) for name in CHANNELS}),
         matte=Matte(
             black=_number(matte.get("black"), 0.0, MATTE_BLACK),
             white=_number(matte.get("white"), 0.0, MATTE_WHITE),

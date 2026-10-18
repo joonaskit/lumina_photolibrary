@@ -170,29 +170,34 @@ def test_a_change_scans_only_the_directory_that_changed(qtbot, watched, drive, m
 
 
 def test_a_change_while_a_scan_runs_is_scanned_when_it_ends(qtbot, watched, drive, monkeypatch):
+    import threading
+
     from lumina.core import library as scanning
 
     service, found, folder = watched
     # Told by hand below, not by the watcher
     found.set_enabled(False)
     asked = []
+    hold, passed = threading.Event(), threading.Event()
     real = scanning.scan
 
     def recording(*args, **kwargs):
         asked.append(kwargs.get("only"))
-        return real(*args, **kwargs)
+        state = real(*args, **kwargs)
+        # The first scan has passed the directory, and is still running when it changes
+        passed.set()
+        hold.wait(TIMEOUT / 1000)
+        return state
 
     monkeypatch.setattr(scanning, "scan", recording)
-    # A scan is running when the directory is reported changed
-    ended = service.db.add_job("scan", folder)
-    service.db.update_job(ended, state="done")
-    service._running = (ended, folder)
-    service.rescan(folder, directories={str(drive / "Photos")})
-    assert asked == []
-    service._running = None
+    service.rescan(folder)
+    qtbot.waitUntil(passed.is_set, timeout=TIMEOUT)
     make_jpeg(drive / "Photos" / "late.jpg", colour=(7, 7, 7))
+    service.rescan(folder, directories={str(drive / "Photos")})
+    assert asked == [None]
 
-    service._on_ended(ended, folder, "x", None)
+    hold.set()
 
-    qtbot.waitUntil(lambda: count(service, folder) == 4, timeout=TIMEOUT)
-    assert asked == [{str(drive / "Photos")}]
+    qtbot.waitUntil(lambda: len(asked) == 2 and not service.is_busy(), timeout=TIMEOUT)
+    assert asked == [None, {str(drive / "Photos")}]
+    assert count(service, folder) == 4

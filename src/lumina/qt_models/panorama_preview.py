@@ -90,7 +90,7 @@ class PanoramaPreview(QObject):
             on_done=self._decoded_one,
             on_error=self._decoding_failed,
             owner=self,
-            process=workers.MERGING,
+            lane=workers.MERGING,
         )
 
     def _decoded_one(self, _result):
@@ -122,7 +122,7 @@ class PanoramaPreview(QObject):
             on_done=lambda result: self._planned(generation, result),
             on_error=lambda error: self._plan_failed(generation, error),
             owner=self,
-            process=workers.MERGING,
+            lane=workers.MERGING,
         )
 
     def _planned(self, generation, result):

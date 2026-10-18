@@ -43,6 +43,8 @@ class PreviewLoader(QObject):
             on_done=lambda pixels: self._done(token, path, pixels),
             on_error=lambda error: self._error(token, path, error),
             owner=self,
+            # The photo looked at goes before the grid's thumbnails
+            priority=workers.NOW,
         )
 
     def cancel(self):

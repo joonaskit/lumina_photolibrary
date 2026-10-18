@@ -8,8 +8,9 @@ import os
 import pytest
 from conftest import TIMEOUT, written
 
+from lumina.core.edit.export_options import ExportOptions, suggested_name
 from lumina.core.edit.params import Params
-from lumina.qt_models.develop import DevelopSession, ExportOptions, suggested_name
+from lumina.qt_models.develop import DevelopSession
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.main_window import _DEVELOP, _GRID, _VIEWER, MainWindow
 

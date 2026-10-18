@@ -145,7 +145,7 @@ class FolderWatcher(QObject):
             on_done=lambda found: self._walked(folder, found),
             on_error=lambda _error: self._walked(folder, None),
             owner=self,
-            process=workers.WATCH,
+            lane=workers.WATCH,
         )
 
     def _walked(self, folder, found):
