@@ -252,3 +252,32 @@ def test_the_index_reads_only_what_is_new(library, drive):
     run(library, mounted(drive), FakeEncoder())
     assert index.refresh(library) == 2 and len(index) == 3
     assert index.refresh(library) == 0
+
+
+def test_rank_is_best_first_keeps_ties_in_order_and_leaves_out_photos_without_vectors():
+    from collections import namedtuple
+
+    Row = namedtuple("Row", "id content_id")
+    index = Index()
+    vectors = {"a": [1.0, 0.0], "b": [0.6, 0.8], "c": [1.0, 0.0], "d": [0.0, 1.0]}
+    index._grow(len(vectors))
+    for row, (cid, vector) in enumerate(vectors.items()):
+        index._matrix[row, :2] = vector
+        index._rows[cid] = row
+    index._count = len(vectors)
+    query = np.zeros(embed.DIMENSIONS, np.float32)
+    query[0] = 1.0
+    photos = [Row(1, "d"), Row(2, "c"), Row(3, None), Row(4, "b"), Row(5, "a"), Row(6, "x")]
+
+    found = index.rank(photos, query)
+
+    # "c" and "a" are equally good: in the order they were given
+    assert [(photo.id, cosine) for photo, cosine in found] == [
+        (2, 1.0),
+        (5, 1.0),
+        (4, pytest.approx(0.6)),
+        (1, 0.0),
+    ]
+    assert all(type(cosine) is float for _photo, cosine in found)
+    assert [photo.id for photo, _ in index.rank(photos, query, floor=0.5)] == [2, 5, 4]
+    assert index.rank([], query) == []
