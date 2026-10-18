@@ -1,12 +1,37 @@
-"""collecting: the part of `MainWindow` for it (see main_window.py)."""
+"""Collections: manual ones the photos are put in, smart ones that keep the filters and
+the search, and the sidebar's list of them."""
 
+from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QInputDialog, QMessageBox
 
 from lumina.qt_models.library_model import TEXT, SmartQuery
+from lumina.ui.window_common import _VIEWER
 
 
-class CollectingMixin:
-    # Collections
+class Collecting(QObject):
+    def __init__(
+        self, nav, model, service, browser, searching, sidebar, filters, messages, parent=None
+    ):
+        """`browser` is the Browser, `searching` the Searching; `messages` is the window's
+        status bar. The parent is the window, which the dialogs are over."""
+        super().__init__(parent)
+        self.nav = nav
+        self.model = model
+        self.service = service
+        self.browser = browser
+        self.searching = searching
+        self.sidebar = sidebar
+        self.filters = filters
+        self.messages = messages
+        service.collections_changed.connect(self._on_collections_changed)
+
+    def on_collection_selected(self, collection_id, smart):
+        self.browser.leave_folders()
+        if smart:
+            self._apply_smart(collection_id)
+        self.browser.apply_filter()
+        if self.nav.page() == _VIEWER:
+            self.nav.show_grid()
 
     def _on_collections_changed(self, collection_id):
         chosen = self.sidebar.current_collection()
@@ -16,9 +41,10 @@ class CollectingMixin:
             self.sidebar.select(None)
         elif chosen is not None and chosen[0] == collection_id and not chosen[1]:
             self.model.refresh()
-        self._update_title()
+        self.browser.update_title()
 
-    def _add_collection_menu(self, menu):
+    def add_menu(self, menu):
+        """Add to Collection, and Remove from This Collection when one is shown, to `menu`."""
         manual = [c for c in self.service.collections() if c.query is None]
         sub = menu.addMenu("Add to Collection")
         for collection in manual:
@@ -28,17 +54,20 @@ class CollectingMixin:
         if manual:
             sub.addSeparator()
         sub.addAction("New Collection…", lambda: self.new_collection(add_chosen=True))
-        sub.setEnabled(bool(self._flag_rows()))
+        sub.setEnabled(bool(self.nav.chosen_rows()))
         shown = self.sidebar.current_collection()
         if shown is not None and not shown[1]:
             action = menu.addAction(
                 "Remove from This Collection", lambda: self.remove_from_collection(shown[0])
             )
-            action.setEnabled(bool(self._flag_rows()))
+            action.setEnabled(bool(self.nav.chosen_rows()))
 
     def _ask_name(self, title, text=""):
-        name, ok = QInputDialog.getText(self, title, "Name:", text=text)
+        name, ok = QInputDialog.getText(self.parent(), title, "Name:", text=text)
         return name.strip() if ok and name.strip() else None
+
+    def _chosen_ids(self):
+        return [self.model.photo_id(row) for row in self.nav.chosen_rows()]
 
     def new_collection(self, add_chosen=False):
         """Make a manual collection, asking its name; the photos chosen go into it."""
@@ -46,7 +75,7 @@ class CollectingMixin:
         if name is None:
             return
         # The photos chosen now, not when the collection is made
-        ids = [self.model.photo_id(row) for row in self._flag_rows()] if add_chosen else []
+        ids = self._chosen_ids() if add_chosen else []
 
         def made(collection_id):
             if ids:
@@ -57,11 +86,10 @@ class CollectingMixin:
         )
 
     def _name_refused(self, title, error):
-        QMessageBox.warning(self, title, str(error))
+        QMessageBox.warning(self.parent(), title, str(error))
 
     def add_to_collection(self, collection_id):
-        rows = self._flag_rows()
-        self.add_ids_to_collection(collection_id, [self.model.photo_id(row) for row in rows])
+        self.add_ids_to_collection(collection_id, self._chosen_ids())
 
     def add_ids_to_collection(self, collection_id, photo_ids):
         def added(count):
@@ -71,12 +99,12 @@ class CollectingMixin:
             text = f"Added {count} photo{'' if count == 1 else 's'} to {name}"
             if left:
                 text += f" ({left} already there)"
-            self.statusBar().showMessage(text, 5000)
+            self.messages.showMessage(text, 5000)
 
         self.service.add_to_collection(collection_id, photo_ids, on_done=added)
 
     def remove_from_collection(self, collection_id):
-        ids = [self.model.photo_id(row) for row in self._flag_rows()]
+        ids = self._chosen_ids()
         if ids:
             self.service.remove_from_collection(collection_id, ids)
 
@@ -96,12 +124,14 @@ class CollectingMixin:
         if found is None:
             return
         answer = QMessageBox.question(
-            self,
+            self.parent(),
             "Delete Collection",
             f"Delete the collection {found.name}? The photos stay in the library.",
         )
         if answer == QMessageBox.StandardButton.Yes:
             self.service.delete_collection(collection_id)
+
+    # Smart collections
 
     def _current_query(self):
         """The filters now set, as a smart collection's query."""
@@ -138,7 +168,7 @@ class CollectingMixin:
         if query.is_empty():
             return
         self.service.set_collection_query(collection_id, query.to_json())
-        self.statusBar().showMessage("Smart collection saved with the filters now set", 4000)
+        self.messages.showMessage("Smart collection saved with the filters now set", 4000)
 
     def _apply_smart(self, collection_id):
         found = next((c for c in self.service.collections() if c.id == collection_id), None)
@@ -156,7 +186,8 @@ class CollectingMixin:
                 "keyword": query.keyword,
             }
         )
-        if query.text and self.search is not None and self._model_ready():
-            self.search_field.set_text(query.text)
+        searching = self.searching
+        if query.text and searching.search is not None and searching.model_ready():
+            searching.field.set_text(query.text)
         elif self.model.is_searching():
-            self.end_search()
+            searching.end_search()

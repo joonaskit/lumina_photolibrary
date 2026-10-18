@@ -38,7 +38,7 @@ def window(qtbot, service, drive):
     qtbot.addWidget(made)
     made.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        made.add_folder(drive / "Photos")
+        made.browser.add_folder(drive / "Photos")
     qtbot.waitUntil(lambda: made.model.rowCount() == 3, timeout=TIMEOUT)
     return made
 
@@ -50,7 +50,7 @@ def row_of(window, name):
 def open_editor(qtbot, window, name="a.jpg"):
     window.grid.setCurrentIndex(window.model.index(row_of(window, name)))
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.edit_current()
+        window.nav.edit_current()
 
 
 # The slider
@@ -203,7 +203,7 @@ def test_edit_opens_the_develop_view_and_back_leaves_it(qtbot, window):
     assert window.editing.isVisible()
     assert window.develop.image.pixmap() is not None
 
-    window.go_back()
+    window.nav.go_back()
     assert window.pages.currentIndex() == 1
     assert not window.session.is_open()
 
@@ -213,7 +213,7 @@ def test_an_edit_made_shows_in_the_grid(qtbot, window):
     window.develop.exposure.slider.setValue(100)
     with qtbot.waitSignal(window.develop.exposure.committed, timeout=TIMEOUT):
         pass
-    window.go_back()
+    window.nav.go_back()
 
     row = row_of(window, "a.jpg")
     qtbot.waitUntil(lambda: window.model.is_edited(row), timeout=TIMEOUT)
@@ -238,9 +238,9 @@ def test_escape_leaves_the_crop_before_the_view(qtbot, window):
     open_editor(qtbot, window)
     window.develop.set_cropping(True)
 
-    window.go_back()
+    window.nav.go_back()
     assert window.pages.currentIndex() == 3 and not window.develop.crop_button.isChecked()
-    window.go_back()
+    window.nav.go_back()
     assert window.pages.currentIndex() == 1
 
 
@@ -249,7 +249,7 @@ def test_the_arrows_step_to_the_next_photo_to_edit(qtbot, window):
     before = window.session.photo_id
 
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.step(1)
+        window.nav.step(1)
 
     assert window.session.photo_id != before
 
@@ -293,13 +293,13 @@ def test_export_asks_before_replacing(qtbot, window, tmp_path, monkeypatch):
         lambda *a, **k: asked.append(1) or QMessageBox.StandardButton.Cancel,
     )
 
-    window.export_photo()
+    window.develop_page.export_photo()
 
     assert asked and destination.read_bytes() == b"keep me"
 
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
     with qtbot.waitSignal(window.session.exported, timeout=TIMEOUT) as done:
-        window.export_photo()
+        window.develop_page.export_photo()
     assert done.args[1] is None
     assert os.path.getsize(destination) > 100
 
@@ -311,7 +311,7 @@ def test_a_photo_on_an_unplugged_drive_cannot_be_edited(qtbot, window, mounts, m
     monkeypatch.setattr(QMessageBox, "information", lambda *a: told.append(a[2]))
     window.grid.setCurrentIndex(window.model.index(0))
 
-    window.edit_current()
+    window.nav.edit_current()
 
     assert "not connected" in told[0]
     assert window.pages.currentIndex() == 1

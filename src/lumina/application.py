@@ -214,6 +214,6 @@ def _check_database():
 
 def _open(window, paths):
     """Show the paths asked for, or the window itself when nothing else shows."""
-    window.open_paths(paths)
-    if not paths or not (window.isVisible() or window.quick_views):
+    window.opening.open_paths(paths)
+    if not paths or not (window.isVisible() or window.opening.quick_views):
         window.present()

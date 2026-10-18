@@ -181,7 +181,7 @@ def test_importing_from_the_window_copies_the_card_and_the_photos_show_in_the_li
     backup.mkdir()
     accept_import(monkeypatch, drive / "Photos", backup=backup)
 
-    window.import_photos()
+    window.importing.import_photos()
     qtbot.waitUntil(lambda: not importer.is_busy(), timeout=TIMEOUT)
     qtbot.waitUntil(lambda: len(service.db.photos()) == 6, timeout=TIMEOUT)
     wait_idle(service)
@@ -207,7 +207,7 @@ def test_a_folder_outside_the_library_is_added_to_import_into(
     destination.mkdir()
     accept_import(monkeypatch, destination, layout="none")
 
-    window.import_photos()
+    window.importing.import_photos()
     qtbot.waitUntil(lambda: not importer.is_busy(), timeout=TIMEOUT)
     qtbot.waitUntil(lambda: len(service.db.photos()) == 3, timeout=TIMEOUT)
 

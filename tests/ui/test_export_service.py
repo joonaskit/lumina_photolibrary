@@ -7,7 +7,7 @@ from PySide6.QtCore import QItemSelectionModel
 from PySide6.QtWidgets import QMessageBox
 
 from lumina.qt_models.exporting import ExportOptions, ExportService
-from lumina.ui import window_copies, window_stacking
+from lumina.ui.controllers import develop, stacking
 from lumina.ui.main_window import MainWindow
 
 
@@ -83,7 +83,7 @@ def test_the_grid_exports_the_photos_chosen(qtbot, service, drive, tmp_path, mon
     qtbot.addWidget(window)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(drive / "Photos")
+        window.browser.add_folder(drive / "Photos")
     qtbot.waitUntil(lambda: window.model.rowCount() == 3, timeout=TIMEOUT)
     out = tmp_path / "chosen"
 
@@ -109,16 +109,16 @@ def test_the_grid_exports_the_photos_chosen(qtbot, service, drive, tmp_path, mon
                 return False
 
     # Where the window uses it
-    for part in (window_copies, window_stacking):
+    for part in (develop, stacking):
         monkeypatch.setattr(part, "ExportDialog", Chosen)
     monkeypatch.setattr(QMessageBox, "warning", lambda *a: None)
     selection = window.grid.selectionModel()
     for row in (0, 2):
         selection.select(window.model.index(row), QItemSelectionModel.SelectionFlag.Select)
-    window._update_stack_actions()
+    window.stacking.update_actions()
     assert window.export_selected_action.isEnabled()
 
-    window.export_selected()
+    window.stacking.export_selected()
 
     qtbot.waitUntil(lambda: out.exists() and len(os.listdir(out)) == 2, timeout=TIMEOUT)
     assert sorted(os.listdir(out)) == ["a.png", "c.png"]

@@ -13,7 +13,7 @@ def open_window(qtbot, service, folder):
     qtbot.addWidget(window)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(folder)
+        window.browser.add_folder(folder)
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     assert window.model.rowCount() == 3
     return window

@@ -27,7 +27,7 @@ def open_window(qtbot, service, folder):
     qtbot.addWidget(window)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(folder)
+        window.browser.add_folder(folder)
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     assert window.model.rowCount() == 3
     return window
@@ -177,7 +177,7 @@ def test_in_the_viewer_flagging_steps_on_only_when_asked(qtbot, service, drive):
     settings.set_rejected_photos(HIDE)
     window = open_window(qtbot, service, drive / "Photos")
     first, second, third = names(window)
-    window.show_photo(0)
+    window.nav.show_photo(0)
 
     press(qtbot, window.viewer, Qt.Key.Key_X)
     assert window.title.text() == first
@@ -288,7 +288,7 @@ def test_the_develop_view_flags_the_photo_being_edited(qtbot, service, drive):
     first, second, _third = names(window)
     settings.set_advance_after_flag(True)
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.show_develop(0)
+        window.nav.show_develop(0)
     assert window.marking.isVisible()
 
     press(qtbot, window.develop, Qt.Key.Key_P)
@@ -312,7 +312,7 @@ def test_the_develop_view_flags_the_photo_being_edited(qtbot, service, drive):
 def test_the_develop_views_own_keys_still_work(qtbot, service, drive):
     window = open_window(qtbot, service, drive / "Photos")
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.show_develop(0)
+        window.nav.show_develop(0)
 
     press(qtbot, window.develop, Qt.Key.Key_C)
 
