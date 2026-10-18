@@ -173,6 +173,34 @@ def test_a_photo_gone_while_indexing_is_not_marked_unreadable(library, drive):
     assert library.count_pending_embeddings(MODEL, {DRIVE}) == 1
 
 
+def test_a_photo_added_while_indexing_is_not_passed_over(library, drive):
+    scanned(library, drive)
+    with library.db:
+        library.db.execute("UPDATE photos SET captured = '2024-01-01' WHERE path LIKE '%blue%'")
+    (drive / "Photos" / "blue.jpg").unlink()
+    inner = FakeEncoder()
+    calls = []
+
+    def encode(paths):
+        calls.append(paths)
+        if len(calls) == 1:
+            # A scan finds a new, newer photo while the job runs
+            make_jpeg(drive / "Photos" / "new.jpg", colour=(90, 90, 90))
+            scanned(library, drive)
+            with library.db:
+                library.db.execute(
+                    "UPDATE photos SET captured = '2030-01-01' WHERE path LIKE '%new%'"
+                )
+        return inner(paths)
+
+    state, job = run(library, mounted(drive), encode, batch=1)
+
+    assert state == dbm.DONE
+    # The new photo has its vector in this run, not the next
+    assert library.count_pending_embeddings(MODEL, {DRIVE}) == 0
+    assert len(library.embeddings(MODEL)) == 3
+
+
 def test_a_missing_photo_keeps_its_vector_and_a_forgotten_folder_drops_it(library, drive):
     folder = scanned(library, drive)
     run(library, mounted(drive), FakeEncoder())
