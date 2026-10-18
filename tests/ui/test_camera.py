@@ -4,6 +4,7 @@ the session's collection and shown."""
 
 import json
 import os
+import sqlite3
 from dataclasses import replace
 from datetime import datetime
 from functools import partial
@@ -76,14 +77,13 @@ def test_a_frame_is_saved_into_the_session_and_taken_into_the_library(
         FakeCamera.shoot(root, frame(tmp_path))
 
     photo = service.db.photo(arrived.args[0])
-    assert photo["path"] == f"Photos/{day()}/Studio/20240601-183005-IMG_6000.CR3"
+    assert photo.path == f"Photos/{day()}/Studio/20240601-183005-IMG_6000.CR3"
     assert camera.saved_count == 1
     # In the session's collection
     (collection,) = [c for c in service.collections() if c.name == "Studio"]
     qtbot.waitUntil(
         lambda: (
-            [p.id for p in service.db.photos(dbm.Filter(collection_id=collection.id))]
-            == [photo["id"]]
+            [p.id for p in service.db.photos(dbm.Filter(collection_id=collection.id))] == [photo.id]
         ),
         timeout=TIMEOUT,
     )
@@ -278,6 +278,43 @@ def test_live_view_the_camera_stops_says_why(qtbot, scanned, camera, root):
     assert not camera.live_wanted and not camera.live.on
 
 
+def test_a_session_ended_while_it_is_written_never_opens_the_camera(qtbot, scanned, camera, root):
+    service, folder = scanned
+    camera.start(folder, "Studio")
+    assert camera.running and camera.session is None
+    camera.stop()
+    assert camera.ending
+
+    qtbot.waitUntil(lambda: not camera.running, timeout=TIMEOUT)
+    assert camera._worker is None and camera.hot.folder is None
+    assert FakeCamera.log(root, "target") == []
+
+
+def test_a_session_written_after_the_app_closed_never_opens_the_camera(scanned, camera, root):
+    service, folder = scanned
+    camera.start(folder, "Studio")
+    camera.close()
+    service.flush()
+
+    assert camera._worker is None
+    assert FakeCamera.log(root, "target") == []
+
+
+def test_a_session_that_cannot_be_written_is_told_and_ends(qtbot, scanned, camera, monkeypatch):
+    service, folder = scanned
+
+    def refused(*_args):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(dbm.Library, "start_tether_session", refused)
+    with qtbot.waitSignal(camera.error, timeout=TIMEOUT) as told:
+        camera.start(folder, "Studio")
+
+    assert "database is locked" in told.args[0]
+    qtbot.waitUntil(lambda: not camera.running, timeout=TIMEOUT)
+    assert camera.hot.folder is None and camera._worker is None
+
+
 def test_the_crop_guide_is_the_session_presets_crop(qtbot, scanned, camera):
     service, folder = scanned
     edit = _params.Params(rotate=1, crop=_params.Crop(0.0, 0.0, 0.5, 1.0))
@@ -322,9 +359,11 @@ def test_tether_camera_starts_a_session_and_the_new_photo_opens(
     monkeypatch.setattr(CameraDialog, "exec", accept)
     window.camera_action.trigger()
 
-    assert camera.running and camera.session.name == "Product shoot"
+    # Running at once; the session is written on the writer thread
+    assert camera.running
     assert settings.camera_choices()["name"] == "Product shoot"
     connected(qtbot, camera)
+    assert camera.session.name == "Product shoot"
     assert window.camera_bar.isVisible() and window.capture_action.isEnabled()
     assert window.camera_bar.camera.text() == "Fake EOS"
     assert not window.tether_status.isVisible()

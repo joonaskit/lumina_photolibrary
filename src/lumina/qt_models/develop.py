@@ -600,10 +600,10 @@ class DevelopSession(QObject):
     # Presets
 
     def presets(self):
-        return [name for name, _ in self.service.presets()]
+        return [preset.name for preset in self.service.presets()]
 
     def apply_preset(self, name):
-        document = dict(self.service.presets()).get(name)
+        document = self.service.preset(name)
         if document is None or not self.is_open():
             return
         try:

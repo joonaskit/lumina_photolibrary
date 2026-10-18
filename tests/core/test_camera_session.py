@@ -610,3 +610,20 @@ def test_who_has_the_camera_is_found_by_its_usb_device(tmp_path):
         "darktable is using the camera: close it to shoot with Lumina."
     )
     assert tether.holders("ptpip:10.0.0.2", str(proc)) == []
+
+
+def test_a_session_is_written_with_its_collection_in_one_go(library):
+    session, made = library.start_tether_session("Studio", "uuid:X", "/Photos/Studio/", tether.CARD)
+    assert made is not None and session.collection_id == made
+    assert (session.name, session.folder, session.keep) == ("Studio", "Photos/Studio", tether.CARD)
+    assert library.tether_session(session.id) == session
+
+    # The manual collection of that name, whatever its case, is taken, not made again
+    again, made_again = library.start_tether_session("studio", "uuid:X", "Photos/S", tether.CARD)
+    assert (again.collection_id, made_again) == (made, None)
+
+    # A smart collection of the name: the session has none
+    library.add_collection("Smart", '{"rating": 3}')
+    smart, made_smart = library.start_tether_session("Smart", "uuid:X", "Photos/S", tether.CARD)
+    assert (smart.collection_id, made_smart) == (None, None)
+    assert [c.name for c in library.collections()] == ["Smart", "Studio"]

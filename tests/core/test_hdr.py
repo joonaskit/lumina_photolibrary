@@ -354,16 +354,16 @@ def test_the_frames_are_put_in_order_of_exposure(library, drive, tmp_path):
 
 
 def row(i, seconds, stop, model="Canon EOS 90D", lens="EF-S10-18mm"):
-    return {
-        "id": i,
-        "taken": (START + timedelta(seconds=seconds)).isoformat(sep=" "),
-        "model": model,
-        "lens": lens,
-        "focal_length": 10.0,
-        "aperture": 8.0,
-        "exposure_time": 2.0**stop / 60,
-        "iso": 100,
-    }
+    return dbm.Photo(
+        i,
+        taken=(START + timedelta(seconds=seconds)).isoformat(sep=" "),
+        model=model,
+        lens=lens,
+        focal_length=10.0,
+        aperture=8.0,
+        exposure_time=2.0**stop / 60,
+        iso=100,
+    )
 
 
 def test_brackets_are_runs_of_quick_frames_at_different_exposures():

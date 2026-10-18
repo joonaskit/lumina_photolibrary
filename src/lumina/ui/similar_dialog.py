@@ -35,14 +35,16 @@ class SimilarDialog(QDialog):
     # The ids of the photos other than the best of each group chosen
     reject_requested = Signal(object)
 
-    def __init__(self, resolve, similarity, shown=None, parent=None):
-        """`resolve(photo)` is where the photo is now, or None when it can't be read. `shown`
+    def __init__(self, resolve, edit_of, similarity, shown=None, parent=None):
+        """`resolve(photo)` is where the photo is now, or None when it can't be read;
+        `edit_of(photo)` its edit as parameters JSON, or None. `shown`
         names what the grid shows (a folder, a collection) so it can be looked through
         alone; None when it shows the whole library."""
         super().__init__(parent)
         self.setWindowTitle("Find Duplicates")
         self.resize(style.px(560), style.px(640))
         self._resolve = resolve
+        self._edit_of = edit_of
         self._thumbnails = Thumbnails(self)
         self._thumbnails.changed.connect(self._thumbnail_made)
         # Thumbnail key -> its item
@@ -152,11 +154,17 @@ class SimilarDialog(QDialog):
         self._update_buttons()
 
     def _key(self, photo):
-        return ("similar", photo.id, photo.edit)
+        return ("similar", photo.id, photo.edited)
 
     def _set_icon(self, item, photo):
         path = self._resolve(photo)
-        item.setIcon(0, self._thumbnails.icon(self._key(photo), path, photo.content_id, photo.edit))
+        icon = self._thumbnails.icon(
+            self._key(photo),
+            path,
+            photo.content_id,
+            lambda: self._edit_of(photo) if photo.edited is not None else None,
+        )
+        item.setIcon(0, icon)
 
     def _thumbnail_made(self, key):
         found = self._items.get(key)

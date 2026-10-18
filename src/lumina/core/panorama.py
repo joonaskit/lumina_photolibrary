@@ -98,33 +98,33 @@ _STRIP = 8192
 
 
 def check_frames(rows):
-    """Raise ValueError saying why the photos `rows` (dicts, with their path) cannot be
+    """Raise ValueError saying why the photos `rows` (Photo) cannot be
     stitched: too few or many, of more than one camera, or RAW files with others."""
     if len(rows) < MIN_FRAMES:
         raise ValueError(f"A panorama needs at least {MIN_FRAMES} photos")
     if len(rows) > MAX_FRAMES:
         raise ValueError(f"A panorama takes at most {MAX_FRAMES} photos")
     derived.check_camera(rows)
-    first = raw.is_raw(rows[0]["path"])
+    first = raw.is_raw(rows[0].path)
     for row in rows[1:]:
-        if raw.is_raw(row["path"]) != first:
+        if raw.is_raw(row.path) != first:
             kind = "a RAW file" if not first else "not a RAW file"
-            raise ValueError(f"{os.path.basename(row['path'])} is {kind}, the others are not")
+            raise ValueError(f"{os.path.basename(row.path)} is {kind}, the others are not")
 
 
 def settings_for(rows, projection=CYLINDRICAL, crop=True):
-    """What a panorama of the photos `rows` (dicts with their details) keeps in the
+    """What a panorama of the photos `rows` (Photo) keeps in the
     library: the frames in the order taken, the first one's white balance and name.
     Returns (rows in that order, settings JSON)."""
     if projection not in PROJECTIONS:
         raise ValueError(f"unknown projection {projection!r}")
-    rows = sorted(rows, key=lambda row: (row.get("taken") or "", row["path"]))
+    rows = sorted(rows, key=lambda row: (row.taken or "", row.path))
     settings = {
         "version": SETTINGS_VERSION,
         "projection": projection,
         "crop": bool(crop),
         "beside": 0,
-        "name": os.path.splitext(os.path.basename(rows[0]["path"]))[0] + "-pano",
+        "name": os.path.splitext(os.path.basename(rows[0].path))[0] + "-pano",
         "tags": derived.tags_of(rows[0]),
     }
     return rows, json.dumps(settings, sort_keys=True)
@@ -136,8 +136,8 @@ def queue(library, photo_ids, projection=CYLINDRICAL, crop=True):
     rows = derived.rows_to_queue(library, photo_ids)
     check_frames(rows)
     rows, settings = settings_for(rows, projection, crop)
-    sources = [dbm.Source(row["volume_key"], row["path"], row["content_id"]) for row in rows]
-    return library.add_derived_job(PANORAMA, settings, sources, rows[0]["folder_id"])
+    sources = [dbm.Source(row.volume_key, row.path, row.content_id) for row in rows]
+    return library.add_derived_job(PANORAMA, settings, sources, rows[0].folder_id)
 
 
 # Projections. A point of the result (u, v), in pixels of the result, is a direction

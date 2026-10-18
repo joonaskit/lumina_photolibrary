@@ -31,7 +31,7 @@ def edit_photo(qtbot, window, row, edit=True):
 
     def heard():
         shown = window.model.row_of(photo_id)
-        return shown is not None and (window.model.edit(shown) is not None) == edit
+        return shown is not None and window.model.is_edited(shown) == edit
 
     qtbot.waitUntil(heard, timeout=TIMEOUT)
     return name
@@ -123,9 +123,9 @@ def test_saving_an_edit_updates_its_row_and_does_not_read_the_library_again(
 
     edit_photo(qtbot, window, 1)
 
-    assert window.model.edit(1) is not None
-    assert [window.model.edit(row) for row in (0, 2)] == [None, None]
+    assert window.model.is_edited(1) and window.model.edit(1) is not None
+    assert [window.model.is_edited(row) for row in (0, 2)] == [False, False]
     assert loads == []
     assert changed == [(1, 1)]
     edit_photo(qtbot, window, 1, edit=False)
-    assert window.model.edit(1) is None and loads == []
+    assert not window.model.is_edited(1) and window.model.edit(1) is None and loads == []

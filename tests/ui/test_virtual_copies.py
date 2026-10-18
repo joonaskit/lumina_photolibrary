@@ -6,7 +6,7 @@ import json
 import os
 
 import pytest
-from conftest import TIMEOUT
+from conftest import TIMEOUT, written
 
 from lumina.core.edit.params import Params
 from lumina.qt_models.develop import DevelopSession, ExportOptions, suggested_name
@@ -42,8 +42,8 @@ def test_a_copy_starts_as_the_edit_it_was_made_from(library, photo):
     library.save_edit(photo_id, Params(exposure=0.5).to_json())
     before = digest(path)
 
-    number = library.make_copy(photo_id)
-    other = library.make_copy(photo_id, number)
+    number = written(library.make_copy, photo_id)
+    other = written(library.make_copy, photo_id, number)
 
     assert (number, other) == (1, 2)
     assert library.copies(photo_id) == [1, 2]
@@ -55,7 +55,7 @@ def test_a_copy_starts_as_the_edit_it_was_made_from(library, photo):
 def test_a_copy_of_an_unedited_photo_is_the_original_and_leaves_it_unedited(library, photo):
     photo_id, _path = photo
 
-    number = library.make_copy(photo_id)
+    number = written(library.make_copy, photo_id)
 
     assert exposure(library, photo_id, number) == 0
     assert library.edit_json(photo_id) is None
@@ -65,8 +65,8 @@ def test_the_grid_counts_a_photos_copies(library, photo):
     photo_id, _path = photo
     assert next(p for p in library.db.photos() if p.id == photo_id).copies == 0
 
-    library.make_copy(photo_id)
-    library.make_copy(photo_id)
+    written(library.make_copy, photo_id)
+    written(library.make_copy, photo_id)
 
     assert next(p for p in library.db.photos() if p.id == photo_id).copies == 2
     assert next(p for p in library.db.photos() if p.id != photo_id).copies == 0
@@ -83,10 +83,11 @@ def test_making_copies_of_several_photos_gives_each_one(library):
 def test_deleting_a_copy_leaves_the_photos_own_edit_and_the_other_copies(library, photo):
     photo_id, path = photo
     library.save_edit(photo_id, Params(exposure=0.5).to_json())
-    first, second = library.make_copy(photo_id), library.make_copy(photo_id)
+    first, second = written(library.make_copy, photo_id), written(library.make_copy, photo_id)
     before = digest(path)
 
     library.delete_copy(photo_id, first)
+    library.flush()
 
     assert library.copies(photo_id) == [second]
     assert exposure(library, photo_id) == 0.5
@@ -100,7 +101,7 @@ def test_deleting_a_copy_leaves_the_photos_own_edit_and_the_other_copies(library
 def test_editing_a_copy_saves_it_and_leaves_the_photos_own_edit(library, photo, qtbot):
     photo_id, path = photo
     library.save_edit(photo_id, Params(exposure=0.5).to_json())
-    number = library.make_copy(photo_id)
+    number = written(library.make_copy, photo_id)
     before = digest(path)
     session = DevelopSession(library)
     with qtbot.waitSignal(session.image_ready, timeout=TIMEOUT):
@@ -119,7 +120,7 @@ def test_editing_a_copy_saves_it_and_leaves_the_photos_own_edit(library, photo, 
 
 def test_a_copy_reset_to_the_original_stays_a_copy(library, photo, qtbot):
     photo_id, path = photo
-    number = library.make_copy(photo_id, params_json=Params(exposure=1.0).to_json())
+    number = written(library.make_copy, photo_id, params_json=Params(exposure=1.0).to_json())
     session = DevelopSession(library)
     with qtbot.waitSignal(session.image_ready, timeout=TIMEOUT):
         session.open(photo_id, path, number)
@@ -134,7 +135,7 @@ def test_a_copy_reset_to_the_original_stays_a_copy(library, photo, qtbot):
 def test_a_copy_is_exported_with_its_own_edit(library, photo, tmp_path, qtbot):
     photo_id, path = photo
     library.save_edit(photo_id, Params(exposure=0.5).to_json())
-    number = library.make_copy(photo_id, params_json=Params(exposure=2.0).to_json())
+    number = written(library.make_copy, photo_id, params_json=Params(exposure=2.0).to_json())
     session = DevelopSession(library)
     with qtbot.waitSignal(session.image_ready, timeout=TIMEOUT):
         session.open(photo_id, path, number)
@@ -188,6 +189,7 @@ def test_making_a_copy_in_the_viewer_shows_it_and_stepping_goes_through_the_edit
     photo_id = window._viewed_id
 
     window.make_virtual_copy()
+    window.service.flush()
 
     assert window.pages.currentIndex() == _VIEWER
     assert window._viewed_copy == 1
@@ -220,6 +222,7 @@ def test_a_copy_is_edited_in_the_develop_view_and_deleted_there(qtbot, service, 
     qtbot.waitUntil(lambda: window.session.size is not None, timeout=TIMEOUT)
 
     window.make_virtual_copy()
+    window.service.flush()
 
     assert window.session.copy == 1 and window.session.photo_id == photo_id
     qtbot.waitUntil(lambda: window.session.size is not None, timeout=TIMEOUT)
@@ -241,6 +244,7 @@ def test_the_grid_makes_a_copy_of_each_photo_chosen(qtbot, service, drive):
     assert window.pages.currentIndex() == _GRID
 
     window.make_virtual_copy()
+    window.service.flush()
 
     qtbot.waitUntil(
         lambda: all(window.model.copies(row) == 1 for row in range(window.model.rowCount())),
@@ -259,8 +263,8 @@ def open_grid(qtbot, library, photo_id):
 
 def test_opening_the_copies_makes_a_cell_of_each_and_closing_hides_them(qtbot, library, photo):
     photo_id, _path = photo
-    library.make_copy(photo_id)
-    library.make_copy(photo_id)
+    written(library.make_copy, photo_id)
+    written(library.make_copy, photo_id)
     window = open_grid(qtbot, library, photo_id)
     before = window.model.rowCount()
 
@@ -282,7 +286,7 @@ def test_a_click_on_the_badge_opens_the_copies(qtbot, library, photo):
     from lumina.ui import badges
 
     photo_id, _path = photo
-    library.make_copy(photo_id)
+    written(library.make_copy, photo_id)
     window = open_grid(qtbot, library, photo_id)
     window.show()
     qtbot.waitUntil(
@@ -313,8 +317,8 @@ def test_a_copy_chosen_in_the_grid_is_deleted_and_the_photo_is_not(
     from PySide6.QtWidgets import QMessageBox
 
     photo_id, path = photo
-    library.make_copy(photo_id)
-    other = library.make_copy(photo_id)
+    written(library.make_copy, photo_id)
+    other = written(library.make_copy, photo_id)
     before = digest(path)
     window = open_grid(qtbot, library, photo_id)
     window.model.toggle_copies(photo_id)
@@ -341,7 +345,7 @@ def test_a_copy_chosen_in_the_grid_is_deleted_and_the_photo_is_not(
 
 def test_a_copy_cell_opens_that_copy(qtbot, library, photo):
     photo_id, _path = photo
-    library.make_copy(photo_id)
+    written(library.make_copy, photo_id)
     window = open_grid(qtbot, library, photo_id)
     window.model.toggle_copies(photo_id)
     row = window.model.row_of(photo_id, 1)

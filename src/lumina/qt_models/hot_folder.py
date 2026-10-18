@@ -75,7 +75,9 @@ class HotFolder(QObject):
         preset from a newer Lumina, KeyError for one there is not."""
         edit = None
         if preset is not None:
-            document = dict(self.library.presets())[preset]
+            document = self.library.preset(preset)
+            if document is None:
+                raise KeyError(preset)
             edit = _params.pasted(None, json.loads(document))
         self._end()
         self.folder, self.preset, self.count, self._edit = folder_id, preset, 0, edit

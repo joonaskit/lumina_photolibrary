@@ -87,9 +87,9 @@ def test_a_new_photo_is_taken_in_at_once_with_watching_off(qtbot, scanned, tethe
     assert tether.count == 1
     # Read once, complete
     stored = service.db.photo(photo)
-    assert stored["size"] == os.path.getsize(path)
-    qtbot.waitUntil(lambda: service.db.photo(photo)["model"] == "Canon EOS 90D", timeout=TIMEOUT)
-    assert service.db.photo(photo)["content_id"]
+    assert stored.size == os.path.getsize(path)
+    qtbot.waitUntil(lambda: service.db.photo(photo).model == "Canon EOS 90D", timeout=TIMEOUT)
+    assert service.db.photo(photo).content_id
 
 
 def test_each_new_photo_is_given_the_preset(qtbot, scanned, tether, drive):

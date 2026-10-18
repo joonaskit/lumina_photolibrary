@@ -3,7 +3,7 @@
 import time
 from datetime import datetime, timedelta
 
-from lumina.core.dbtypes import QUEUED, Derived, Source
+from lumina.core.dbtypes import QUEUED, Derived, Source, _photo
 
 
 class DerivedStore:
@@ -68,8 +68,8 @@ class DerivedStore:
         return self.derived(row[0]) if row is not None else None
 
     def photos_near(self, folder_id, taken, seconds):
-        """Photos of the folder taken within `seconds` of `taken` (ISO text), as dicts with
-        their details, in time order: where a bracket is looked for."""
+        """Photos of the folder taken within `seconds` of `taken` (ISO text), as Photo,
+        in time order: where a bracket is looked for."""
         # A range on the indexed time, as text, a little wider than asked (the times are
         # text of different lengths); the exact test is made on what it finds
         centre = datetime.fromisoformat(taken)
@@ -83,10 +83,10 @@ class DerivedStore:
             "ORDER BY taken, p.path",
             (folder_id, low, high, taken, seconds),
         )
-        return [dict(row) for row in rows]
+        return [_photo(row) for row in rows]
 
     def photo_rows(self, ids):
-        """The photos `ids` as dicts with their details and volume key, in that order;
+        """The photos `ids` as Photo, with their volume key, in that order;
         those not in the library left out."""
         found = {}
         ids = list(ids)
@@ -98,5 +98,5 @@ class DerivedStore:
                 f"FROM photos p JOIN volumes v ON v.id = p.volume_id WHERE p.id IN ({marks})",
                 part,
             )
-            found.update((row["id"], dict(row)) for row in rows)
+            found.update((row["id"], _photo(row)) for row in rows)
         return [found[i] for i in ids if i in found]

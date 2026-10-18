@@ -1,6 +1,7 @@
 """The library database's constants and records."""
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 # Steps of `metadata_state`
 PENDING, READ, FAILED = 0, 1, 2
@@ -57,8 +58,9 @@ class PhotoRow:
     available: bool
     # COALESCE(captured, file_time)
     taken: str
-    # The photo's own edit as parameters JSON, or None
-    edit: str | None = None
+    # When the photo's own edit (or a copy's cell's, its edit) was last saved, or None
+    # for none: the edit's JSON is read where it is needed, not with every row
+    edited: float | None = None
     flag: int = UNFLAGGED
     rating: int = 0
     # exiftool's warning that the raw data may be damaged, or None
@@ -74,6 +76,76 @@ class PhotoRow:
     stack_collapsed: bool = True
     # A grid cell of a virtual copy of the photo (its number), shown open; 0 for the photo
     copy: int = 0
+
+
+@dataclass(frozen=True)
+class Photo:
+    """Everything the library keeps of one photo: its row of `photos`, with its volume's
+    key and when it was taken where those are asked for (None where they are not). The
+    defaults are for records made by hand, as tests make them."""
+
+    id: int
+    path: str = ""
+    folder_id: int | None = None
+    volume_id: int | None = None
+    size: int = 0
+    mtime_ns: int = 0
+    # The file's time, local, for photos without a capture time
+    file_time: str | None = None
+    content_id: str | None = None
+    available: bool = True
+    missing_since: float | None = None
+    metadata_state: int = PENDING
+    metadata_error: str | None = None
+    # Local wall-clock time as the camera had it, ISO, and its offset if known
+    captured: str | None = None
+    captured_offset: str | None = None
+    make: str | None = None
+    model: str | None = None
+    lens: str | None = None
+    focal_length: float | None = None
+    aperture: float | None = None
+    exposure_time: float | None = None
+    iso: int | None = None
+    orientation: int | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    file_type: str | None = None
+    added_at: float | None = None
+    flag: int = UNFLAGGED
+    rating: int = 0
+    damage_warning: str | None = None
+    keywords_read: int = 0
+    changed_at: float | None = None
+    sidecar_at: float | None = None
+    sidecar_mtime_ns: int | None = None
+    stack_id: int | None = None
+    stack_position: int = 0
+    volume_key: str | None = None
+    # COALESCE(captured, file_time)
+    taken: str | None = None
+
+
+def _photo(row):
+    # Every column must be a field: one added to `photos` without it fails here
+    fields = dict(row)
+    fields["available"] = bool(fields["available"])
+    return Photo(**fields)
+
+
+@dataclass(frozen=True)
+class Preset:
+    name: str
+    # Edit parameters as JSON
+    params: str
+
+
+class Choices(NamedTuple):
+    """What the grid can be filtered by: the years, cameras and lenses there are."""
+
+    years: list
+    models: list
+    lenses: list
 
 
 @dataclass(frozen=True)

@@ -64,7 +64,7 @@ class MergingMixin:
 
     def _photo_name(self, photo_id):
         photo = self.service.photo_details(photo_id)
-        return os.path.basename(photo["path"]) if photo else str(photo_id)
+        return os.path.basename(photo.path) if photo else str(photo_id)
 
     def copy_settings(self):
         """Keep some sections of the edit of the photo shown, open or current, to paste
@@ -113,7 +113,7 @@ class MergingMixin:
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
-        self._pasted(self.service.paste_settings(ids), copied.name)
+        self.service.paste_settings(ids, on_done=lambda result: self._pasted(result, copied.name))
 
     def sync_settings(self):
         """Copy sections of the edit of the current photo to the others chosen."""
@@ -139,7 +139,9 @@ class MergingMixin:
             )
             return
         ids = [self.model.photo_id(row) for row in rows]
-        self._pasted(self.service.paste_settings(ids, document), name)
+        self.service.paste_settings(
+            ids, document, on_done=lambda result: self._pasted(result, name)
+        )
 
     def _pasted(self, result, source_name):
         """Tell of a paste that went to photos in the library."""

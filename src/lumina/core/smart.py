@@ -57,7 +57,7 @@ class SmartQuery:
                 return False
             if self.rating and photo.rating < self.rating:
                 return False
-        if self.edit is not None and (photo.edit is not None) != (self.edit == "edited"):
+        if self.edit is not None and (photo.edited is not None) != (self.edit == "edited"):
             return False
         if self.keyword is not None:
             return any(

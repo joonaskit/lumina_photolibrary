@@ -44,28 +44,36 @@ class CollectingMixin:
         """Make a manual collection, asking its name; the photos chosen go into it."""
         name = self._ask_name("New Collection")
         if name is None:
-            return None
-        try:
-            made = self.service.add_collection(name)
-        except ValueError as error:
-            QMessageBox.warning(self, "New Collection", str(error))
-            return None
-        if add_chosen:
-            self.add_to_collection(made)
-        return made
+            return
+        # The photos chosen now, not when the collection is made
+        ids = [self.model.photo_id(row) for row in self._flag_rows()] if add_chosen else []
+
+        def made(collection_id):
+            if ids:
+                self.add_ids_to_collection(collection_id, ids)
+
+        self.service.add_collection(
+            name, on_done=made, on_error=lambda error: self._name_refused("New Collection", error)
+        )
+
+    def _name_refused(self, title, error):
+        QMessageBox.warning(self, title, str(error))
 
     def add_to_collection(self, collection_id):
         rows = self._flag_rows()
         self.add_ids_to_collection(collection_id, [self.model.photo_id(row) for row in rows])
 
     def add_ids_to_collection(self, collection_id, photo_ids):
-        added = self.service.add_to_collection(collection_id, photo_ids)
-        name = next((c.name for c in self.service.collections() if c.id == collection_id), "")
-        left = len(photo_ids) - added
-        text = f"Added {added} photo{'' if added == 1 else 's'} to {name}"
-        if left:
-            text += f" ({left} already there)"
-        self.statusBar().showMessage(text, 5000)
+        def added(count):
+            found = (c.name for c in self.service.collections() if c.id == collection_id)
+            name = next(found, "")
+            left = len(photo_ids) - count
+            text = f"Added {count} photo{'' if count == 1 else 's'} to {name}"
+            if left:
+                text += f" ({left} already there)"
+            self.statusBar().showMessage(text, 5000)
+
+        self.service.add_to_collection(collection_id, photo_ids, on_done=added)
 
     def remove_from_collection(self, collection_id):
         ids = [self.model.photo_id(row) for row in self._flag_rows()]
@@ -77,10 +85,11 @@ class CollectingMixin:
         name = self._ask_name("Rename Collection", current)
         if name is None or name == current:
             return
-        try:
-            self.service.rename_collection(collection_id, name)
-        except ValueError as error:
-            QMessageBox.warning(self, "Rename Collection", str(error))
+        self.service.rename_collection(
+            collection_id,
+            name,
+            on_error=lambda error: self._name_refused("Rename Collection", error),
+        )
 
     def delete_collection(self, collection_id):
         found = next((c for c in self.service.collections() if c.id == collection_id), None)
@@ -117,12 +126,12 @@ class CollectingMixin:
         name = self._ask_name("New Smart Collection")
         if name is None:
             return
-        try:
-            made = self.service.add_collection(name, query.to_json())
-        except ValueError as error:
-            QMessageBox.warning(self, "New Smart Collection", str(error))
-            return
-        self.sidebar.select_collection(made)
+        self.service.add_collection(
+            name,
+            query.to_json(),
+            on_done=self.sidebar.select_collection,
+            on_error=lambda error: self._name_refused("New Smart Collection", error),
+        )
 
     def update_smart_collection(self, collection_id):
         query = self._current_query()

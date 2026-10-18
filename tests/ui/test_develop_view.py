@@ -216,7 +216,7 @@ def test_an_edit_made_shows_in_the_grid(qtbot, window):
     window.go_back()
 
     row = row_of(window, "a.jpg")
-    qtbot.waitUntil(lambda: window.model.edit(row) is not None, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: window.model.is_edited(row), timeout=TIMEOUT)
     window.model.data(window.model.index(row), Qt.ItemDataRole.DecorationRole)
     qtbot.waitUntil(lambda: window.model.thumbnail_pixmap(row) is not None, timeout=TIMEOUT)
 

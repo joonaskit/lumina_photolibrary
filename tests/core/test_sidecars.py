@@ -360,7 +360,7 @@ def test_a_library_is_rebuilt_from_the_photos_and_their_sidecars(tmp_path, drive
         assert (first.flag, first.rating) == (-1, 4)
         paths = {i: p for i, p, _c in fresh.keyword_list()}
         assert sorted(paths[k] for k in first.keywords) == ["Cat", "Places > Helsinki"]
-        assert first.edit == PARAMS
+        assert first.edited is not None and fresh.edit(first.id) == PARAMS
         assert fresh.copies(first.id) == [0, 1]
         assert by_name["b.jpg"].rating == 2 and by_name["c.jpg"].rating == 0
         # Nothing to write back: it is as the sidecars said
@@ -393,7 +393,7 @@ def test_the_library_wins_when_its_change_is_newer_and_is_written_to_the_sidecar
 
     job = scan(library, drive, read_sidecars=True)
 
-    assert library.photo(a)["rating"] == 5
+    assert library.photo(a).rating == 5
     assert "older than the library's own, kept" in job.message
     assert [row[0] for row in library.sidecar_pending()] == [a]
     sidecars.write_pending(library, mounted(drive))
@@ -474,7 +474,7 @@ def test_a_sidecar_with_a_bad_edit_is_named_and_the_librarys_edits_stay(library,
     [(failed, message)] = library.failures(job.id)
     assert failed == str(drive / "Photos" / "a.jpg.xmp") and why in message
     assert library.edit(a) == '{"version": 1, "mine": true}'
-    assert library.photo(a)["rating"] == 0
+    assert library.photo(a).rating == 0
 
 
 def test_a_sidecar_is_read_once_until_the_file_changes(library, drive):
@@ -488,7 +488,7 @@ def test_a_sidecar_is_read_once_until_the_file_changes(library, drive):
     library.set_ratings({a: 0})
     again = scan(library, drive, read_sidecars=True)
 
-    assert "sidecar" not in (again.message or "") and library.photo(a)["rating"] == 0
+    assert "sidecar" not in (again.message or "") and library.photo(a).rating == 0
 
 
 def test_a_foreign_or_damaged_sidecar_never_stops_a_scan(library, drive):
@@ -503,7 +503,7 @@ def test_a_foreign_or_damaged_sidecar_never_stops_a_scan(library, drive):
     assert [row[0] for row in library.failures(job.id)] == [str(drive / "Photos" / "b.jpg.xmp")]
     # Another program's is left as it is, here and when written
     assert (drive / "Photos" / "a.jpg.xmp").read_bytes() == b"<x:xmpmeta>darktable</x:xmpmeta>"
-    assert library.photo(a)["rating"] == 0
+    assert library.photo(a).rating == 0
 
 
 def test_a_sidecar_that_is_gone_is_written_again(library, drive):
@@ -525,7 +525,7 @@ def test_a_sidecar_read_in_marks_nothing_as_the_librarys_own_change_to_rewrite(l
 
     scan(library, drive, read_sidecars=True)
 
-    assert library.photo(a)["changed_at"] == 5e9 and library.sidecar_pending() == []
+    assert library.photo(a).changed_at == 5e9 and library.sidecar_pending() == []
 
 
 # The schema

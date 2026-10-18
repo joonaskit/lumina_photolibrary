@@ -73,13 +73,19 @@ class CopiesMixin:
             return
         if page not in (_VIEWER, _DEVELOP) or self._viewed_id is None:
             return
+        photo_id = self._viewed_id
+
+        def made(number):
+            # Shown when the photo it is a copy of is still the one shown
+            if self._viewed_id == photo_id:
+                self._show_edit(number)
+
         if page == _DEVELOP and self.session.is_open():
-            number = self.service.make_copy(
-                self._viewed_id, params_json=self.session.params.to_json()
+            self.service.make_copy(
+                photo_id, params_json=self.session.params.to_json(), on_done=made
             )
         else:
-            number = self.service.make_copy(self._viewed_id, self._viewed_copy)
-        self._show_edit(number)
+            self.service.make_copy(photo_id, self._viewed_copy, on_done=made)
 
     def delete_virtual_copy(self):
         """Delete the virtual copy shown or chosen, after asking. In the viewer or Develop

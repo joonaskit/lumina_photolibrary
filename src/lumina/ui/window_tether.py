@@ -21,7 +21,7 @@ class TetherMixin:
         info = next((f for f in self.service.folders() if f.id == folder_id), None)
         if info is None:
             return
-        presets = [name for name, _json in self.service.presets()]
+        presets = [preset.name for preset in self.service.presets()]
         dialog = TetherDialog(info.name, presets, settings.tether_preset(), self)
         if dialog.exec() != TetherDialog.DialogCode.Accepted:
             return
@@ -58,7 +58,7 @@ class TetherMixin:
             )
             return
         folders = [f for f in self.service.folders() if f.connected]
-        presets = [name for name, _json in self.service.presets()]
+        presets = [preset.name for preset in self.service.presets()]
         dialog = CameraDialog(folders, presets, settings.camera_choices(), self)
         if dialog.exec() != CameraDialog.DialogCode.Accepted:
             return

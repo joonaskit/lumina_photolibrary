@@ -69,7 +69,7 @@ def with_exposures(service, ids):
             iso=100,
             file_type="DNG",
         )
-        rows.append((photo, service.db.photo(photo)["content_id"], data))
+        rows.append((photo, service.db.photo(photo).content_id, data))
     service.db.write_metadata(read=rows)
 
 
