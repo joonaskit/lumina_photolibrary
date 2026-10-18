@@ -49,7 +49,7 @@ from lumina.qt_models.library_model import (
     SmartQuery,
 )
 from lumina.qt_models.previews import PreviewLoader
-from lumina.ui import badges, damage, flags, settings, stars
+from lumina.ui import badges, damage, flags, settings, shortcuts, stars
 from lumina.ui.camera import CameraBar, CameraDialog
 from lumina.ui.develop_view import DevelopView
 from lumina.ui.export_dialog import ExportDialog
@@ -89,6 +89,16 @@ DIMMED_OPACITY = 0.35
 FLAG_NAMES = {PICKED: "Thumbs up", REJECTED: "Thumbs down"}
 
 _EMPTY, _GRID, _VIEWER, _DEVELOP, _LIVE = range(5)
+# What the shortcuts' overlay says of each page
+_VIEW_NAMES = {
+    _EMPTY: "Library",
+    _GRID: "Library",
+    _VIEWER: "Viewer",
+    _DEVELOP: "Develop",
+    _LIVE: "Live View",
+}
+# Why an action on photos can't be used
+_NO_PHOTO = "No photo chosen"
 
 
 class _CellDelegate(QStyledItemDelegate):
@@ -499,7 +509,7 @@ class MainWindow(QMainWindow):
         # A foot pedal can send either
         self.capture_action = QAction("Capture", self)
         self.capture_action.setShortcuts([QKeySequence("Space"), QKeySequence("F12")])
-        self.capture_action.setEnabled(False)
+        shortcuts.enable(self.capture_action, False, "No camera connected")
         self.capture_action.triggered.connect(self.capture)
         self.addAction(self.capture_action)
         self.preferences_action = QAction("Settings", self)
@@ -507,6 +517,18 @@ class MainWindow(QMainWindow):
         self.preferences_action.setToolTip("Settings (Ctrl+,)")
         self.preferences_action.triggered.connect(self.open_settings)
         self.addAction(self.preferences_action)
+        self.shortcuts_action = QAction("Keyboard Shortcuts", self)
+        self.shortcuts_action.setShortcuts([QKeySequence("?"), QKeySequence(Qt.Key.Key_F1)])
+        self.shortcuts_action.triggered.connect(self.show_shortcuts)
+        self.addAction(self.shortcuts_action)
+        self.palette_action = QAction("Find an Action", self)
+        self.palette_action.setShortcut(QKeySequence("Ctrl+K"))
+        self.palette_action.triggered.connect(self.show_palette)
+        # Not among the actions it finds; the overlay shows its key
+        self.palette_action.setProperty("listed", False)
+        self.addAction(self.palette_action)
+        self._shortcut_overlay = None
+        self._command_palette = None
         self.back_action = QAction("Back", self)
         self.back_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.back_action.triggered.connect(self.go_back)
@@ -705,6 +727,39 @@ class MainWindow(QMainWindow):
             # Only while a photo is shown: in the grid the arrows move the selection.
             # The flags' keys are the grid's and the viewer's, not the search field's
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        # How the shortcuts' overlay and the palette group them
+        shortcuts.set_group(
+            "General",
+            self.preferences_action,
+            self.find_action,
+            self.shortcuts_action,
+            self.palette_action,
+        )
+        shortcuts.set_group(
+            "Library",
+            self.add_action,
+            self.import_action,
+            self.edit_action,
+            self.similar_action,
+            self.find_duplicates_action,
+            self.larger_action,
+            self.smaller_action,
+        )
+        shortcuts.set_group("Culling", *self.flag_actions)
+        shortcuts.set_group(
+            "Viewer", self.back_action, self.previous_action, self.next_action, *self.zoom_actions
+        )
+        shortcuts.set_group(
+            "Develop",
+            self.undo_action,
+            self.redo_action,
+            self.reset_action,
+            self.export_action,
+            *self.settings_actions,
+        )
+        shortcuts.set_group("Stacks and Copies", *self.stack_actions, *self.copy_actions)
+        shortcuts.set_group("Merges", self.merge_hdr_action, self.stitch_panorama_action)
+        shortcuts.set_group("Camera", self.camera_action, self.capture_action)
 
     def _make_toolbar(self):
         """One row in three parts: where you are on the left, with the edit's buttons in
@@ -874,6 +929,7 @@ class MainWindow(QMainWindow):
         self.end_search_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.end_search_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
         self.end_search_action.triggered.connect(self.end_search)
+        shortcuts.set_group("Library", self.end_search_action)
         self.grid.addAction(self.end_search_action)
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self._grid_menu)
@@ -942,6 +998,18 @@ class MainWindow(QMainWindow):
         dialog.exec()
         dialog.deleteLater()
         self.develop.arrange()
+
+    def show_shortcuts(self):
+        """The overlay of the keys of the view that is open."""
+        if self._shortcut_overlay is None:
+            self._shortcut_overlay = shortcuts.ShortcutOverlay(self)
+        self._shortcut_overlay.open(shortcuts.entries(self), _VIEW_NAMES[self.pages.currentIndex()])
+
+    def show_palette(self):
+        """Find an action by name and run it."""
+        if self._command_palette is None:
+            self._command_palette = shortcuts.CommandPalette(self)
+        self._command_palette.open(shortcuts.entries(self))
 
     # Folders
 
@@ -1140,7 +1208,11 @@ class MainWindow(QMainWindow):
 
     def _on_camera_changed(self):
         self.camera_bar.show_service(self.camera)
-        self.capture_action.setEnabled(self.camera.connected and not self.camera.ending)
+        shortcuts.enable(
+            self.capture_action,
+            self.camera.connected and not self.camera.ending,
+            "No camera connected",
+        )
         self._on_tether_changed()
         if self.pages.currentIndex() == _LIVE:
             if self.camera.running:
@@ -1564,12 +1636,12 @@ class MainWindow(QMainWindow):
         rows = self._flag_rows()
         given = {self.model.flag(row) for row in rows}
         for action, flag in ((self.pick_action, PICKED), (self.reject_action, REJECTED)):
-            action.setEnabled(bool(rows))
+            shortcuts.enable(action, bool(rows), _NO_PHOTO)
             action.setChecked(given == {flag})
-        self.unflag_action.setEnabled(bool(rows))
+        shortcuts.enable(self.unflag_action, bool(rows), _NO_PHOTO)
         given_stars = {self.model.rating(row) for row in rows}
         for action in self.rate_actions:
-            action.setEnabled(bool(rows))
+            shortcuts.enable(action, bool(rows), _NO_PHOTO)
         for number, action in enumerate(self.rate_actions[1:], 1):
             action.setCheckable(True)
             action.setChecked(given_stars == {number})
@@ -1580,8 +1652,16 @@ class MainWindow(QMainWindow):
         self._update_stack_actions()
         page = self.pages.currentIndex()
         browsing = page in (_GRID, _VIEWER)
-        self.undo_flag_action.setEnabled(browsing and self.model.can_undo_flags())
-        self.redo_flag_action.setEnabled(browsing and self.model.can_redo_flags())
+        shortcuts.enable(
+            self.undo_flag_action,
+            browsing and self.model.can_undo_flags(),
+            "Nothing to undo" if browsing else "In the grid and the viewer",
+        )
+        shortcuts.enable(
+            self.redo_flag_action,
+            browsing and self.model.can_redo_flags(),
+            "Nothing to redo" if browsing else "In the grid and the viewer",
+        )
         self._update_settings_actions()
 
     def _on_current_changed(self, current, _previous):
@@ -1835,12 +1915,20 @@ class MainWindow(QMainWindow):
 
     def _update_settings_actions(self):
         page = self.pages.currentIndex()
-        self.copy_settings_action.setEnabled(self._settings_source() is not None)
+        shortcuts.enable(self.copy_settings_action, self._settings_source() is not None, _NO_PHOTO)
         can_paste = self.service.copied is not None and (
             page == _DEVELOP or (page in (_GRID, _VIEWER) and bool(self._flag_rows()))
         )
-        self.paste_settings_action.setEnabled(can_paste)
-        self.sync_settings_action.setEnabled(bool(self._sync_rows()))
+        shortcuts.enable(
+            self.paste_settings_action,
+            can_paste,
+            "Nothing copied yet" if self.service.copied is None else _NO_PHOTO,
+        )
+        shortcuts.enable(
+            self.sync_settings_action,
+            bool(self._sync_rows()),
+            "Choose two or more photos in the grid",
+        )
         self.develop.paste_settings_button.setEnabled(self.service.copied is not None)
 
     # Merging
@@ -2278,15 +2366,18 @@ class MainWindow(QMainWindow):
     def _update_stack_actions(self, *_args):
         rows = self._stack_rows()
         stacked = [row for row in rows if self.model.stack(row) is not None]
-        self.stack_action.setEnabled(len(rows) > 1)
-        self.stack_bursts_action.setEnabled(
-            self.pages.currentIndex() == _GRID and self.model.rowCount() > 1
+        shortcuts.enable(self.stack_action, len(rows) > 1, "Choose two or more photos")
+        shortcuts.enable(
+            self.stack_bursts_action,
+            self.pages.currentIndex() == _GRID and self.model.rowCount() > 1,
+            "In the grid, with more than one photo",
         )
-        self.unstack_action.setEnabled(bool(stacked))
-        self.leave_stack_action.setEnabled(bool(stacked))
-        self.toggle_stack_action.setEnabled(bool(stacked))
-        self.stack_top_action.setEnabled(
-            len(rows) == 1 and bool(stacked) and not self.model.is_stack_top(rows[0])
+        for action in (self.unstack_action, self.leave_stack_action, self.toggle_stack_action):
+            shortcuts.enable(action, bool(stacked), "No photo in a stack chosen")
+        shortcuts.enable(
+            self.stack_top_action,
+            len(rows) == 1 and bool(stacked) and not self.model.is_stack_top(rows[0]),
+            "Choose one photo of a stack, not its top",
         )
 
     def stack_photos(self):
@@ -2428,11 +2519,14 @@ class MainWindow(QMainWindow):
     def _update_copy_actions(self, *_args):
         page = self.pages.currentIndex()
         viewing = page in (_VIEWER, _DEVELOP)
-        self.make_copy_action.setEnabled(bool(self._flag_rows()))
-        self.delete_copy_action.setEnabled(self._copy_to_delete() is not None)
+        shortcuts.enable(self.make_copy_action, bool(self._flag_rows()), _NO_PHOTO)
+        shortcuts.enable(
+            self.delete_copy_action, self._copy_to_delete() is not None, "No virtual copy chosen"
+        )
         several = viewing and self._viewed_id is not None and bool(self._others())
-        self.previous_copy_action.setEnabled(several)
-        self.next_copy_action.setEnabled(several)
+        why = "The photo has no virtual copies" if viewing else "With a photo open"
+        shortcuts.enable(self.previous_copy_action, several, why)
+        shortcuts.enable(self.next_copy_action, several, why)
 
     def _others(self):
         return self.service.copies(self._viewed_id)
@@ -2519,8 +2613,8 @@ class MainWindow(QMainWindow):
             self._show_edit(numbers[place])
 
     def _update_history(self):
-        self.undo_action.setEnabled(self.session.can_undo())
-        self.redo_action.setEnabled(self.session.can_redo())
+        shortcuts.enable(self.undo_action, self.session.can_undo(), "Nothing to undo")
+        shortcuts.enable(self.redo_action, self.session.can_redo(), "Nothing to redo")
 
     def export_photo(self):
         if not self.session.is_open():
@@ -2597,11 +2691,11 @@ class MainWindow(QMainWindow):
         self.search_field.setVisible(self.search is not None and page in (_GRID, _VIEWER, _DEVELOP))
         self.grid_view_options.setVisible(page == _GRID)
         for action in (self.back_action, self.previous_action, self.next_action):
-            action.setEnabled(viewing)
+            shortcuts.enable(action, viewing, "With a photo open")
         self.back_action.setEnabled(viewing or page == _LIVE)
         for action in (self.reset_action, self.export_action):
-            action.setEnabled(developing)
-        self.edit_action.setEnabled(page in (_GRID, _VIEWER))
+            shortcuts.enable(action, developing, "In the Develop view")
+        shortcuts.enable(self.edit_action, page in (_GRID, _VIEWER), "In the grid and the viewer")
         self._update_history()
         self._update_flag_actions()
         if not viewing:

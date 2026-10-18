@@ -636,6 +636,16 @@ def _stylesheet():
             padding: {gap(4)}px {gap(8)}px;
         }}
         #sectionHeader {{ text-align: left; }}
+        /* A key in the shortcuts' overlay */
+        QLabel#keycap {{
+            background: {raised}; border: 1px solid {divider}; border-radius: {small}px;
+            padding: {gap(1)}px {gap(6)}px; font-size: {small_font}px;
+        }}
+        QScrollArea#shortcutsScroll, QScrollArea#shortcutsScroll > QWidget > QWidget {{
+            background: transparent;
+        }}
+        /* A group's heading over its keys, in line with them */
+        QScrollArea#shortcutsScroll #heading {{ padding: 0 0 {gap(2)}px 0; }}
 
         /* The arrow sits inside the rounded box, in the padding, not in a square
            button of the platform style's own */
