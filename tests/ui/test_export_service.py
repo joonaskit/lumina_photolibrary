@@ -7,7 +7,7 @@ from PySide6.QtCore import QItemSelectionModel
 from PySide6.QtWidgets import QMessageBox
 
 from lumina.qt_models.exporting import ExportOptions, ExportService
-from lumina.ui import main_window, window_copies, window_stacking
+from lumina.ui import window_copies, window_stacking
 from lumina.ui.main_window import MainWindow
 
 
