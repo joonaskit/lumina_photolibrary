@@ -50,7 +50,7 @@ def library(tmp_path, drive):
 
 
 def scan(library, drive, **kwargs):
-    job = library.add_job(scanning.SCAN, library.folder_id)
+    job = library.add_job(dbm.SCAN, library.folder_id)
     scanning.scan(library, job, library.folder_id, mounted(drive), exiftool=FakeExifTool, **kwargs)
     return library.job(job)
 

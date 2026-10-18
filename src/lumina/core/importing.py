@@ -29,13 +29,11 @@ from datetime import datetime
 
 from lumina.core import capture_time, derived, metadata, scanner, tether, volumes
 from lumina.core import db as dbm
-from lumina.core.errors import PhotoError
+from lumina.core.dbtypes import COPYING
+from lumina.core.errors import CameraBusy, NotConnected, PhotoError
 from lumina.core.fingerprint import content_id, content_id_of
-from lumina.core.library import NotConnected, _Job
+from lumina.core.library import _Job
 from lumina.core.range_file import RangeFile
-
-IMPORT = "import"
-READING, COPYING = "reading", "copying"
 
 # Where in the library folder a photo goes, by the day it was taken (strftime)
 LAYOUTS = {
@@ -134,10 +132,6 @@ def read_source(
     known = library.imported(candidate.content_id for candidate in read)
     candidates = tuple(replace(c, imported=c.content_id in known) for c in read)
     return Reading(candidates, tuple(failures))
-
-
-class CameraBusy(NotConnected):
-    """Another program has the camera: the message says which and how to let it go."""
 
 
 def camera_key(serial):

@@ -16,8 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from lumina.core.dbtypes import CANCELLED, FAILED_JOB, QUEUED, RUNNING
 from lumina.integration import style
-from lumina.qt_models import library
 
 # How long after the last key a search starts
 _TYPING_MS = 350
@@ -180,7 +180,7 @@ class SearchStatus(QWidget):
     def show_indexing(self, status):
         if self._downloading:
             return
-        running = status.state in (library.QUEUED, library.RUNNING)
+        running = status.state in (QUEUED, RUNNING)
         self.label.setText(describe_indexing(status))
         self.label.setToolTip("\n".join(f"{path}: {message}" for path, message in status.failures))
         self.bar.setVisible(running)
@@ -209,11 +209,11 @@ class SearchStatus(QWidget):
 
 
 def describe_indexing(status):
-    if status.state in (library.QUEUED, library.RUNNING):
+    if status.state in (QUEUED, RUNNING):
         return f"Indexing for search: {status.done:,} of {status.total:,}".replace(",", " ")
-    if status.state == library.CANCELLED:
+    if status.state == CANCELLED:
         return "Stopped indexing for search"
-    if status.state == library.FAILED:
+    if status.state == FAILED_JOB:
         return f"Could not index for search: {status.message}"
     return status.message or "Indexed for search"
 

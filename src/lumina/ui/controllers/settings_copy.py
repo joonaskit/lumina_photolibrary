@@ -4,7 +4,7 @@ or synced from the current photo to the others chosen."""
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QMessageBox
 
-from lumina.qt_models.library import NewerParams
+from lumina.core.edit.params import NewerParams
 from lumina.ui import shortcuts
 from lumina.ui.preset_dialog import CopyDialog
 from lumina.ui.window_common import _DEVELOP, _GRID, _NO_PHOTO, _VIEWER, photo_name

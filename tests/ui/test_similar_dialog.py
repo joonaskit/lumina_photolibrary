@@ -5,7 +5,8 @@ from conftest import TIMEOUT
 from test_flags import names, open_window
 from test_stacks import give_vectors, unit, wait_for_rows
 
-from lumina.qt_models.library_model import REJECTED, STACK_ROLE
+from lumina.core.dbtypes import REJECTED
+from lumina.qt_models.library_model import STACK_ROLE
 
 
 def open_dialog(qtbot, window, groups):

@@ -16,13 +16,8 @@ from PySide6.QtCore import QObject, Signal
 from lumina.core import db as dbm
 from lumina.core import exporting
 from lumina.core import library as scanning
-from lumina.core.edit import export as _export
 from lumina.core.errors import PhotoError
 from lumina.qt_models import workers
-
-EXPORTING = exporting.EXPORTING
-ExportOptions = _export.ExportOptions
-FORMATS = _export.FORMATS
 
 
 @dataclass(frozen=True)
@@ -161,7 +156,7 @@ class ExportService(QObject):
         )
 
     def _exports(self):
-        return [job for job in self.library.db.unfinished_jobs() if job.kind == exporting.EXPORT]
+        return [job for job in self.library.db.unfinished_jobs() if job.kind == dbm.EXPORT]
 
     def _folder_name(self, job_id):
         found = self.library.db.export_job(job_id)

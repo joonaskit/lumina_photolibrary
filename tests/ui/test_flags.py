@@ -9,15 +9,8 @@ from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QStyleOptionViewItem
 
 from lumina.core import db as dbm
-from lumina.qt_models.library_model import (
-    DIM,
-    DIMMED_ROLE,
-    HIDE,
-    PICKED,
-    REJECTED,
-    SHOW,
-    UNFLAGGED,
-)
+from lumina.core.dbtypes import PICKED, REJECTED, UNFLAGGED
+from lumina.qt_models.library_model import DIM, DIMMED_ROLE, HIDE, SHOW
 from lumina.ui import settings
 from lumina.ui.main_window import MainWindow
 

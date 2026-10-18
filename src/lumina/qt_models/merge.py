@@ -22,13 +22,10 @@ from lumina.core import library as scanning
 from lumina.qt_models import workers
 from lumina.qt_models.panorama_preview import PanoramaPreview
 
-DECODING, PLANNING, MERGING = hdr.DECODING, hdr.PLANNING, hdr.MERGING
-STITCHING = panorama.STITCHING
-HDR, PANORAMA = hdr.HDR, panorama.PANORAMA
 DEGHOSTING = tuple(hdr.DEGHOST)
 PROJECTIONS = panorama.PROJECTIONS
 # What runs each kind of job
-_RUN = {HDR: hdr.run, PANORAMA: panorama.run}
+_RUN = {dbm.HDR: hdr.run, dbm.PANORAMA: panorama.run}
 # How far around a photo a bracket is looked for, in seconds
 _NEAR = 60
 
@@ -55,8 +52,8 @@ class MergeStatus:
     failures: tuple
     # Merges waiting after this one
     queued: int
-    # HDR or PANORAMA
-    kind: str = HDR
+    # HDR or PANORAMA (core/dbtypes.py)
+    kind: str = dbm.HDR
 
 
 class MergeService(QObject):
@@ -235,7 +232,7 @@ class MergeService(QObject):
             self._next_job()
             return
         if not self._quitting.is_set():
-            doing = "stitch" if job.kind == PANORAMA else "merge"
+            doing = "stitch" if job.kind == dbm.PANORAMA else "merge"
             self.library.db.update_job(
                 job.id, state=dbm.FAILED_JOB, message=f"Could not {doing}: {error}"
             )

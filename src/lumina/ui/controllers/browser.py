@@ -6,7 +6,7 @@ import os
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-from lumina.qt_models.library_model import Filter
+from lumina.core.dbtypes import Filter
 from lumina.ui import settings
 from lumina.ui.window_common import _DEVELOP, _EMPTY, _GRID, _VIEWER, APP_NAME
 

@@ -9,7 +9,8 @@ from PySide6.QtWidgets import QInputDialog
 from test_flags import choose, names, open_window, press
 
 from lumina.core import db as dbm
-from lumina.qt_models.library_model import PHOTOS_MIME, PICKED
+from lumina.core.dbtypes import PICKED
+from lumina.qt_models.library_model import PHOTOS_MIME
 from lumina.ui.keywords_dialog import KeywordsDialog
 from lumina.ui.sidebar import KIND_ROLE
 

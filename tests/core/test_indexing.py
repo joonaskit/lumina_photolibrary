@@ -45,7 +45,7 @@ def mounted(path):
 def scanned(library, drive):
     key, inside = locate(drive / "Photos", mounted(drive))
     folder = library.add_folder(key, inside, "Photos drive", str(drive))
-    job = library.add_job(scanning.SCAN, folder)
+    job = library.add_job(dbm.SCAN, folder)
     assert scanning.scan(library, job, folder, mounted(drive), exiftool=FakeExifTool) == dbm.DONE
     return folder
 

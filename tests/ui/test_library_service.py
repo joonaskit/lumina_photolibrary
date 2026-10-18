@@ -6,7 +6,7 @@ from fakes import FakeExifTool
 from photos import make_jpeg
 
 from lumina.core import db as dbm
-from lumina.core import library as scanning
+from lumina.core.dbtypes import CANCELLED, DETAILS, DONE, FINDING
 from lumina.qt_models import library
 
 
@@ -15,7 +15,7 @@ def test_an_added_folder_is_scanned(service, drive, qtbot, wait_idle):
         folder = service.add_folder(drive / "Photos")
 
     status = ended.args[0]
-    assert status.state == library.DONE
+    assert status.state == DONE
     assert status.message == "3 photos, 3 new"
     assert [f.name for f in service.folders()] == ["Photos"]
     assert service.folders()[0].connected
@@ -54,15 +54,15 @@ def test_an_unplugged_drive_shows_as_not_connected_and_is_scanned_when_back(
 def test_a_job_left_running_by_a_crash_is_finished_at_the_next_start(make_service, drive, qtbot):
     first = make_service(start=False)
     folder = first.db.add_folder("uuid:TEST-DRIVE", "Photos")
-    job = first.db.add_job(scanning.SCAN, folder)
-    first.db.update_job(job, state=dbm.RUNNING, phase=scanning.FINDING, done=1)
+    job = first.db.add_job(dbm.SCAN, folder)
+    first.db.update_job(job, state=dbm.RUNNING, phase=dbm.FINDING, done=1)
     first.close()
 
     second = make_service(start=False)
     with qtbot.waitSignal(second.job_ended, timeout=TIMEOUT) as ended:
         second.start()
 
-    assert ended.args[0].state == library.DONE
+    assert ended.args[0].state == DONE
     assert second.db.job(job).state == dbm.DONE
 
 
@@ -94,7 +94,7 @@ def test_cancel_stops_the_job(service, drive, qtbot):
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT) as ended:
         service.cancel()
 
-    assert ended.args[0].state == library.CANCELLED
+    assert ended.args[0].state == CANCELLED
     assert service.db.unfinished_jobs() == []
 
 
@@ -121,8 +121,8 @@ def test_progress_is_told_while_scanning(service, drive, qtbot):
         service.add_folder(drive / "Photos")
 
     phases = {status.phase for status in seen}
-    assert {library.FINDING, library.DETAILS} <= phases
-    assert seen[-1].state == library.DONE
+    assert {FINDING, DETAILS} <= phases
+    assert seen[-1].state == DONE
 
 
 def test_photos_changed_is_not_told_too_often(service, drive, qtbot):
@@ -259,17 +259,17 @@ def test_the_time_left_is_told_from_the_rate_of_the_details(service, qtbot, monk
     job = 7
 
     # The walk has no end to tell; the details tell nothing until there is a rate
-    assert service._time_left(job, library.FINDING, 300, None) is None
-    assert service._time_left(job, library.DETAILS, 0, 1000) is None
+    assert service._time_left(job, FINDING, 300, None) is None
+    assert service._time_left(job, DETAILS, 0, 1000) is None
     now[0] += 2
-    assert service._time_left(job, library.DETAILS, 200, 1000) is None
+    assert service._time_left(job, DETAILS, 200, 1000) is None
     now[0] += 8
     # 400 read in 10 seconds: 600 left take 15
-    assert service._time_left(job, library.DETAILS, 400, 1000) == pytest.approx(15)
+    assert service._time_left(job, DETAILS, 400, 1000) == pytest.approx(15)
     # Few read: not told, a new job or phase starts again
-    assert service._time_left(8, library.DETAILS, 0, 1000) is None
+    assert service._time_left(8, DETAILS, 0, 1000) is None
     now[0] += 20
-    assert service._time_left(8, library.DETAILS, 50, 1000) is None
+    assert service._time_left(8, DETAILS, 50, 1000) is None
 
 
 def test_the_raw_files_of_a_camera_are_found_on_a_thread(service, drive, qtbot):

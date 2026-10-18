@@ -14,8 +14,8 @@ from rawfiles import make_dng
 from lumina.core import db as dbm
 from lumina.core import importing, tether
 from lumina.core.db import Library
+from lumina.core.errors import NotConnected
 from lumina.core.fingerprint import content_id
-from lumina.core.library import NotConnected
 from lumina.core.volumes import Mount
 
 DRIVE = "uuid:DRIVE"

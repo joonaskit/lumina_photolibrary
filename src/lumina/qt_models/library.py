@@ -29,18 +29,6 @@ from lumina.qt_models.watcher import FolderWatcher
 # For the application, which tells the user
 NewerDatabase = dbm.NewerDatabase
 NoBackup = dbm.NoBackup
-# For the UI: an edit made by a newer Lumina
-NewerParams = _params.NewerParams
-
-# For the UI, which does not import core/: a job's states and steps
-QUEUED, RUNNING, DONE, FAILED, CANCELLED = (
-    dbm.QUEUED,
-    dbm.RUNNING,
-    dbm.DONE,
-    dbm.FAILED_JOB,
-    dbm.CANCELLED,
-)
-FINDING, DETAILS, SIDECARS = scanning.FINDING, scanning.DETAILS, scanning.SIDECARS
 
 # How often the mounts are read, and how often the grid hears of photos a scan wrote
 _MOUNTS_MS = 3000
@@ -263,7 +251,7 @@ class LibraryService(QObject):
     def start(self):
         """Resume unfinished jobs, scan every connected folder, and follow the drives."""
         for folder in self.db.folders():
-            self.db.add_job(scanning.SCAN, folder.id)
+            self.db.add_job(dbm.SCAN, folder.id)
         self._timer.start()
         self._next_job()
         self.prune_thumbnails()
@@ -404,7 +392,7 @@ class LibraryService(QObject):
             # All of it, whatever was asked for before
             self._partial.pop(folder, None)
             self._later.pop(folder, None)
-            self.db.add_job(scanning.SCAN, folder)
+            self.db.add_job(dbm.SCAN, folder)
         self._next_job()
 
     def _rescan_directories(self, folder_id, directories):
@@ -418,7 +406,7 @@ class LibraryService(QObject):
                 self._partial[folder_id] |= directories
             return
         self._partial[folder_id] = set(directories)
-        self.db.add_job(scanning.SCAN, folder_id)
+        self.db.add_job(dbm.SCAN, folder_id)
         self._next_job()
 
     def is_connected(self, folder_id):
@@ -872,7 +860,7 @@ class LibraryService(QObject):
         arrived = volumes.mounted_ids(mounts) - before
         for folder in self.db.folders():
             if folder.volume_key in arrived:
-                self.db.add_job(scanning.SCAN, folder.id)
+                self.db.add_job(dbm.SCAN, folder.id)
         self._next_job()
         # Photos on a drive that came can have their sidecars written now
         self.sidecars_due()
@@ -1095,7 +1083,7 @@ class LibraryService(QObject):
             return None
         _job, _phase, began, first = self._phase_began
         read = done - first
-        if phase != scanning.DETAILS or not total or read < _ETA_AFTER_PHOTOS:
+        if phase != dbm.DETAILS or not total or read < _ETA_AFTER_PHOTOS:
             return None
         if now - began < _ETA_AFTER_SECONDS:
             return None
@@ -1113,7 +1101,7 @@ class LibraryService(QObject):
         )
 
     def _scans(self):
-        return [job for job in self.db.unfinished_jobs() if job.kind == scanning.SCAN]
+        return [job for job in self.db.unfinished_jobs() if job.kind == dbm.SCAN]
 
     def _folder_name(self, folder_id):
         info = next((f for f in self.folders() if f.id == folder_id), None)

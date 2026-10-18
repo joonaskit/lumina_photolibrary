@@ -29,7 +29,6 @@ from datetime import datetime
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QImage
 
-from lumina.core import db as dbm
 from lumina.core import importing, live, tether, volumes
 from lumina.core.edit import params as _params
 from lumina.qt_models import workers
@@ -494,7 +493,3 @@ def _qimage(pixels, format):
 def _serve(library_path, session, commands, events, camera, frames, timing):
     """In the session's process (or thread)."""
     tether.serve(library_path, session, commands, events, camera, frames, **timing)
-
-
-# For the UI, which does not import core/
-TetherSession = dbm.TetherSession

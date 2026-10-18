@@ -9,7 +9,7 @@ from PySide6.QtCore import QItemSelectionModel
 from PySide6.QtWidgets import QMessageBox
 
 from lumina.core.edit import params as edit_params
-from lumina.qt_models.develop import Band, Basic, Colour, Hsl, Params
+from lumina.core.edit.params import Band, Basic, Colour, Hsl, Params
 from lumina.ui import settings
 from lumina.ui.main_window import MainWindow
 from lumina.ui.preset_dialog import CopyDialog

@@ -4,6 +4,7 @@ import pytest
 from conftest import TIMEOUT
 from fakes import FakeEncoder, install_model
 
+from lumina.core.dbtypes import QUEUED
 from lumina.qt_models import library as lib
 from lumina.qt_models.search import SearchService
 
@@ -111,7 +112,7 @@ def test_a_quit_while_indexing_leaves_it_queued(
     search.close()
     search.index_future.result(timeout=TIMEOUT / 1000)
 
-    assert service.db.job(job).state == lib.QUEUED
+    assert service.db.job(job).state == QUEUED
 
 
 def test_a_scan_cancel_leaves_indexing_alone(
@@ -124,4 +125,4 @@ def test_a_scan_cancel_leaves_indexing_alone(
 
     service.cancel()
 
-    assert service.db.job(job).state == lib.QUEUED
+    assert service.db.job(job).state == QUEUED

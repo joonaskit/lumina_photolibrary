@@ -7,7 +7,8 @@ from conftest import TIMEOUT
 from PySide6.QtWidgets import QStyleOptionViewItem
 from test_flags import choose, names, open_window
 
-from lumina.qt_models.library_model import PICKED, STACK_ROLE
+from lumina.core.dbtypes import PICKED
+from lumina.qt_models.library_model import STACK_ROLE
 from lumina.ui import badges
 from lumina.ui.main_window import _VIEWER
 

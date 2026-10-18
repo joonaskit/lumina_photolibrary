@@ -63,7 +63,7 @@ def scanned(library, drive, stops=(-2, 0, 2), seconds=0.3, models=None):
     in name order."""
     key, inside = locate(drive / "Photos", mounted(drive))
     folder = library.add_folder(key, inside, "Photos drive", str(drive))
-    job = library.add_job(scanning.SCAN, folder)
+    job = library.add_job(dbm.SCAN, folder)
     assert scanning.scan(library, job, folder, mounted(drive), exiftool=FakeExifTool) == dbm.DONE
     rows = sorted(library.photos(), key=lambda photo: photo.path)
     details = []
@@ -139,7 +139,7 @@ def test_the_library_keeps_what_it_was_made_of(library, drive, tmp_path):
     _state, job = merged(library, drive, ids, tmp_path, deghost="low")
 
     derived = library.derived(job.derived_id)
-    assert derived.kind == hdr.HDR
+    assert derived.kind == dbm.HDR
     assert (derived.volume_key, derived.path) == (DRIVE, "Photos/IMG_0001-HDR.tif")
     assert [s.path for s in derived.sources] == [
         "Photos/IMG_0001.dng",

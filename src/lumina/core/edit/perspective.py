@@ -16,41 +16,17 @@ found here (`fill_scale`), as the corrected photo is no longer a rectangle.
 """
 
 import math
-from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
-AMOUNT = (-100.0, 100.0)
+from lumina.core.edit.params import PERSPECTIVE as AMOUNT
+
 # The turn at an amount of 100, in degrees
 MAX_ANGLE = 20.0
 # The focal length in pixels, as a multiple of the photo's diagonal: a 43 mm lens on full
 # frame, a normal lens, which is also what the amount's scale is meant for
 FOCAL = 1.0
-
-
-@dataclass(frozen=True)
-class Perspective:
-    vertical: float = 0.0
-    horizontal: float = 0.0
-
-    def __post_init__(self):
-        for name in ("vertical", "horizontal"):
-            object.__setattr__(self, name, round(float(getattr(self, name)), 6))
-
-    def is_identity(self):
-        return self.vertical == 0 and self.horizontal == 0
-
-    def turned(self):
-        """The correction of the same photo turned a quarter turn clockwise."""
-        return Perspective(-self.horizontal, self.vertical)
-
-    def flipped(self, horizontal):
-        """The correction of the same photo mirrored left to right (`horizontal`) or top
-        to bottom."""
-        if horizontal:
-            return Perspective(self.vertical, -self.horizontal)
-        return Perspective(-self.vertical, self.horizontal)
 
 
 def focal(width, height):

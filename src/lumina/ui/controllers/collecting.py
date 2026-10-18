@@ -4,7 +4,8 @@ the search, and the sidebar's list of them."""
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QInputDialog, QMessageBox
 
-from lumina.qt_models.library_model import TEXT, SmartQuery
+from lumina.core.smart import SmartQuery
+from lumina.qt_models.library_model import TEXT
 from lumina.ui.window_common import _VIEWER
 
 

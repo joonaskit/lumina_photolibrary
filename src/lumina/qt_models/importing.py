@@ -22,13 +22,10 @@ from lumina.core import importing, metadata, tether, volumes
 from lumina.core import library as scanning
 from lumina.qt_models import workers
 
-READING, COPYING = importing.READING, importing.COPYING
 LAYOUTS = tuple(importing.LAYOUTS)
 NAMINGS = importing.NAMINGS
 subfolder = importing.subfolder
 file_name = importing.file_name
-NotConnected = scanning.NotConnected
-CameraBusy = importing.CameraBusy
 
 # How often an import waiting for its camera looks for it again, in milliseconds
 _CAMERA_RETRY = 4000
@@ -302,7 +299,7 @@ class ImportService(QObject):
         )
 
     def _imports(self):
-        return [job for job in self.library.db.unfinished_jobs() if job.kind == importing.IMPORT]
+        return [job for job in self.library.db.unfinished_jobs() if job.kind == dbm.IMPORT]
 
     def _folder_name(self, folder_id):
         info = next((f for f in self.library.folders() if f.id == folder_id), None)

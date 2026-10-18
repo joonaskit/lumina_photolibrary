@@ -6,8 +6,8 @@ from conftest import TIMEOUT
 from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QToolButton
 
+from lumina.core.dbtypes import PICKED
 from lumina.integration import style, theme
-from lumina.qt_models.library_model import PICKED
 from lumina.ui.main_window import MainWindow
 
 

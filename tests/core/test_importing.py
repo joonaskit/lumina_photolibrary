@@ -12,7 +12,7 @@ from rawfiles import make_dng
 from lumina.core import db as dbm
 from lumina.core import importing
 from lumina.core.db import Library
-from lumina.core.library import NotConnected
+from lumina.core.errors import NotConnected
 from lumina.core.metadata import Metadata
 from lumina.core.volumes import Mount
 

@@ -10,7 +10,8 @@ from PySide6.QtWidgets import QMenu, QStyleOptionViewItem
 from test_flags import choose, names, open_window, press
 
 from lumina.core import db as dbm
-from lumina.qt_models.library_model import NOT_RATED, PICKED, REJECTED, UNFLAGGED
+from lumina.core.dbtypes import PICKED, REJECTED, UNFLAGGED
+from lumina.qt_models.library_model import NOT_RATED
 from lumina.ui import settings
 
 KEYS = {

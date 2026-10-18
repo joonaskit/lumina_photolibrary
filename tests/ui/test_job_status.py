@@ -2,6 +2,7 @@
 
 import pytest
 
+from lumina.core.dbtypes import DETAILS, FINDING, RUNNING
 from lumina.qt_models import library
 from lumina.ui import job_status
 
@@ -9,8 +10,8 @@ from lumina.ui import job_status
 def status(**fields):
     base = dict(
         folder_name="Photos",
-        state=library.RUNNING,
-        phase=library.DETAILS,
+        state=RUNNING,
+        phase=DETAILS,
         done=500,
         total=12000,
         message=None,
@@ -49,6 +50,6 @@ def test_a_time_left_in_words(seconds, words):
 
 
 def test_the_walk_has_no_time_left_to_tell():
-    text = job_status.describe(status(phase=library.FINDING, eta=100))
+    text = job_status.describe(status(phase=FINDING, eta=100))
 
     assert text == "Scanning Photos: 500 photos found"

@@ -32,6 +32,8 @@ from functools import lru_cache
 import cv2
 import numpy as np
 
+from lumina.core.edit.params import LensProfile
+
 # Rows resampled at a time: bounds the float maps
 ROWS = 256
 # The darkest vignetting is taken to be (a profile gone wrong could divide by nothing)
@@ -39,66 +41,6 @@ _MIN_DARKNESS = 0.2
 # Most the corrected photo is zoomed in to hide its border
 _MAX_ZOOM = 3.0
 _EDGE_POINTS = 64
-_DISTORTION_TERMS = {"ptlens": 3, "poly3": 1, "poly5": 2}
-
-
-@dataclass(frozen=True)
-class LensProfile:
-    name: str
-    # Crop factor of the sensor the lens was measured on over this camera's
-    scale: float = 1.0
-    # ("ptlens", a, b, c), ("poly3", k1) or ("poly5", k1, k2); or None
-    distortion: tuple | None = None
-    # (vr, vb, cr, cb, br, bb); or None
-    tca: tuple | None = None
-    # (k1, k2, k3); or None
-    vignetting: tuple | None = None
-
-    def to_dict(self):
-        return {
-            "name": self.name,
-            "scale": float(self.scale),
-            "distortion": None
-            if self.distortion is None
-            else {"model": self.distortion[0], "terms": [float(t) for t in self.distortion[1:]]},
-            "tca": None if self.tca is None else [float(t) for t in self.tca],
-            "vignetting": None if self.vignetting is None else [float(t) for t in self.vignetting],
-        }
-
-    @staticmethod
-    def from_dict(data):
-        """A profile from stored JSON, or None when it is not one (a damaged edit renders
-        without it)."""
-        if not isinstance(data, dict) or not isinstance(data.get("name"), str):
-            return None
-        scale = _finite(data.get("scale"))
-        if scale is None or not 0.2 <= scale <= 5.0:
-            return None
-        distortion = None
-        stored = data.get("distortion")
-        if isinstance(stored, dict) and stored.get("model") in _DISTORTION_TERMS:
-            terms = _numbers(stored.get("terms"), _DISTORTION_TERMS[stored["model"]])
-            distortion = (stored["model"], *terms) if terms is not None else None
-        return LensProfile(
-            name=data["name"],
-            scale=scale,
-            distortion=distortion,
-            tca=_numbers(data.get("tca"), 6),
-            vignetting=_numbers(data.get("vignetting"), 3),
-        )
-
-
-def _finite(value):
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        return None
-    return float(value)
-
-
-def _numbers(values, count):
-    if not isinstance(values, list | tuple) or len(values) != count:
-        return None
-    numbers = tuple(_finite(v) for v in values)
-    return None if None in numbers else numbers
 
 
 @dataclass(frozen=True)
@@ -121,6 +63,16 @@ class Correction:
 
     def is_identity(self):
         return not (self.has_distortion() or self.has_aberration() or self.has_vignetting())
+
+
+def correction(lens):
+    """The `Correction` an edit's `params.Lens` asks for, or None for none."""
+    if lens.is_identity():
+        return None
+    made = Correction(
+        lens.profile, lens.distortion / 100, lens.vignetting / 100, lens.aberration / 100
+    )
+    return None if made.is_identity() else made
 
 
 # Distortion and aberration: where the corrected photo is sampled

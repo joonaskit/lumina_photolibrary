@@ -10,31 +10,11 @@ Points and the curve are in [0, 1] both ways, on sRGB-encoded values (see pipeli
 
 import numpy as np
 
+from lumina.core.edit.params import IDENTITY_CURVE as IDENTITY
+from lumina.core.edit.params import normalize_curve as normalize
+
 # Entries in a LUT: 12 bits, so 8-bit and 16-bit output alike see no steps
 LUT_SIZE = 4096
-
-IDENTITY = ((0.0, 0.0), (1.0, 1.0))
-
-
-def normalize(points):
-    """The points as a sorted tuple of (x, y) pairs in [0, 1], with one point per x
-    (the last given wins) and the two ends present. Fewer than two points: identity."""
-    clean = {}
-    for point in points or ():
-        try:
-            x, y = float(point[0]), float(point[1])
-        except (TypeError, ValueError, IndexError):
-            continue
-        if np.isfinite(x) and np.isfinite(y):
-            clean[round(min(max(x, 0.0), 1.0), 6)] = round(min(max(y, 0.0), 1.0), 6)
-    if len(clean) < 2:
-        return IDENTITY
-    xs = sorted(clean)
-    if xs[0] > 0.0:
-        clean[0.0] = clean[xs[0]]
-    if xs[-1] < 1.0:
-        clean[1.0] = clean[xs[-1]]
-    return tuple((x, clean[x]) for x in sorted(clean))
 
 
 def is_identity(points):

@@ -21,7 +21,7 @@ from lumina.core import backup
 from lumina.core import db as dbm
 from lumina.qt_models import workers
 
-# For the UI, which does not import core/: a backup's kinds, and how many are kept
+# A backup's kinds, and how many are kept: the settings show them
 DAILY, BEFORE_MIGRATION, BEFORE_RESTORE, DAMAGED = (
     backup.DAILY,
     backup.BEFORE_MIGRATION,

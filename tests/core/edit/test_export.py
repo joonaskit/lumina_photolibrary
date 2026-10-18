@@ -10,7 +10,8 @@ from PIL import Image
 from rawfiles import make_dng
 
 from lumina.core.edit import export as exporting
-from lumina.core.edit.export import ExportCancelled, ExportExists, ExportOptions, export
+from lumina.core.edit.export import ExportCancelled, ExportExists, export
+from lumina.core.edit.export_options import ExportOptions, suggested_name
 from lumina.core.edit.params import Crop, Params
 from lumina.core.errors import PhotoError
 
@@ -75,7 +76,7 @@ def read_tiff16(path):
 @pytest.mark.parametrize(("fmt", "bits"), [("jpeg", 8), ("png", 8), ("tiff", 8)])
 def test_8_bit_formats_are_written_with_an_srgb_profile(photo, out, fmt, bits):
     options = ExportOptions(fmt, bits)
-    destination = out / exporting.suggested_name(photo, options)
+    destination = out / suggested_name(photo, options)
 
     export(photo, Params(), destination, options)
 

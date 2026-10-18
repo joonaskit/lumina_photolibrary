@@ -6,7 +6,8 @@ from conftest import TIMEOUT
 from PySide6.QtCore import QItemSelectionModel
 from PySide6.QtWidgets import QMessageBox
 
-from lumina.qt_models.exporting import ExportOptions, ExportService
+from lumina.core.edit.export_options import ExportOptions
+from lumina.qt_models.exporting import ExportService
 from lumina.ui.controllers import develop, stacking
 from lumina.ui.main_window import MainWindow
 

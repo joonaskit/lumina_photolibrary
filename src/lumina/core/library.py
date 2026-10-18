@@ -25,10 +25,10 @@ import time
 
 from lumina.core import db as dbm
 from lumina.core import metadata, scanner, sidecars, volumes
-from lumina.core.errors import PhotoError
+from lumina.core.dbtypes import DETAILS, FINDING, SIDECARS
+from lumina.core.errors import NotConnected, PhotoError
 from lumina.core.fingerprint import content_id
 
-SCAN = "scan"
 _WRITE_EVERY = 500
 _DETAILS_BATCH = 50
 # How often progress is written to the database, in seconds
@@ -40,12 +40,6 @@ GENTLE_FROM = 2000
 _REST_RATIO = 1.0
 _REST_MOST = 5.0
 _REST_STEP = 0.1
-
-FINDING, DETAILS, SIDECARS = "finding", "details", sidecars.SIDECARS
-
-
-class NotConnected(Exception):
-    """The folder's volume is not mounted: the job waits for it."""
 
 
 def rest(seconds, should_stop):

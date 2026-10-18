@@ -5,7 +5,7 @@ import random
 
 import pytest
 
-from lumina.qt_models.develop import Crop
+from lumina.core.edit.params import Crop
 from lumina.ui import crop_frame
 from lumina.ui.crop_frame import dragged, dragged_to_ratio, reshaped
 

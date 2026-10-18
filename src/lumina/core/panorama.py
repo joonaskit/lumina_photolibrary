@@ -42,12 +42,11 @@ import numpy as np
 
 from lumina.core import db as dbm
 from lumina.core import derived, raw
+from lumina.core.dbtypes import DECODING, PANORAMA, PLANNING, STITCHING
 from lumina.core.derived import finish_result, start_result
 from lumina.core.edit import pipeline, source
 from lumina.core.errors import PhotoError
 
-PANORAMA = "panorama"
-DECODING, PLANNING, STITCHING = derived.DECODING, "planning", "stitching"
 SETTINGS_VERSION = 1
 MIN_FRAMES, MAX_FRAMES = 2, 60
 CYLINDRICAL, SPHERICAL, PERSPECTIVE = "cylindrical", "spherical", "perspective"

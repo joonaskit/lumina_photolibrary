@@ -26,16 +26,8 @@ from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, Qt, QTime
 
 from lumina.core import db as dbm
 from lumina.core import keywords as keywordm
-from lumina.core import smart
 from lumina.qt_models import workers
 from lumina.qt_models.thumbnails import Thumbnails
-
-# For the UI, which does not import core/
-Filter = dbm.Filter
-PICKED, UNFLAGGED, REJECTED = dbm.PICKED, dbm.UNFLAGGED, dbm.REJECTED
-# Keyword paths (their names and levels), and a smart collection's saved filter
-keyword_names = keywordm
-SmartQuery = smart.SmartQuery
 
 PATH_ROLE = Qt.ItemDataRole.UserRole + 1
 ID_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -385,7 +377,7 @@ class LibraryModel(QAbstractListModel):
             return False
         if self.flag_filter is not None:
             return photo.flag == self.flag_filter
-        return not (self.rejected == HIDE and photo.flag == REJECTED)
+        return not (self.rejected == HIDE and photo.flag == dbm.REJECTED)
 
     def _show(self, rows, reset):
         old = [(photo.id, photo.copy) for photo in self._rows]
@@ -594,7 +586,7 @@ class LibraryModel(QAbstractListModel):
     def toggle_flag(self, rows, flag):
         """Give the photos of `rows` `flag`; when they all have it already, clear it, as
         pressing the key again does. Returns the flag given, or None for no change."""
-        return self._toggle("flag", rows, flag, UNFLAGGED)
+        return self._toggle("flag", rows, flag, dbm.UNFLAGGED)
 
     def toggle_rating(self, rows, stars):
         """Give the photos of `rows` `stars` (0 clears); when they all have that many
@@ -761,7 +753,11 @@ class LibraryModel(QAbstractListModel):
             place = next(n for n, m in enumerate(members, 1) if m.id == photo.id)
             return (place, len(members), photo.stack_collapsed)
         if role == DIMMED_ROLE:
-            return photo.flag == REJECTED and self.rejected != SHOW and self.flag_filter != REJECTED
+            return (
+                photo.flag == dbm.REJECTED
+                and self.rejected != SHOW
+                and self.flag_filter != dbm.REJECTED
+            )
         path = self.path(index.row())
         if role == Qt.ItemDataRole.DecorationRole:
             return self.thumbnails.icon(

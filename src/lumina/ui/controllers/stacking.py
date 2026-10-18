@@ -4,8 +4,9 @@ alike; and exporting the photos chosen in the grid."""
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QMessageBox
 
+from lumina.core.dbtypes import REJECTED
 from lumina.qt_models.library import SIMILAR_DEFAULT
-from lumina.qt_models.library_model import REJECTED, STACK_ROLE
+from lumina.qt_models.library_model import STACK_ROLE
 from lumina.ui import shortcuts
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.similar_dialog import SHOWN, SimilarDialog

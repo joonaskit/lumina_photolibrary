@@ -4,16 +4,10 @@ nothing else. Clear at the right end shows everything again."""
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QPushButton, QSizePolicy, QWidget
 
+from lumina.core import keywords as keywordm
+from lumina.core.dbtypes import PICKED, REJECTED, UNFLAGGED
 from lumina.integration import style
-from lumina.qt_models.library_model import (
-    EDITED,
-    NOT_RATED,
-    PICKED,
-    REJECTED,
-    UNEDITED,
-    UNFLAGGED,
-)
-from lumina.qt_models.library_model import keyword_names as keywordm
+from lumina.qt_models.library_model import EDITED, NOT_RATED, UNEDITED
 
 FLAG_CHOICES = (
     ("All flags", None),

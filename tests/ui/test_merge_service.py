@@ -8,9 +8,9 @@ from PySide6.QtCore import QItemSelectionModel
 from rawfiles import bracket_mosaic, make_dng, scene, surroundings, view
 
 from lumina.core import db as dbm
-from lumina.core import hdr, linear_tiff, panorama
+from lumina.core import hdr, linear_tiff
+from lumina.core.dbtypes import CANCELLED, DONE, QUEUED, RUNNING
 from lumina.core.metadata import Metadata
-from lumina.qt_models import library
 from lumina.qt_models.merge import MergeService
 from lumina.ui import main_window
 from lumina.ui.controllers import merging
@@ -79,7 +79,7 @@ def ended(merge, qtbot):
     statuses = []
     merge.job_changed.connect(statuses.append)
     qtbot.waitUntil(
-        lambda: statuses and statuses[-1].state not in (library.QUEUED, library.RUNNING),
+        lambda: statuses and statuses[-1].state not in (QUEUED, RUNNING),
         timeout=TIMEOUT,
     )
     return statuses
@@ -96,12 +96,12 @@ def test_a_merge_runs_and_its_photo_comes_into_the_library(
 
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT) as rescanned:
         merge.merge_hdr(frames)
-        qtbot.waitUntil(lambda: statuses and statuses[-1].state == library.DONE, timeout=TIMEOUT)
+        qtbot.waitUntil(lambda: statuses and statuses[-1].state == DONE, timeout=TIMEOUT)
 
     assert statuses[-1].message == "Merged 3 photos into IMG_0001-HDR.tif"
     assert statuses[-1].name == "IMG_0001-HDR"
-    assert {s.phase for s in statuses} >= {hdr.DECODING, hdr.MERGING}
-    assert rescanned.args[0].state == library.DONE
+    assert {s.phase for s in statuses} >= {dbm.DECODING, dbm.MERGING}
+    assert rescanned.args[0].state == DONE
     result = drive / "Photos" / "IMG_0001-HDR.tif"
     assert linear_tiff.is_linear(result)
     paths = [photo.path for photo in service.db.photos()]
@@ -139,7 +139,7 @@ def test_a_merge_queued_when_the_app_quit_runs_at_the_next_start(
     statuses = []
     merge.job_changed.connect(statuses.append)
     merge.start()
-    qtbot.waitUntil(lambda: statuses and statuses[-1].state == library.DONE, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: statuses and statuses[-1].state == DONE, timeout=TIMEOUT)
 
     assert service.db.job(job).state == dbm.DONE
     assert (drive / "Photos" / "IMG_0001-HDR.tif").exists()
@@ -153,12 +153,12 @@ def test_a_cancel_stops_the_merge_and_leaves_no_file(
     statuses = []
     merge.job_changed.connect(statuses.append)
     # Cancelled as soon as it starts, before its first step is done
-    merge.job_changed.connect(lambda status: status.state == library.RUNNING and merge.cancel())
+    merge.job_changed.connect(lambda status: status.state == RUNNING and merge.cancel())
 
     merge.merge_hdr([ids[path.name] for path in bracket])
-    qtbot.waitUntil(lambda: statuses and statuses[-1].state == library.CANCELLED, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: statuses and statuses[-1].state == CANCELLED, timeout=TIMEOUT)
 
-    assert statuses[-1].state == library.CANCELLED
+    assert statuses[-1].state == CANCELLED
     assert sorted(p.name for p in (drive / "Photos").iterdir()) == [
         "IMG_0001.dng",
         "IMG_0002.dng",
@@ -245,13 +245,13 @@ def test_a_panorama_runs_and_its_photo_comes_into_the_library(
 
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT) as rescanned:
         merge.stitch_panorama([ids[path.name] for path in turned], "spherical", crop=False)
-        qtbot.waitUntil(lambda: statuses and statuses[-1].state == library.DONE, timeout=TIMEOUT)
+        qtbot.waitUntil(lambda: statuses and statuses[-1].state == DONE, timeout=TIMEOUT)
 
     assert statuses[-1].message == "Stitched 3 photos into PAN_0001-pano.tif"
-    assert statuses[-1].kind == panorama.PANORAMA
-    assert {s.phase for s in statuses} >= {panorama.DECODING, panorama.STITCHING}
+    assert statuses[-1].kind == dbm.PANORAMA
+    assert {s.phase for s in statuses} >= {dbm.DECODING, dbm.STITCHING}
     assert describe_merge(statuses[-2]).startswith("Stitching PAN_0001-pano: ")
-    assert rescanned.args[0].state == library.DONE
+    assert rescanned.args[0].state == DONE
     assert linear_tiff.is_linear(drive / "Photos" / "PAN_0001-pano.tif")
     assert "Photos/PAN_0001-pano.tif" in [photo.path for photo in service.db.photos()]
     wait_idle(service)

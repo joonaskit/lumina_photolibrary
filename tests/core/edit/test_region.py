@@ -13,11 +13,11 @@ from lumina.core.edit.params import (
     Hsl,
     NoiseReduction,
     Params,
+    Perspective,
     Presence,
     Sharpening,
     Vignette,
 )
-from lumina.core.edit.perspective import Perspective
 from lumina.core.edit.source import make_proxy
 
 

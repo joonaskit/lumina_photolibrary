@@ -3,7 +3,7 @@ chosen in the grid."""
 
 from PySide6.QtCore import QObject
 
-from lumina.qt_models.library_model import PICKED, REJECTED
+from lumina.core.dbtypes import PICKED, REJECTED
 from lumina.ui import settings, shortcuts
 from lumina.ui.window_common import _GRID, _NO_PHOTO, _VIEWER
 

@@ -32,82 +32,19 @@ from lumina.core.edit import pipeline as _pipeline
 from lumina.core.edit import session as _session
 from lumina.qt_models import workers
 
-# For the UI, which does not import core/
-Params = _params.Params
-Basic = _params.Basic
-Colour = _params.Colour
-Presence = _params.Presence
-Sharpening = _params.Sharpening
-NoiseReduction = _params.NoiseReduction
-Band = _params.Band
-Hsl = _params.Hsl
-Wheel = _params.Wheel
-Vignette = _params.Vignette
-Grain = _params.Grain
-Grading = _params.Grading
-Curves = _params.Curves
-Matte = _params.Matte
-Perspective = _params.Perspective
-Crop = _params.Crop
-Lens = _params.Lens
-LENS = _params.LENS
-ColourProfile = _params.ColourProfile
+# What the Develop view asks of core's colour checker and camera profiles; the edit's
+# records and ranges it takes from core/edit/params.py itself
 patch_centres = _colour_checker.patch_centres
 CHECKER_SAMPLE_SHARE = _colour_checker.SAMPLE_SHARE
 PROFILE_FOLDERS = _dcp.default_folders
-ExportOptions = _export.ExportOptions
-FORMATS = _export.FORMATS
-EXPOSURE = _params.EXPOSURE
-WARMTH = _params.WARMTH
-BASIC = _params.BASIC
-BASIC_FIELDS = _params.BASIC_FIELDS
-COLOUR = _params.COLOUR
-PRESENCE = _params.PRESENCE
-PRESENCE_FIELDS = _params.PRESENCE_FIELDS
-SHARPEN_AMOUNT = _params.SHARPEN_AMOUNT
-SHARPEN_RADIUS = _params.SHARPEN_RADIUS
-DEFAULT_SHARPEN_RADIUS = _params.DEFAULT_SHARPEN_RADIUS
-DEFAULT_SHARPEN_DETAIL = _params.DEFAULT_SHARPEN_DETAIL
-DEFAULT_NOISE_DETAIL = _params.DEFAULT_NOISE_DETAIL
-COLOUR_FIELDS = _params.COLOUR_FIELDS
-HSL = _params.HSL
-HUE = _params.HUE
-WHEEL = _params.WHEEL
-GRADING = _params.GRADING
-BLENDING = _params.BLENDING
-DEFAULT_BLENDING = _params.DEFAULT_BLENDING
-VIGNETTE = _params.VIGNETTE
-PERCENT = _params.PERCENT
-DEFAULT_MIDPOINT = _params.DEFAULT_MIDPOINT
-DEFAULT_FEATHER = _params.DEFAULT_FEATHER
-DEFAULT_GRAIN_SIZE = _params.DEFAULT_GRAIN_SIZE
-BANDS = _params.BANDS
 # Where each band sits on the hue circle, in degrees: for showing its colour
 BAND_HUES = dict(zip(_params.BANDS, _hsl.CENTRES, strict=True))
-BAND_FIELDS = _params.BAND_FIELDS
-RANGES = _params.RANGES
-WHEEL_FIELDS = _params.WHEEL_FIELDS
-MATTE_BLACK = _params.MATTE_BLACK
-MATTE_WHITE = _params.MATTE_WHITE
-DESATURATION = _params.DESATURATION
-STRAIGHTEN = _params.STRAIGHTEN
-PERSPECTIVE = _params.PERSPECTIVE
-PRESET_SECTIONS = _params.SECTIONS
-IDENTITY_CURVE = _curves.IDENTITY
 PROXY, SCREEN, REGION = _session.PROXY, _session.SCREEN, _session.REGION
 
 
 def curve_values(points, count):
     """The curve through `points` at `count` even steps from 0 to 1: for drawing it."""
     return _curves.evaluate(points, np.linspace(0.0, 1.0, count))
-
-
-def normalize_curve(points):
-    return _curves.normalize(points)
-
-
-def suggested_name(path, options, copy=0):
-    return _export.suggested_name(path, options, copy)
 
 
 def _replaces(new, waiting):
@@ -160,10 +97,10 @@ class DevelopSession(QObject):
         self.path = None
         # 0: the photo's own edit; more: a virtual copy
         self.copy = 0
-        self.params = Params()
+        self.params = _params.Params()
         # What an edit of this photo starts as, and what a Reset goes back to: the lens
         # corrections on for a RAW file whose lens is known, else nothing (see `_on_opened`)
-        self._baseline = Params()
+        self._baseline = _params.Params()
         # How the photo was taken, for finding its lens (lensdb.Shot), and the lens
         # profile the database has for it, if any; False before it is known
         self._shot = None
@@ -202,7 +139,7 @@ class DevelopSession(QObject):
         self.size = None
         self._moving = False
         self._token += 1
-        self._baseline = Params()
+        self._baseline = _params.Params()
         self._shot = self.service.lens_shot(photo_id)
         self._lens, self._lens_known, self._lens_data = None, False, True
         self._raw = False
@@ -266,13 +203,16 @@ class DevelopSession(QObject):
             lens = _params.Lens()
             if opened.lens is not None and opened.raw:
                 lens = _params.Lens(enabled=True, profile=opened.lens)
-            self._baseline = Params(lens=lens, profile=ColourProfile(*opened.profile))
+            self._baseline = _params.Params(
+                lens=lens, profile=_params.ColourProfile(*opened.profile)
+            )
             # A copy made of a photo that had no edit holds the identity, which is not
             # where a RAW file's edit starts
             unedited = (
-                self.params == Params()
+                self.params == _params.Params()
                 if self.copy
-                else self.params == Params() and self.service.edit_json(self.photo_id) is None
+                else self.params == _params.Params()
+                and self.service.edit_json(self.photo_id) is None
             )
             if unedited:
                 self.params = self._baseline
@@ -310,8 +250,8 @@ class DevelopSession(QObject):
         # What is rendered: with the original wanted, no edit at all; in the crop view,
         # the photo without its crop
         if self._before:
-            return Params()
-        return params.with_changes(crop=Crop()) if self._crop_view else params
+            return _params.Params()
+        return params.with_changes(crop=_params.Crop()) if self._crop_view else params
 
     def set_before(self, on):
         """Show the photo as it is without the edit (`on`), or the edit again. Only what
@@ -358,7 +298,7 @@ class DevelopSession(QObject):
         try:
             return _params.from_json(stored) if stored else self._baseline
         except _params.NewerParams:
-            return Params()
+            return _params.Params()
 
     def _set(self, params):
         same_look = self._shown(params) == self._shown(self.params)
@@ -440,7 +380,7 @@ class DevelopSession(QObject):
         if not self.is_open() or not self._raw:
             return
         if key in ("libraw", "standard"):
-            self.commit(self.params.with_changes(profile=ColourProfile(key, name or "")))
+            self.commit(self.params.with_changes(profile=_params.ColourProfile(key, name or "")))
             return
         token = self._token
         workers.submit(
@@ -454,7 +394,7 @@ class DevelopSession(QObject):
 
     def _on_profile_stored(self, token, found):
         if token == self._token:
-            self.commit(self.params.with_changes(profile=ColourProfile(*found)))
+            self.commit(self.params.with_changes(profile=_params.ColourProfile(*found)))
 
     def is_making_profile(self):
         return self._making_profile
@@ -528,7 +468,9 @@ class DevelopSession(QObject):
                 f"on average, {made.after:.1f} at most."
             )
         if token == self._token:
-            self.commit(self.params.with_changes(profile=ColourProfile(made.ident, made.name)))
+            self.commit(
+                self.params.with_changes(profile=_params.ColourProfile(made.ident, made.name))
+            )
         self.profile_made.emit(f"{told} Saved as {made.path}")
 
     def _on_making_failed(self, token, error):
