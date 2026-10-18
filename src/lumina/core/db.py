@@ -44,8 +44,23 @@ class NoBackup(Exception):
     """The file needs a migration and could not be backed up first: it is left alone."""
 
 
+def _script(db, sql):
+    """Run the statements of `sql` one by one in the transaction open on `db`.
+    `executescript` commits what is open before it runs and then autocommits every
+    statement, so a migration that failed half way would stay half applied."""
+    statement = ""
+    for line in sql.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            db.execute(statement)
+            statement = ""
+    if statement.strip():
+        db.execute(statement)
+
+
 def _migrate_1(db):
-    db.executescript(
+    _script(
+        db,
         """
         CREATE TABLE volumes (
             id INTEGER PRIMARY KEY,
@@ -124,12 +139,13 @@ def _migrate_1(db):
             path TEXT NOT NULL,
             message TEXT NOT NULL
         );
-        """
+        """,
     )
 
 
 def _migrate_2(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- An edit is its parameters as JSON (core/edit/params.py), rendered from the
         -- original. Copy 0 is the photo's edit; more are virtual copies
@@ -149,12 +165,13 @@ def _migrate_2(db):
             params TEXT NOT NULL,
             created_at REAL NOT NULL
         );
-        """
+        """,
     )
 
 
 def _migrate_3(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- A photo's vector for search (core/embed.py), by content id: a moved, renamed
         -- or copied photo has the same one, and a missing one keeps it. A vector of
@@ -168,44 +185,48 @@ def _migrate_3(db):
             error TEXT,
             UNIQUE (content_id, model)
         );
-        """
+        """,
     )
 
 
 def _migrate_4(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- Thumbs up (1) or down (-1), or none (0), for going through new photos. One a
         -- photo, not per copy; kept while the file is missing, as its edits are
         ALTER TABLE photos ADD COLUMN flag INTEGER NOT NULL DEFAULT 0;
-        """
+        """,
     )
 
 
 def _migrate_5(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- Stars, 1 to 5, or none (0). Separate from the flag; one a photo, not per copy,
         -- and kept while the file is missing, as the flag and the edits are
         ALTER TABLE photos ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;
-        """
+        """,
     )
 
 
 def _migrate_6(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- exiftool's warning when it says the raw data may be damaged (metadata's
         -- damage_warning), or NULL. Read with the details; the CR3s read before it are
         -- read again by the next scan, so that those damaged already are found
         ALTER TABLE photos ADD COLUMN damage_warning TEXT;
         UPDATE photos SET metadata_state = 0 WHERE metadata_state = 1 AND file_type = 'CR3';
-        """
+        """,
     )
 
 
 def _migrate_7(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- A photo made from others: an HDR merge (core/hdr.py), later a panorama. The
         -- settings it was made with, as JSON, and where the result is once written
@@ -234,12 +255,13 @@ def _migrate_7(db):
 
         -- The derived photo a merge job makes
         ALTER TABLE jobs ADD COLUMN derived_id INTEGER REFERENCES derived(id) ON DELETE CASCADE;
-        """
+        """,
     )
 
 
 def _migrate_8(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- The photos an import job copies (core/importing.py), one row each, so a quit
         -- or a crash resumes where it was. Where it comes from (a volume, a card, and
@@ -265,12 +287,13 @@ def _migrate_8(db):
         );
         CREATE INDEX import_items_job ON import_items (job_id, state);
         CREATE INDEX import_items_content ON import_items (content_id, state);
-        """
+        """,
     )
 
 
 def _migrate_9(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- A keyword is a path of names from the top ("Places > Finland > Helsinki",
         -- core/keywords.py), compared without regard to case. The ones above a keyword
@@ -307,12 +330,13 @@ def _migrate_9(db):
             PRIMARY KEY (collection_id, photo_id)
         );
         CREATE INDEX collection_photos_photo ON collection_photos (photo_id);
-        """
+        """,
     )
 
 
 def _migrate_10(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- When a photo's flag, stars, keywords or edits last changed (time.time()), or
         -- NULL when they never have since it was added. What an XMP sidecar (core/xmp.py)
@@ -332,12 +356,13 @@ def _migrate_10(db):
         WHERE flag <> 0 OR rating <> 0
             OR EXISTS (SELECT 1 FROM edits WHERE photo_id = photos.id)
             OR EXISTS (SELECT 1 FROM photo_keywords WHERE photo_id = photos.id);
-        """
+        """,
     )
 
 
 def _migrate_11(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- A stack of photos (core/db.py `make_stack`): shown as one cell while collapsed.
         -- `key` is how the XMP sidecars name it (a sidecar holds one photo, so a stack
@@ -351,12 +376,13 @@ def _migrate_11(db):
         ALTER TABLE photos ADD COLUMN stack_id INTEGER REFERENCES stacks(id) ON DELETE SET NULL;
         ALTER TABLE photos ADD COLUMN stack_position INTEGER NOT NULL DEFAULT 0;
         CREATE INDEX photos_stack ON photos (stack_id);
-        """
+        """,
     )
 
 
 def _migrate_12(db):
-    db.executescript(
+    _script(
+        db,
         """
         -- A session of shooting with a camera on USB (core/tether.py): the folder its
         -- frames go in, from the volume's root, where the camera keeps them ('card' or
@@ -387,7 +413,7 @@ def _migrate_12(db):
         );
         CREATE INDEX tether_items_camera ON tether_items (camera, state);
         CREATE INDEX tether_items_session ON tether_items (session_id, state);
-        """
+        """,
     )
 
 
@@ -621,7 +647,10 @@ class Library:
                     f"first, so it was left as it is. {error}"
                 ) from error
         for number in range(version, SCHEMA_VERSION):
+            # One transaction for the migration and its version: DDL is transactional
+            # in SQLite, so a failure rolls both back and the next start tries again
             with self.db:
+                self.db.execute("BEGIN")
                 _MIGRATIONS[number](self.db)
                 self.db.execute(f"PRAGMA user_version = {number + 1}")
 

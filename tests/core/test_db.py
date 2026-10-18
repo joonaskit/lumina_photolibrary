@@ -178,6 +178,42 @@ def test_a_library_from_schema_1_is_brought_up_to_date_with_its_data(tmp_path, m
         assert photo.flag == dbm.UNFLAGGED
 
 
+def test_a_migration_that_fails_half_way_leaves_the_library_as_it_was(tmp_path, monkeypatch):
+    path = tmp_path / "library.sqlite3"
+    monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:1])
+    monkeypatch.setattr(dbm, "SCHEMA_VERSION", 1)
+    with Library(path):
+        pass
+    monkeypatch.undo()
+
+    def columns():
+        db = sqlite3.connect(path)
+        try:
+            return (
+                [row[1] for row in db.execute("PRAGMA table_info(photos)")],
+                db.execute("PRAGMA user_version").fetchone()[0],
+            )
+        finally:
+            db.close()
+
+    before = columns()
+
+    def broken(db):
+        dbm._script(db, "ALTER TABLE photos ADD COLUMN half INTEGER; NOT SQL;")
+
+    monkeypatch.setattr(dbm, "_MIGRATIONS", [dbm._MIGRATIONS[0], broken])
+    monkeypatch.setattr(dbm, "SCHEMA_VERSION", 2)
+    with pytest.raises(sqlite3.Error):
+        Library(path)
+    assert columns() == before
+
+    # The next start, with the migration fixed, goes through
+    monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:1] + [lambda db: None])
+    with Library(path):
+        pass
+    assert columns()[1] == 2
+
+
 def test_a_library_from_schema_5_reads_its_cr3s_again_to_find_damage(tmp_path, monkeypatch):
     path = tmp_path / "library.sqlite3"
     monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:5])
