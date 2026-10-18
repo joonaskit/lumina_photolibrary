@@ -1,6 +1,7 @@
 import hashlib
 import os
 import shutil
+import time
 
 import pytest
 from fakes import FakeExifTool
@@ -255,6 +256,32 @@ def test_an_exiftool_that_dies_on_every_file_still_stops_the_scan_and_blames_non
     assert state == dbm.FAILED_JOB
     assert library.failures(job.id) == []
     assert library.count_pending_metadata(folder) == 3
+
+
+def test_a_scan_removes_part_files_of_ours_that_a_crash_left_and_nothing_else(library, drive):
+    folder = add(library, drive)
+    photos = drive / "Photos"
+    old = time.time() - 2 * 3600
+    stale = [".lumina-xmp-123-a.jpg.part", ".lumina-tether-4.part", ".lumina-merge-5.part"]
+    stale += [".lumina-import-6-7.part", ".lumina-export-abc.part"]
+    kept = [
+        # Being written now
+        ".lumina-import-9-9.part",
+        # Not ours
+        ".other-tool.part",
+        ".lumina-notes.txt",
+        "keep.part",
+    ]
+    for name in stale + kept:
+        (photos / name).write_bytes(b"x")
+    for name in stale + [".other-tool.part", ".lumina-notes.txt", "keep.part"]:
+        os.utime(photos / name, (old, old))
+    before = {p.name for p in photos.iterdir()} - set(stale)
+
+    state, _job = run(library, folder, mounted(drive))
+
+    assert state == dbm.DONE
+    assert {p.name for p in photos.iterdir()} == before
 
 
 def test_a_scan_interrupted_by_a_crash_is_found_and_finished(library, drive):

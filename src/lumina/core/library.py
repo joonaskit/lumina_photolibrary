@@ -133,6 +133,14 @@ def scan(
     return state
 
 
+def _remove_stale(path):
+    """Remove a part file of ours that a crash left beside the photos. Nothing else."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=rest):
     """Walk the folder. Returns ({"new", "changed", "missing"}: count, failures) or None
     when cancelled."""
@@ -155,7 +163,9 @@ def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=re
         return False
 
     worked = time.monotonic()
-    for path in scanner.find_photos(base, should_stop, on_error=unreadable_folder):
+    for path in scanner.find_photos(
+        base, should_stop, on_error=unreadable_folder, on_stale=_remove_stale
+    ):
         relative = _relative(folder.path, base, path)
         try:
             relative.encode("utf-8")
