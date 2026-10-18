@@ -180,11 +180,11 @@ class LibraryModel(QAbstractListModel):
             place = self._positions.get(photo_id)
             if place is None:
                 continue
-            edit = self.service.edit_json(photo_id)
+            edited = self.service.edit_times(photo_id).get(0)
             row = self._all[place]
-            if edit == row.edit:
+            if edited == row.edited:
                 continue
-            new = replace(row, edit=edit)
+            new = replace(row, edited=edited)
             self._all[place] = new
             members = self._stacks.get(row.stack)
             if members is not None:
@@ -318,9 +318,9 @@ class LibraryModel(QAbstractListModel):
         for photo in shown:
             opened.append(photo)
             if photo.id in self._copies_open and photo.copies:
-                for number in self.service.copies(photo.id):
-                    edit = self.service.edit_json(photo.id, number)
-                    opened.append(replace(photo, copy=number, edit=edit))
+                times = self.service.edit_times(photo.id)
+                for number in sorted(number for number in times if number > 0):
+                    opened.append(replace(photo, copy=number, edited=times[number]))
         return opened
 
     def _fold(self, shown):
@@ -348,13 +348,13 @@ class LibraryModel(QAbstractListModel):
             return
         for photo in rows:
             shown = self._index.get(photo.id)
-            if shown is not None and self._rows[shown].edit != photo.edit:
+            if shown is not None and self._rows[shown].edited != photo.edited:
                 self._kept.add(photo.id)
 
     def _edit_passes(self, photo):
         if self.edit_filter is None:
             return True
-        return (photo.edit is not None) == (self.edit_filter == EDITED)
+        return (photo.edited is not None) == (self.edit_filter == EDITED)
 
     def _rating_passes(self, photo):
         if self.rating_filter is None:
@@ -764,7 +764,9 @@ class LibraryModel(QAbstractListModel):
             return photo.flag == REJECTED and self.rejected != SHOW and self.flag_filter != REJECTED
         path = self.path(index.row())
         if role == Qt.ItemDataRole.DecorationRole:
-            return self.thumbnails.icon(self._key(photo), path, photo.content_id, photo.edit)
+            return self.thumbnails.icon(
+                self._key(photo), path, photo.content_id, lambda: self._edit_of(photo)
+            )
         if role == Qt.ItemDataRole.ToolTipRole:
             if path is None:
                 lines = [photo.path, "On a drive that is not connected"]
@@ -783,9 +785,20 @@ class LibraryModel(QAbstractListModel):
         first, last = max(0, first), min(len(self._rows) - 1, last)
         self.thumbnails.keep_only({self._key(photo) for photo in self._rows[first : last + 1]})
 
+    def is_edited(self, row):
+        """Whether the row's photo has an edit, as the grid has heard."""
+        return self._rows[row].edited is not None
+
     def edit(self, row):
         """The parameters JSON of the photo's edit, or None."""
-        return self._rows[row].edit
+        photo = self._rows[row]
+        return self.service.edit_json(photo.id, photo.copy)
+
+    def _edit_of(self, photo):
+        # For a thumbnail, while painting: not waiting for the writes queued
+        if photo.edited is None:
+            return None
+        return self.service.edit_json(photo.id, photo.copy, settle=False)
 
     def thumbnail_pixmap(self, row):
         """The thumbnail of a row if it is made already, else None."""
@@ -793,8 +806,9 @@ class LibraryModel(QAbstractListModel):
 
     @staticmethod
     def _key(photo):
-        # A new edit is a new thumbnail
-        return (photo.id, photo.edit)
+        # A new edit is a new thumbnail. The copy too: copies read from a sidecar were
+        # saved at one time
+        return (photo.id, photo.copy, photo.edited)
 
     def _thumbnail_changed(self, key):
         # The photo's cell and those of its virtual copies, which may share the thumbnail

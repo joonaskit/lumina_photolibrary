@@ -611,10 +611,18 @@ class LibraryService(QObject):
 
     # Edits and presets
 
-    def edit_json(self, photo_id, copy=0):
-        """The photo's edit (its own, or virtual copy `copy`) as parameters JSON, or None."""
-        self.settle()
+    def edit_json(self, photo_id, copy=0, settle=True):
+        """The photo's edit (its own, or virtual copy `copy`) as parameters JSON, or None.
+        Without `settle`, as the library has it now, not waiting for the writes queued:
+        for painting, which must not wait for a scan's write lock."""
+        if settle:
+            self.settle()
         return self.db.edit(photo_id, copy)
+
+    def edit_times(self, photo_id):
+        """{copy: when its edit was last saved} of the photo's edits (its own is 0)."""
+        self.settle()
+        return self.db.edit_times(photo_id)
 
     def copies(self, photo_id):
         self.settle()

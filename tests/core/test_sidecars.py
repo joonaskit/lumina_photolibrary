@@ -360,7 +360,7 @@ def test_a_library_is_rebuilt_from_the_photos_and_their_sidecars(tmp_path, drive
         assert (first.flag, first.rating) == (-1, 4)
         paths = {i: p for i, p, _c in fresh.keyword_list()}
         assert sorted(paths[k] for k in first.keywords) == ["Cat", "Places > Helsinki"]
-        assert first.edit == PARAMS
+        assert first.edited is not None and fresh.edit(first.id) == PARAMS
         assert fresh.copies(first.id) == [0, 1]
         assert by_name["b.jpg"].rating == 2 and by_name["c.jpg"].rating == 0
         # Nothing to write back: it is as the sidecars said

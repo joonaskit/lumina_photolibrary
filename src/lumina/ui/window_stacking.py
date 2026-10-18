@@ -101,6 +101,7 @@ class StackingMixin:
             shown = None if self._shows_library() else self.title.text()
             dialog = SimilarDialog(
                 lambda photo: self.service.resolve(photo.volume_key, photo.path),
+                lambda photo: self.service.edit_json(photo.id, settle=False),
                 SIMILAR_DEFAULT,
                 shown,
                 self,

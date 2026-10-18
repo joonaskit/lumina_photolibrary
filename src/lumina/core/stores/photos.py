@@ -118,7 +118,7 @@ class PhotosStore:
         where, args = _where(shown or Filter())
         rows = self.db.execute(
             "SELECT p.id, v.key, p.path, p.content_id, p.available, "
-            "COALESCE(p.captured, p.file_time) AS taken, e.params, p.flag, p.rating, "
+            "COALESCE(p.captured, p.file_time) AS taken, e.updated_at, p.flag, p.rating, "
             "p.damage_warning, "
             "(SELECT GROUP_CONCAT(k.keyword_id) FROM photo_keywords k WHERE k.photo_id = p.id), "
             "(SELECT COUNT(*) FROM edits c WHERE c.photo_id = p.id AND c.copy > 0), "

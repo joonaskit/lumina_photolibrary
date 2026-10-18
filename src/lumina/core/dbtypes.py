@@ -58,8 +58,9 @@ class PhotoRow:
     available: bool
     # COALESCE(captured, file_time)
     taken: str
-    # The photo's own edit as parameters JSON, or None
-    edit: str | None = None
+    # When the photo's own edit (or a copy's cell's, its edit) was last saved, or None
+    # for none: the edit's JSON is read where it is needed, not with every row
+    edited: float | None = None
     flag: int = UNFLAGGED
     rating: int = 0
     # exiftool's warning that the raw data may be damaged, or None
