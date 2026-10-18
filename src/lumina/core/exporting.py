@@ -28,6 +28,8 @@ from lumina.core.library import _Job
 
 # An item's `state`
 TO_DO, EXPORTED, NOT_EXPORTED = 0, 1, 2
+# Why a file was not written: one was there, and the job was not made with Replace
+TAKEN = "already exists, and Replace was not chosen"
 
 
 def destinations(photos, folder, options):
@@ -82,6 +84,19 @@ def queue(library, entries, folder, options, replace=False, mounts=None):
         replace,
         folder,
         destinations(photos, folder, options),
+    )
+
+
+def queue_file(library, photo_id, copy, destination, options, replace=False):
+    """Queue an export of one photo (its virtual copy `copy`) to the file `destination`,
+    named as the user chose, and return the job's id."""
+    options.check()
+    destination = os.path.abspath(os.path.expanduser(os.fspath(destination)))
+    return library.add_export_job(
+        json.dumps(dataclasses.asdict(options)),
+        replace,
+        os.path.dirname(destination),
+        [(photo_id, copy, destination)],
     )
 
 
@@ -159,7 +174,7 @@ def _export_item(library, item, source, options, replace, should_stop, render):
     try:
         render(source, params, item.destination, options, replace, should_stop)
     except _export.ExportExists as error:
-        raise _Failed(error.path, "already exists, and Replace was not chosen") from error
+        raise _Failed(error.path, TAKEN) from error
     except PhotoError as error:
         _gone_or(source, error)
     except OSError as error:
