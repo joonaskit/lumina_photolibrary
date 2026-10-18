@@ -53,6 +53,7 @@ def test_turning_them_on_writes_for_the_whole_library_and_reads_those_there(qtbo
         service.add_folder(drive / "Photos")
     marked, other = service.db.photos()[:2]
     service.set_ratings({marked.id: 4})
+    service.settle()
     # A sidecar made elsewhere, newer than anything here
     xmp.write(
         str(drive / "Photos" / os.path.basename(other.path)),

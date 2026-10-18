@@ -7,7 +7,7 @@ from PySide6.QtCore import QItemSelectionModel
 from PySide6.QtWidgets import QMessageBox
 
 from lumina.qt_models.exporting import ExportOptions, ExportService
-from lumina.ui import main_window
+from lumina.ui import main_window, window_copies, window_stacking
 from lumina.ui.main_window import MainWindow
 
 
@@ -108,7 +108,9 @@ def test_the_grid_exports_the_photos_chosen(qtbot, service, drive, tmp_path, mon
             def isChecked():
                 return False
 
-    monkeypatch.setattr(main_window, "ExportDialog", Chosen)
+    # Where the window uses it
+    for part in (window_copies, window_stacking):
+        monkeypatch.setattr(part, "ExportDialog", Chosen)
     monkeypatch.setattr(QMessageBox, "warning", lambda *a: None)
     selection = window.grid.selectionModel()
     for row in (0, 2):
