@@ -53,5 +53,6 @@ Originals are read-only. Edits are stored as small parameter sets in the Lumina 
 
 ## Docs
 
-- [PLAN.md](PLAN.md): design, decisions, phases
+- [PLAN.md](PLAN.md): design, decisions, what comes next
+- [docs/history.md](docs/history.md): how each phase and feature was built
 - [CLAUDE.md](CLAUDE.md): conventions and rules for working in this repo

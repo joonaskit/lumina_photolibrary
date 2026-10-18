@@ -1,6 +1,6 @@
 """Search: the photos' vectors in memory, ranked against a query by cosine.
 
-No vector store (PLAN.md, Phase 4 decisions): the vectors are rows of the library
+No vector store (docs/history.md, Phase 4 decisions): the vectors are rows of the library
 database, read once into one float32 matrix, and a search is one matrix product,
 about 12 ms for 200k photos. `refresh` reads only the rows written since the last
 one, so the index follows an indexing job as it goes.
@@ -13,7 +13,7 @@ import numpy as np
 
 from lumina.core import embed
 
-# Below this match probability a photo is not a result for a text (PLAN.md: tuned
+# Below this match probability a photo is not a result for a text (docs/history.md: tuned
 # on a real library in 4b)
 TEXT_FLOOR = 0.001
 

@@ -35,7 +35,7 @@ class Model:
         return sum(f.size for f in self.files)
 
 
-# PLAN.md, Phase 4 decisions: SigLIP 2 base, multilingual, fp16 ONNX
+# docs/history.md, Phase 4 decisions: SigLIP 2 base, multilingual, fp16 ONNX
 SIGLIP2 = Model(
     name="siglip2-base-patch16-224",
     repository="onnx-community/siglip2-base-patch16-224-ONNX",
