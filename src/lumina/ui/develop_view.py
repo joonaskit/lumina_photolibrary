@@ -33,7 +33,7 @@ from lumina.integration import style
 from lumina.qt_models import develop
 from lumina.qt_models.develop import Crop, Curves, Matte
 from lumina.ui import settings
-from lumina.ui.controls import ValueSlider
+from lumina.ui.controls import ScrollStrip, ValueSlider, wheel_when_focused
 from lumina.ui.crop_frame import dragged, dragged_to_ratio, reshaped
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.image_view import ImageView
@@ -481,7 +481,10 @@ class DevelopView(QWidget):
         self.accept_action.setEnabled(False)
         for action in (self.crop_action, self.accept_action):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            action.setProperty("group", "Develop")
             self.addAction(action)
+        # For the shortcuts' overlay: a key held, not an action
+        self.shortcut_hints = [("Develop", "Show Original While Held", ["\\"])]
         self._crop_before = (Crop(), 0.0)
 
         session.params_changed.connect(self._show_params)
@@ -516,15 +519,15 @@ class DevelopView(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFixedWidth(style.px(PANEL_WIDTH))
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        panel = QFrame()
-        panel.setObjectName("card")
+        panel = QWidget()
         self._panel = panel
         self._sections = {}
         root = QVBoxLayout(panel)
 
         def space():
+            # At the right, the scroll strip is the margin
             margin = style.gap(14)
-            root.setContentsMargins(margin, margin, margin, margin)
+            root.setContentsMargins(margin, margin, 0, margin)
             root.setSpacing(style.gap(10))
 
         style.follow_density(panel, space)
@@ -921,7 +924,20 @@ class DevelopView(QWidget):
         layout.addLayout(row)
         root.addStretch(1)
         self.arrange()
-        scroll.setWidget(panel)
+        # A wheel over a control scrolls the panel unless the control was clicked first
+        for combo in panel.findChildren(QComboBox):
+            wheel_when_focused(combo)
+        # The controls and, at the side away from the photo, somewhere to scroll from
+        card = QFrame()
+        card.setObjectName("card")
+        row = QHBoxLayout(card)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(panel, 1)
+        self.scroll_strip = ScrollStrip()
+        row.addWidget(self.scroll_strip)
+        scroll.setWidget(card)
+        self.panel_scroll = scroll
         return scroll
 
     def _begin(self, root, name, title):

@@ -358,6 +358,8 @@ class LivePanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # For the shortcuts' overlay: keys the frame takes without an action
+        self.shortcut_hints = [("Camera", "Move the Magnified Part", ["←", "→", "↑", "↓"])]
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
         row = QHBoxLayout()

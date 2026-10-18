@@ -207,6 +207,18 @@ def view(around, yaw, size=(240, 160), focal=200.0):
     ).astype(np.float64)
 
 
+def vignetted(light, falloff):
+    """`light` as a lens that darkens towards the corners records it: times
+    exp(a r^2 + b r^4) for `falloff` (a, b), r the distance from the middle, 1 at a corner."""
+    height, width = light.shape[:2]
+    y, x = np.mgrid[0:height, 0:width]
+    r2 = ((x - (width - 1) / 2) ** 2 + (y - (height - 1) / 2) ** 2) / (
+        ((width - 1) / 2) ** 2 + ((height - 1) / 2) ** 2
+    )
+    a, b = falloff
+    return light * np.exp(a * r2 + b * r2**2)
+
+
 def bracket_mosaic(light, stops=0.0, shift=(0, 0)):
     """`light` (from `scene`) as a camera at `stops` from the middle exposure records it:
     12 bits, white at 4095 and clipped there, moved by `shift` (x, y) whole pixels, as an

@@ -78,7 +78,7 @@ def test_a_changed_value_is_kept_and_applied_at_once(qtbot, qapp, service, drive
         "cell": window.grid.gridSize(),
         "icon": window.grid.iconSize(),
         "sidebar": window.sidebar.add_button.height(),
-        "panel": window.develop.layout().itemAt(1).widget().widget().layout().spacing(),
+        "panel": window.develop._panel.layout().spacing(),
     }
     assert before["toolbar"] == before["filter"] == before["search"] == style.px(36)
 
@@ -99,7 +99,7 @@ def test_a_changed_value_is_kept_and_applied_at_once(qtbot, qapp, service, drive
     assert window.grid.gridSize().height() < before["cell"].height()
     assert window.grid.gridSize().width() < before["cell"].width()
     assert window.grid.iconSize() == before["icon"]
-    panel = window.develop.layout().itemAt(1).widget().widget().layout()
+    panel = window.develop._panel.layout()
     assert panel.spacing() < before["panel"]
 
     # And back

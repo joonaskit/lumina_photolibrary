@@ -3,8 +3,10 @@ import os
 import pytest
 from conftest import TIMEOUT
 from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtWidgets import QApplication, QMessageBox
 
+from lumina.integration import style
 from lumina.qt_models.develop import (
     Band,
     Basic,
@@ -21,8 +23,8 @@ from lumina.qt_models.develop import (
     Vignette,
     Wheel,
 )
-from lumina.ui import develop_view, settings
-from lumina.ui.controls import ValueSlider
+from lumina.ui import controls, develop_view, settings
+from lumina.ui.controls import ScrollStrip, ValueSlider
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.export_dialog import ExportDialog
 from lumina.ui.main_window import MainWindow
@@ -1033,3 +1035,79 @@ def test_merged_order_puts_a_new_section_at_its_place():
     assert settings.merged_order(["d", "a", "c", "x"], default) == ["d", "a", "b", "c"]
     assert settings.merged_order([], default) == list(default)
     assert settings.merged_order(["c", "a", "a"], default) == ["c", "d", "a", "b"]
+
+
+# Scrolling the panel
+
+
+def wheel_down(widget):
+    """A notch of the wheel down over the middle of `widget`."""
+    position = QPointF(widget.rect().center())
+    event = QWheelEvent(
+        position,
+        QPointF(widget.mapToGlobal(position.toPoint())),
+        QPoint(),
+        QPoint(0, -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def test_a_wheel_over_the_strip_scrolls_the_panel_and_changes_nothing(qtbot, window):
+    open_editor(qtbot, window)
+    view = window.develop
+    bar = view.panel_scroll.verticalScrollBar()
+    assert bar.maximum() > 0
+    before = window.session.params
+
+    wheel_down(view.scroll_strip)
+
+    assert bar.value() > 0
+    assert window.session.params == before
+    # At the side away from the photo
+    assert view.scroll_strip.mapTo(view, QPoint(0, 0)).x() > view.image.width()
+
+
+def test_a_wheel_over_a_slider_scrolls_unless_the_slider_was_clicked(qtbot, window):
+    open_editor(qtbot, window)
+    view = window.develop
+    bar = view.panel_scroll.verticalScrollBar()
+    slider = view.basic["contrast"]
+    before = window.session.params
+
+    wheel_down(slider.slider)
+    assert bar.value() > 0
+    assert slider.value() == 0
+    qtbot.wait(controls._SETTLE_MS + 100)
+    assert window.session.params == before
+
+    bar.setValue(0)
+    slider.slider.setFocus()
+    with qtbot.waitSignal(slider.committed, timeout=TIMEOUT):
+        wheel_down(slider.slider)
+    assert slider.value() < 0
+    assert bar.value() == 0
+
+
+def test_a_wheel_over_a_combo_in_the_panel_scrolls_it(qtbot, window):
+    open_editor(qtbot, window)
+    view = window.develop
+    bar = view.panel_scroll.verticalScrollBar()
+    chosen = view.aspect.currentIndex()
+
+    wheel_down(view.aspect)
+
+    assert bar.value() > 0
+    assert view.aspect.currentIndex() == chosen
+
+
+def test_the_strip_follows_the_density(qtbot, window):
+    strip = window.develop.scroll_strip
+    style.set_density("compact", QApplication.instance())
+    assert strip.width() == style.gap(ScrollStrip.WIDTH)
+    compact = strip.width()
+    style.set_density("comfortable", QApplication.instance())
+    assert strip.width() == style.gap(ScrollStrip.WIDTH) > compact

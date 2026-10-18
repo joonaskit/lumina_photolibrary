@@ -256,6 +256,84 @@ def test_a_panorama_runs_and_its_photo_comes_into_the_library(
     wait_idle(service)
 
 
+def test_a_preview_shows_the_panorama_and_follows_the_choices(
+    service, make_merge, drive, turned, qtbot, tmp_path
+):
+    ids = scanned(service, drive, qtbot)
+    merge = make_merge(service, start=False)
+    preview = merge.preview_panorama([ids[path.name] for path in turned])
+    pictures, said = [], []
+    preview.picture.connect(pictures.append)
+    preview.progress.connect(said.append)
+
+    preview.start("cylindrical", True)
+    qtbot.waitUntil(lambda: len(pictures) == 1, timeout=TIMEOUT)
+    # Another projection: the photos are not read again
+    preview.start("perspective", True)
+    qtbot.waitUntil(lambda: len(pictures) == 2, timeout=TIMEOUT)
+
+    assert said[:3] == [f"Reading photo {i} of 3…" for i in (1, 2, 3)]
+    assert said.count("Reading photo 1 of 3…") == 1
+    assert pictures[0].width() > pictures[0].height() > 0
+    # A plane stretches the sides
+    assert pictures[1].width() > pictures[0].width()
+    folders = list((tmp_path / "work" / "preview").iterdir())
+    assert len(folders) == 1
+    preview.close()
+    qtbot.waitUntil(lambda: not folders[0].exists(), timeout=TIMEOUT)
+    # The photos are as they were
+    assert sorted(path.name for path in (drive / "Photos").iterdir()) == sorted(
+        [*(path.name for path in turned), "a.jpg", "b.jpg", "c.dng"]
+    )
+
+
+def test_a_preview_says_which_photo_does_not_fit(
+    service, make_merge, drive, turned, qtbot, tmp_path
+):
+    make_dng(
+        drive / "Photos" / "PAN_0004.dng",
+        mosaic=bracket_mosaic(view(surroundings(), 180)),
+    )
+    ids = scanned(service, drive, qtbot)
+    merge = make_merge(service, start=False)
+    preview = merge.preview_panorama([ids[f"PAN_000{i}.dng"] for i in (1, 2, 3, 4)])
+    told = []
+    preview.failed.connect(told.append)
+
+    preview.start("cylindrical", True)
+    qtbot.waitUntil(lambda: bool(told), timeout=TIMEOUT)
+
+    assert told[0].startswith("PAN_0004.dng does not overlap the other photos")
+    preview.close()
+
+
+def test_a_preview_closed_at_once_leaves_nothing_behind(
+    service, make_merge, drive, turned, qtbot, tmp_path
+):
+    ids = scanned(service, drive, qtbot)
+    merge = make_merge(service, start=False)
+    preview = merge.preview_panorama([ids[path.name] for path in turned])
+    pictures = []
+    preview.picture.connect(pictures.append)
+
+    preview.start("cylindrical", True)
+    preview.close()
+    qtbot.wait(300)
+
+    assert pictures == []
+    qtbot.waitUntil(lambda: not list((tmp_path / "work" / "preview").iterdir()), timeout=TIMEOUT)
+
+
+def test_there_is_no_preview_of_photos_on_a_drive_that_is_not_connected(
+    service, make_merge, drive, turned, qtbot, monkeypatch
+):
+    ids = scanned(service, drive, qtbot)
+    merge = make_merge(service, start=False)
+    monkeypatch.setattr(service, "mounts", [])
+
+    assert merge.preview_panorama([ids[path.name] for path in turned]) is None
+
+
 def test_stitch_panorama_in_the_grid_asks_how_then_stitches(
     service, make_merge, drive, turned, qtbot, monkeypatch
 ):

@@ -17,9 +17,10 @@ from dataclasses import dataclass
 from PySide6.QtCore import QObject, Signal
 
 from lumina.core import db as dbm
-from lumina.core import hdr, panorama
+from lumina.core import hdr, panorama, volumes
 from lumina.core import library as scanning
 from lumina.qt_models import workers
+from lumina.qt_models.panorama_preview import PanoramaPreview
 
 DECODING, PLANNING, MERGING = hdr.DECODING, hdr.PLANNING, hdr.MERGING
 STITCHING = panorama.STITCHING
@@ -125,8 +126,7 @@ class MergeService(QObject):
 
     def panorama_frames(self, photo_ids):
         """[Frame] of the photos, in the order a panorama takes them: as taken."""
-        rows = self.library.db.photo_rows(photo_ids)
-        rows.sort(key=lambda row: (row.get("taken") or "", row["path"]))
+        rows = self.panorama_rows(photo_ids)
         return [Frame(row["id"], os.path.basename(row["path"]), _exposure(row)) for row in rows]
 
     def check_panorama(self, photo_ids):
@@ -140,6 +140,23 @@ class MergeService(QObject):
         if missing is not None:
             return f"{os.path.basename(missing['path'])} is missing"
         return None
+
+    def preview_panorama(self, photo_ids):
+        """A PanoramaPreview of the photos, to start when the dialog is shown and to close
+        when it is gone; None when a photo's drive is not connected."""
+        paths = []
+        for row in self.panorama_rows(photo_ids):
+            where = volumes.resolve(row["volume_key"], row["path"], self.library.mounts)
+            if where is None:
+                return None
+            paths.append(where)
+        return PanoramaPreview(paths, os.path.join(self.work_root, "preview"), parent=self)
+
+    def panorama_rows(self, photo_ids):
+        """The photos' rows, in the order a panorama takes them: as taken."""
+        rows = self.library.db.photo_rows(photo_ids)
+        rows.sort(key=lambda row: (row.get("taken") or "", row["path"]))
+        return rows
 
     def stitch_panorama(self, photo_ids, projection=panorama.CYLINDRICAL, crop=True):
         """Queue a panorama of the photos. Raises ValueError saying why they cannot be."""
