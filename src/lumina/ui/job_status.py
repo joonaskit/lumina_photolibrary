@@ -101,6 +101,11 @@ def time_left(seconds):
     return f"{hours} h" if minutes == 0 else f"{hours} h {minutes} min"
 
 
+def left(status):
+    """The time left in words for the end of a line, when it is known, or nothing."""
+    return f"  ·  about {time_left(status.eta)} left" if status.eta is not None else ""
+
+
 def describe(status):
     """A scan's JobStatus in words, for the status bar."""
     name = status.name
@@ -112,8 +117,7 @@ def describe(status):
             return f"Scanning {name}: {status.done} photos found{more}"
         if status.phase == SIDECARS:
             return f"Reading sidecars in {name}{more}"
-        left = f"  ·  about {time_left(status.eta)} left" if status.eta is not None else ""
-        return f"Reading details in {name}: {status.done} of {status.total}{left}{more}"
+        return f"Reading details in {name}: {status.done} of {status.total}{left(status)}{more}"
     ended = {
         DONE: "Scanned",
         CANCELLED: "Stopped scanning",
@@ -139,6 +143,11 @@ _WORDS = {
     HDR: ("merge", "Merging", "Merged", "aligning"),
     PANORAMA: ("stitch", "Stitching", "Stitched", "finding how the photos fit"),
 }
+
+
+def merge_heading(status):
+    """What a merge does, in a few words: "Merging Sunset"."""
+    return f"{_WORDS.get(status.kind, _WORDS[HDR])[1]} {status.name}"
 
 
 def describe_merge(status):
@@ -174,7 +183,7 @@ def describe_import(status):
     if status.state == QUEUED or (status.state == RUNNING and not status.phase):
         return (status.message or f"Waiting to import into {name}") + more
     if status.state == RUNNING:
-        return f"Importing into {name}: {status.done} of {status.total}{more}"
+        return f"Importing into {name}: {status.done} of {status.total}{left(status)}{more}"
     if status.state == CANCELLED:
         return f"Stopped importing into {name}{more}"
     if status.state == DONE:
@@ -194,7 +203,7 @@ def describe_export(status):
     if status.state == QUEUED or (status.state == RUNNING and not status.phase):
         return (status.message or f"Waiting to export to {name}") + more
     if status.state == RUNNING:
-        return f"Exporting to {name}: {status.done} of {status.total}{more}"
+        return f"Exporting to {name}: {status.done} of {status.total}{left(status)}{more}"
     if status.state == CANCELLED:
         return f"Stopped exporting to {name}{more}"
     if status.state == DONE:

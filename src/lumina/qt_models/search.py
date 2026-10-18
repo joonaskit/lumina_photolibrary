@@ -61,6 +61,7 @@ class SearchService(QObject):
             changed=self.indexing_changed.emit,
             ended=lambda _job, _status: self.index_changed.emit(),
             progress=self._on_progress,
+            timed={indexing.ENCODING},
         )
         self._removing = False
         self._generation = 0

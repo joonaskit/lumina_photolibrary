@@ -5,12 +5,14 @@ import os
 import signal
 import sys
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from lumina import APP_ID
 from lumina.integration import appearance, style
+from lumina.integration.island import Activities, IslandClient
+from lumina.integration.notifications import Notifier
 from lumina.integration.single_instance import SingleInstance
 from lumina.integration.theme_watcher import ThemeWatcher
 from lumina.qt_models import backups as backing
@@ -24,6 +26,7 @@ from lumina.qt_models.merge import MergeService
 from lumina.qt_models.search import SearchService
 from lumina.qt_models.tether import CameraService
 from lumina.ui import settings
+from lumina.ui.job_reports import JobReports, watch_services
 from lumina.ui.main_window import MainWindow
 from lumina.ui.settings_dialog import when_text
 
@@ -110,6 +113,19 @@ def run(paths=(), restore=None):
     exporter = ExportService(service, parent=app)
     tether = HotFolder(service, search, parent=app)
     camera = CameraService(service, tether, parent=app)
+    # The jobs in the Quickshell Island while they run, and a notification when one ends
+    # unseen. Without the island or a notification service this does nothing
+    island = IslandClient(parent=app)
+    notifier = Notifier(parent=app)
+    reports = JobReports(
+        Activities(island, parent=app),
+        notifier,
+        lambda: app.applicationState() == Qt.ApplicationState.ApplicationActive,
+        parent=app,
+    )
+    watch_services(reports, service, search, merge, importer, exporter)
+    # Before the jobs stop: the island is told they will carry on at the next start
+    app.aboutToQuit.connect(reports.close)
     # A scan, indexing or a merge in progress stops and is queued for the next start
     app.aboutToQuit.connect(search.close)
     app.aboutToQuit.connect(merge.close)
@@ -133,6 +149,9 @@ def run(paths=(), restore=None):
     )
     backups.failed.connect(lambda text: window.statusBar().showMessage(text, 15000))
     instance.opened.connect(lambda wanted: _open(window, wanted))
+    notifier.activated.connect(window.present)
+    island.start()
+    notifier.start()
     service.start()
     search.start()
     merge.start()

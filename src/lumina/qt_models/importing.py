@@ -72,6 +72,7 @@ class ImportService(QObject):
             ended=self._ended,
             waits=self._waits,
             failed=lambda _job, error: f"Could not import: {error}",
+            timed={dbm.COPYING},
         )
         self._reading = None
         self.read_future = None
