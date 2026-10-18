@@ -131,6 +131,8 @@ class LibraryService(QObject):
     job_ended = Signal(object)
     # The thumbnail cache was looked after: a thumbs.Pruned
     thumbnails_pruned = Signal(object)
+    # Something done on a thread failed: what to tell the user
+    failed = Signal(str)
 
     def __init__(
         self,
@@ -164,6 +166,8 @@ class LibraryService(QObject):
         # those that changed while its scan ran, to scan when it ends
         self._partial = {}
         self._later = {}
+        # Folders being forgotten on a thread: not scanned meanwhile
+        self._removing = set()
         self._photos_told = 0.0
         # The most the thumbnail cache may take, in bytes, or None for no limit; the
         # application sets it from the settings
@@ -247,12 +251,37 @@ class LibraryService(QObject):
             self._remove_after.add(folder_id)
             self._stop.set()
             return
-        self.db.remove_folder(folder_id)
-        self.folders_changed.emit()
-        self.photos_changed.emit()
-        self.keyword_list()
-        self.keywords_changed.emit()
-        self.collections_changed.emit(None)
+        self._forget_folder(folder_id)
+
+    def _forget_folder(self, folder_id):
+        """On a thread (a folder of 100,000 photos is a long delete): the folder and its
+        photos go, then the window hears of it."""
+        self._partial.pop(folder_id, None)
+        self._later.pop(folder_id, None)
+        self._removing.add(folder_id)
+
+        def done(_result):
+            self._removing.discard(folder_id)
+            if self._quitting.is_set():
+                return
+            self.folders_changed.emit()
+            self.photos_changed.emit()
+            self.keyword_list()
+            self.keywords_changed.emit()
+            self.collections_changed.emit(None)
+
+        workers.submit(
+            _remove_folder,
+            self.path,
+            folder_id,
+            on_done=done,
+            on_error=lambda error: (
+                self._removing.discard(folder_id),
+                self.failed.emit(str(error)),
+            ),
+            owner=self,
+            process=False,
+        )
 
     def rescan(self, folder_id=None, directories=None):
         """Scan one folder, or all. With `directories` (absolute) of one folder, just
@@ -497,20 +526,20 @@ class LibraryService(QObject):
             photo["aperture"],
         )
 
-    def raw_files_of(self, model, limit):
-        """Paths of up to `limit` connected RAW files of the camera `model`, spread over the
-        time they were taken."""
-        found = []
-        for row in self.db.photos(dbm.Filter(model=model)):
-            if not row.available:
-                continue
-            path = self.resolve(row.volume_key, row.path)
-            if path is not None and raw.is_raw(path) and os.path.exists(path):
-                found.append(os.fspath(path))
-        if len(found) > limit:
-            step = len(found) / limit
-            found = [found[int(i * step)] for i in range(limit)]
-        return found
+    def raw_files_of(self, model, limit, on_done, on_error):
+        """On a thread, then `on_done(paths)`: up to `limit` connected RAW files of the
+        camera `model`, spread over the time they were taken."""
+        workers.submit(
+            _raw_files_of,
+            self.path,
+            self.mounts,
+            model,
+            limit,
+            on_done=on_done,
+            on_error=on_error,
+            owner=self,
+            process=False,
+        )
 
     # Stacks
 
@@ -519,18 +548,25 @@ class LibraryService(QObject):
         if self.db.make_stack(photo_ids) is not None:
             self._stacks_changed()
 
-    def stack_bursts(self, rows):
+    def stack_bursts(self, rows, on_done, on_error):
         """Stack the bursts among `rows` (PhotoRows): shots a moment apart that look alike,
-        the best on top (core/bursts.py). Photos already stacked stay as they are. Returns
-        how many stacks were made."""
-        vectors = self.db.vectors_of(embed.MODEL.name, [r.content_id for r in rows])
-        vectors = dict(zip(vectors, embed.from_blobs(list(vectors.values())), strict=True))
-        found = bursts.find(rows, vectors)
-        for group in found:
-            self.db.make_stack(group)
-        if found:
-            self._stacks_changed()
-        return len(found)
+        the best on top (core/bursts.py). Photos already stacked stay as they are. On a
+        thread, then `on_done(how many stacks were made)`."""
+
+        def done(made):
+            if made:
+                self._stacks_changed()
+            on_done(made)
+
+        workers.submit(
+            _stack_bursts,
+            self.path,
+            rows,
+            on_done=done,
+            on_error=on_error,
+            owner=self,
+            process=False,
+        )
 
     def find_similar(self, similarity, only, on_done, on_error):
         """Look through the library, or only the photos with the ids `only`, on a thread,
@@ -776,7 +812,7 @@ class LibraryService(QObject):
         if self._running is not None or self._quitting.is_set():
             return
         for job in self._scans():
-            if self.is_connected(job.folder_id):
+            if job.folder_id not in self._removing and self.is_connected(job.folder_id):
                 self._run(job)
                 return
         # What is left waits for its drive
@@ -831,7 +867,7 @@ class LibraryService(QObject):
         status = self._status(job_id, name)
         if folder_id in self._remove_after:
             self._remove_after.discard(folder_id)
-            self.db.remove_folder(folder_id)
+            self._forget_folder(folder_id)
         self.folders_changed.emit()
         self.photos_changed.emit()
         # Sidecars read may have changed what the library holds, and the library's own
@@ -897,6 +933,38 @@ def _last_seen(folder):
     if folder.last_mount:
         return os.path.join(folder.last_mount, folder.path) if folder.path else folder.last_mount
     return "/" + folder.path
+
+
+def _raw_files_of(path, mounts, model, limit):
+    """On a worker thread: see LibraryService.raw_files_of."""
+    found = []
+    with dbm.Library(path) as library:
+        rows = library.raw_candidates(model)
+    for key, relative in rows:
+        where = volumes.resolve(key, relative, mounts)
+        if where is not None and raw.is_raw(where) and os.path.exists(where):
+            found.append(os.fspath(where))
+    if len(found) > limit:
+        step = len(found) / limit
+        found = [found[int(i * step)] for i in range(limit)]
+    return found
+
+
+def _stack_bursts(path, rows):
+    """On a worker thread, with a connection of its own."""
+    with dbm.Library(path) as library:
+        vectors = library.vectors_of(embed.MODEL.name, [r.content_id for r in rows])
+        vectors = dict(zip(vectors, embed.from_blobs(list(vectors.values())), strict=True))
+        found = bursts.find(rows, vectors)
+        for group in found:
+            library.make_stack(group)
+    return len(found)
+
+
+def _remove_folder(path, folder_id):
+    """On a worker thread, with a connection of its own."""
+    with dbm.Library(path) as library:
+        library.remove_folder(folder_id)
 
 
 def _prune_thumbnails(path, root, limit, volume_keys):

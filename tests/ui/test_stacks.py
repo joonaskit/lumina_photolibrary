@@ -262,6 +262,7 @@ def test_stack_bursts_stacks_photos_that_look_alike_and_leaves_the_others(qtbot,
     window.stack_bursts()
 
     wait_for_rows(qtbot, window, 2)
+    qtbot.waitUntil(lambda: "Stacked" in window.statusBar().currentMessage(), timeout=TIMEOUT)
     assert names(window)[0] == first[0]
     assert window.model.data(window.model.index(0), STACK_ROLE)[1] == 2
     assert window.model.data(window.model.index(1), STACK_ROLE) is None
@@ -273,8 +274,10 @@ def test_stack_bursts_without_vectors_stacks_nothing(qtbot, service, drive):
 
     window.stack_bursts()
 
+    qtbot.waitUntil(
+        lambda: window.statusBar().currentMessage() == "No bursts found", timeout=TIMEOUT
+    )
     assert window.model.rowCount() == 3
-    assert window.statusBar().currentMessage() == "No bursts found"
 
 
 def test_stack_bursts_leaves_a_stack_made_by_hand_as_it_is(qtbot, service, drive):
@@ -287,8 +290,10 @@ def test_stack_bursts_leaves_a_stack_made_by_hand_as_it_is(qtbot, service, drive
 
     # The third alone is no burst: the other two are stacked already
     wait_for_rows(qtbot, window, 2)
+    qtbot.waitUntil(
+        lambda: window.statusBar().currentMessage() == "No bursts found", timeout=TIMEOUT
+    )
     assert window.model.data(window.model.index(0), STACK_ROLE)[1] == 2
-    assert window.statusBar().currentMessage() == "No bursts found"
 
 
 def test_a_wide_photo_on_top_of_a_stack_has_its_badge():

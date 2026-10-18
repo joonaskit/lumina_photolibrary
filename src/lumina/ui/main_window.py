@@ -449,6 +449,7 @@ class MainWindow(QMainWindow):
 
         service.folders_changed.connect(self._refresh_folders)
         service.keywords_changed.connect(self._on_keywords_changed)
+        service.failed.connect(lambda message: self.statusBar().showMessage(message, 10000))
         service.sidecars_written.connect(self._on_sidecars_written)
         service.collections_changed.connect(self._on_collections_changed)
         service.job_changed.connect(self.job_status.show_status)
@@ -2397,10 +2398,18 @@ class MainWindow(QMainWindow):
             photos = [p for p in self.model.photo_rows() if p.id in ids]
         else:
             photos = self.model.photo_rows()
-        made = self.service.stack_bursts(photos)
-        self.statusBar().showMessage(
-            f"Stacked {made} burst{'s' if made != 1 else ''}" if made else "No bursts found",
-            4000,
+        self.statusBar().showMessage("Looking for bursts…")
+
+        def done(made):
+            self.statusBar().showMessage(
+                f"Stacked {made} burst{'s' if made != 1 else ''}" if made else "No bursts found",
+                4000,
+            )
+
+        self.service.stack_bursts(
+            photos,
+            done,
+            lambda error: self.statusBar().showMessage(f"Could not stack bursts: {error}", 8000),
         )
 
     def find_duplicates(self):

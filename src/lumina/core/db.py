@@ -905,6 +905,17 @@ class Library:
             for r in rows
         ]
 
+    def raw_candidates(self, model):
+        """[(volume key, path)] of the available photos of the camera `model`, oldest
+        first: where its RAW files may be."""
+        rows = self.db.execute(
+            "SELECT v.key, p.path FROM photos p JOIN volumes v ON v.id = p.volume_id "
+            "WHERE p.model = ? AND p.available = 1 ORDER BY COALESCE(p.captured, p.file_time), "
+            "p.path",
+            (model,),
+        )
+        return [(row[0], row[1]) for row in rows]
+
     def photo(self, photo_id):
         row = self.db.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
         return dict(row) if row is not None else None
@@ -1730,20 +1741,13 @@ class Library:
         return [tuple(row) for row in rows]
 
     def job(self, job_id):
-        row = self.db.execute(
-            "SELECT j.id, j.kind, j.folder_id, j.state, j.phase, j.done, j.total, j.message, "
-            "(SELECT COUNT(*) FROM job_failures WHERE job_id = j.id), j.derived_id "
-            "FROM jobs j WHERE j.id = ?",
-            (job_id,),
-        ).fetchone()
+        row = self.db.execute(f"{_JOB_COLUMNS} WHERE j.id = ?", (job_id,)).fetchone()
         return Job(*row) if row is not None else None
 
     def unfinished_jobs(self):
         """Jobs queued or interrupted while running (a quit or a crash), oldest first."""
-        rows = self.db.execute(
-            "SELECT id FROM jobs WHERE state IN (?, ?) ORDER BY id", UNFINISHED
-        ).fetchall()
-        return [self.job(row[0]) for row in rows]
+        rows = self.db.execute(f"{_JOB_COLUMNS} WHERE j.state IN (?, ?) ORDER BY j.id", UNFINISHED)
+        return [Job(*row) for row in rows]
 
     # Imports
 
@@ -2035,6 +2039,12 @@ def _where(shown):
         )
         args.extend([shown.import_job, COPIED])
     return ("WHERE " + " AND ".join(clauses)) if clauses else "", args
+
+
+_JOB_COLUMNS = (
+    "SELECT j.id, j.kind, j.folder_id, j.state, j.phase, j.done, j.total, j.message, "
+    "(SELECT COUNT(*) FROM job_failures WHERE job_id = j.id), j.derived_id FROM jobs j"
+)
 
 
 def _pending_embeddings(model, volume_keys):

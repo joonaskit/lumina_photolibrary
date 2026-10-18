@@ -106,10 +106,10 @@ def test_removing_a_folder_while_it_is_scanned_waits_for_the_scan_to_stop(servic
     qtbot.waitUntil(lambda: len(FakeExifTool.calls) >= 1, timeout=TIMEOUT)
     files = sorted(p.name for p in (drive / "Photos").iterdir())
 
-    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        service.remove_folder(folder)
+    service.remove_folder(folder)
+    qtbot.waitUntil(lambda: service.folders() == [], timeout=TIMEOUT)
 
-    assert service.folders() == [] and service.db.photos() == []
+    assert service.db.photos() == []
     assert sorted(p.name for p in (drive / "Photos").iterdir()) == files
 
 
@@ -270,3 +270,15 @@ def test_the_time_left_is_told_from_the_rate_of_the_details(service, qtbot, monk
     assert service._time_left(8, library.DETAILS, 0, 1000) is None
     now[0] += 20
     assert service._time_left(8, library.DETAILS, 50, 1000) is None
+
+
+def test_the_raw_files_of_a_camera_are_found_on_a_thread(service, drive, qtbot):
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        service.add_folder(drive / "Photos")
+    found, failed = [], []
+
+    service.raw_files_of("Canon EOS 90D", 5, found.append, failed.append)
+
+    qtbot.waitUntil(lambda: bool(found or failed), timeout=TIMEOUT)
+    assert failed == []
+    assert [path.rsplit("/", 1)[-1] for path in found[0]] == ["c.dng"]
