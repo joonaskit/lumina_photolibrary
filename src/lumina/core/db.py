@@ -660,6 +660,7 @@ class Library:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self.db = sqlite3.connect(self.path, timeout=10)
         self.db.row_factory = sqlite3.Row
+        self._depth = 0
         # Before anything else: switching to WAL rewrites the file's header, and a file
         # from a newer Lumina is to be left exactly as it is
         self._check_version()
@@ -716,20 +717,45 @@ class Library:
                 self.db.execute(f"PRAGMA user_version = {number + 1}")
 
     @contextlib.contextmanager
-    def _checked_write(self):
-        """A transaction that takes the write lock at its start, for a write that first
-        reads whether it is needed: two connections (the window, a worker, the tether
-        process) can't both find the row missing and both insert it."""
-        with self.db:
-            if not self.db.in_transaction:
-                self.db.execute("BEGIN IMMEDIATE")
+    def transaction(self):
+        """The one way to write. The outermost block takes the write lock at its start
+        (so a write that first reads whether it is needed can't race another connection:
+        the window, a worker, the tether process) and commits or rolls back at its end.
+        A block inside another is a savepoint: it rolls back alone when it fails, and
+        commits nothing until the outer block does."""
+        if self._depth:
+            name = f"lumina_{self._depth}"
+            self.db.execute(f"SAVEPOINT {name}")
+            self._depth += 1
+            try:
+                yield
+            except BaseException:
+                self.db.execute(f"ROLLBACK TO {name}")
+                self.db.execute(f"RELEASE {name}")
+                raise
+            else:
+                self.db.execute(f"RELEASE {name}")
+            finally:
+                self._depth -= 1
+            return
+        if not self.db.in_transaction:
+            self.db.execute("BEGIN IMMEDIATE")
+        self._depth = 1
+        try:
             yield
+        except BaseException:
+            self.db.rollback()
+            raise
+        else:
+            self.db.commit()
+        finally:
+            self._depth = 0
 
     # Volumes and folders
 
     def volume_id(self, key, label=None, mount=None):
         """The id of the volume `key`, made if new; its label and mount kept up to date."""
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "INSERT INTO volumes (key, label, last_mount) VALUES (?, ?, ?) "
                 "ON CONFLICT (key) DO UPDATE SET "
@@ -756,7 +782,7 @@ class Library:
         photos become its photos."""
         path = path.strip("/")
         volume = self.volume_id(key, label, mount)
-        with self._checked_write():
+        with self.transaction():
             for folder in self.folders():
                 if folder.volume_key == key and (folder.path == path or _inside(path, folder.path)):
                     return folder.id
@@ -782,7 +808,7 @@ class Library:
 
     def remove_folder(self, folder_id):
         """Forget a folder and its photos. The files are not touched."""
-        with self.db:
+        with self.transaction():
             self.db.execute("DELETE FROM jobs WHERE folder_id = ?", (folder_id,))
             self.db.execute("DELETE FROM photos WHERE folder_id = ?", (folder_id,))
             self.db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
@@ -800,7 +826,7 @@ class Library:
             )
 
     def mark_scanned(self, folder_id):
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE folders SET scanned_at = ? WHERE id = ?", (time.time(), folder_id)
             )
@@ -831,7 +857,7 @@ class Library:
         library has by now (a tethered folder's, taken in while a scan walked) is left
         as it is."""
         now = time.time()
-        with self.db:
+        with self.transaction():
             self.db.executemany(
                 "INSERT INTO photos (folder_id, volume_id, path, size, mtime_ns, file_time, "
                 "added_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (volume_id, path) DO NOTHING",
@@ -855,7 +881,7 @@ class Library:
     def mark_missing(self, ids):
         """These photos were not found: unavailable, with everything known of them kept."""
         now = time.time()
-        with self.db:
+        with self.transaction():
             self.db.executemany(
                 "UPDATE photos SET available = 0, missing_since = COALESCE(missing_since, ?) "
                 "WHERE id = ?",
@@ -880,7 +906,7 @@ class Library:
 
     def write_metadata(self, read=(), failed=()):
         """`read`: (id, content_id, Metadata); `failed`: (id, content_id or None, message)."""
-        with self.db:
+        with self.transaction():
             self.db.executemany(
                 "UPDATE photos SET metadata_state = 1, metadata_error = NULL, content_id = ?, "
                 "captured = ?, captured_offset = ?, make = ?, model = ?, lens = ?, "
@@ -1030,7 +1056,7 @@ class Library:
         for value in values.values():
             if value not in allowed:
                 raise ValueError(f"Not a {column}: {value!r}")
-        with self.db:
+        with self.transaction():
             self.db.executemany(
                 f"UPDATE photos SET {column} = ? WHERE id = ?",
                 [(value, photo) for photo, value in values.items()],
@@ -1093,7 +1119,7 @@ class Library:
     def ensure_keywords(self, paths):
         """{path: id} of the keywords `paths` (parsed by `keywords.parse`), made when they
         are new, with the levels above them. The path is as first written."""
-        with self.db:
+        with self.transaction():
             return {path: self._keyword(path) for path in paths}
 
     def _keyword(self, path):
@@ -1128,7 +1154,7 @@ class Library:
     def set_photo_keywords(self, values):
         """{photo id: ids of the keywords it has}, replacing what each had, in one
         transaction."""
-        with self.db:
+        with self.transaction():
             for photo, ids in values.items():
                 self.db.execute("DELETE FROM photo_keywords WHERE photo_id = ?", (photo,))
                 self.db.executemany(
@@ -1142,7 +1168,7 @@ class Library:
         """Make keyword `path` and those below it `new_path` and below. Returns False when
         `path` is not a keyword; a ValueError when `new_path` is another keyword's. Photos
         keep their keywords. The levels above `new_path` are made."""
-        with self.db:
+        with self.transaction():
             found = self._keywords_within(path)
             if not found:
                 return False
@@ -1161,7 +1187,7 @@ class Library:
     def delete_keyword(self, path):
         """Forget keyword `path` and those below it, taking them off every photo. Returns
         how many keywords went."""
-        with self.db:
+        with self.transaction():
             found = self._keywords_within(path)
             self._touch_keyword_photos(i for i, _p in found)
             self.db.executemany("DELETE FROM keywords WHERE id = ?", [(i,) for i, _p in found])
@@ -1219,7 +1245,7 @@ class Library:
         if not name:
             raise ValueError("A collection needs a name")
         try:
-            with self.db:
+            with self.transaction():
                 cursor = self.db.execute(
                     "INSERT INTO collections (name, query, created_at) VALUES (?, ?, ?)",
                     (name, query, time.time()),
@@ -1233,7 +1259,7 @@ class Library:
         if not name:
             raise ValueError("A collection needs a name")
         try:
-            with self.db:
+            with self.transaction():
                 self.db.execute(
                     "UPDATE collections SET name = ? WHERE id = ?", (name, collection_id)
                 )
@@ -1242,7 +1268,7 @@ class Library:
 
     def set_collection_query(self, collection_id, query):
         """Change a smart collection's saved filter (JSON)."""
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE collections SET query = ? WHERE id = ? AND query IS NOT NULL",
                 (query, collection_id),
@@ -1250,14 +1276,14 @@ class Library:
 
     def delete_collection(self, collection_id):
         """Forget a collection; its photos stay in the library."""
-        with self.db:
+        with self.transaction():
             self.db.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
 
     def add_to_collection(self, collection_id, photo_ids):
         """Put photos in a manual collection (those in it already stay). Returns how many
         were added."""
         now = time.time()
-        with self.db:
+        with self.transaction():
             before = self.db.total_changes
             self.db.executemany(
                 "INSERT OR IGNORE INTO collection_photos (collection_id, photo_id, added_at) "
@@ -1268,7 +1294,7 @@ class Library:
             return self.db.total_changes - before
 
     def remove_from_collection(self, collection_id, photo_ids):
-        with self.db:
+        with self.transaction():
             self.db.executemany(
                 "DELETE FROM collection_photos WHERE collection_id = ? AND photo_id = ?",
                 [(collection_id, photo) for photo in photo_ids],
@@ -1325,7 +1351,7 @@ class Library:
 
     def sidecar_written(self, photo_id, changed_at, mtime_ns):
         """A sidecar was written holding the state as of `changed_at`; its file's time."""
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE photos SET sidecar_at = ?, sidecar_mtime_ns = ? WHERE id = ?",
                 (changed_at, mtime_ns, photo_id),
@@ -1342,7 +1368,7 @@ class Library:
 
     def forget_sidecar(self, photo_id):
         """Its sidecar is gone: a photo with something to keep gets a new one."""
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE photos SET sidecar_at = NULL, sidecar_mtime_ns = NULL WHERE id = ?",
                 (photo_id,),
@@ -1350,7 +1376,7 @@ class Library:
 
     def note_sidecar(self, photo_id, mtime_ns):
         """A sidecar file that is not read (another program's) is as it was at `mtime_ns`."""
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE photos SET sidecar_mtime_ns = ? WHERE id = ?", (mtime_ns, photo_id)
             )
@@ -1363,7 +1389,7 @@ class Library:
         Both sides changing since they last agreed is a conflict, and the newer whole
         state wins (compared by time, from whichever machine wrote it). The edits it
         replaces are not lost then: they stay as virtual copies after the sidecar's."""
-        with self.db:
+        with self.transaction():
             row = self.db.execute(
                 "SELECT changed_at, sidecar_at FROM photos WHERE id = ?", (photo_id,)
             ).fetchone()
@@ -1491,7 +1517,7 @@ class Library:
         ids = list(dict.fromkeys(photo_ids))
         if len(ids) < 2:
             return None
-        with self.db:
+        with self.transaction():
             old = self._stacks_of(ids)
             affected = set(ids) | (set(self._stack_members(old)) if old else set())
             cursor = self.db.execute(
@@ -1508,7 +1534,7 @@ class Library:
 
     def unstack(self, photo_ids):
         """Dissolve the stacks these photos are in: every member is on its own again."""
-        with self.db:
+        with self.transaction():
             stacks = self._stacks_of(photo_ids)
             if not stacks:
                 return
@@ -1526,7 +1552,7 @@ class Library:
         """Take these photos out of their stacks. The others stay stacked, in their order
         (the next one is the top when the top left), unless fewer than two are left."""
         ids = list(dict.fromkeys(photo_ids))
-        with self.db:
+        with self.transaction():
             leaving = [
                 row[0]
                 for start in range(0, len(ids), 500)
@@ -1545,7 +1571,7 @@ class Library:
 
     def set_stack_top(self, photo_id):
         """Make this photo the top of its stack; the others keep their order."""
-        with self.db:
+        with self.transaction():
             row = self.db.execute(
                 "SELECT stack_id FROM photos WHERE id = ?", (photo_id,)
             ).fetchone()
@@ -1572,7 +1598,7 @@ class Library:
         if not stack_ids:
             return
         marks = ", ".join("?" * len(stack_ids))
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 f"UPDATE stacks SET collapsed = ? WHERE id IN ({marks})",
                 [int(collapsed), *stack_ids],
@@ -1595,7 +1621,7 @@ class Library:
         return row[0] if row is not None else None
 
     def save_edit(self, photo_id, params_json, copy=0):
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "INSERT INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT (photo_id, copy) DO UPDATE SET "
@@ -1608,7 +1634,7 @@ class Library:
         """{photo id: parameters JSON, or None for no edit} as the photos' own edits, in
         one transaction: all of them or none."""
         now = time.time()
-        with self.db:
+        with self.transaction():
             for photo_id, params_json in edits.items():
                 if params_json is None:
                     self.db.execute(
@@ -1625,7 +1651,7 @@ class Library:
 
     def delete_edit(self, photo_id, copy=0):
         """Back to the original. The photo's own edit and its copies are separate."""
-        with self.db:
+        with self.transaction():
             self.db.execute("DELETE FROM edits WHERE photo_id = ? AND copy = ?", (photo_id, copy))
             self._touch([photo_id])
 
@@ -1644,7 +1670,7 @@ class Library:
         """A virtual copy of each photo {photo id: parameters JSON}, all or none. Returns
         {photo id: the copy's number}."""
         numbers = {}
-        with self.db:
+        with self.transaction():
             for photo_id, params_json in params_by_photo.items():
                 row = self.db.execute(
                     "SELECT COALESCE(MAX(copy), 0) + 1 FROM edits WHERE photo_id = ?", (photo_id,)
@@ -1663,7 +1689,7 @@ class Library:
         return [tuple(row) for row in rows]
 
     def save_preset(self, name, params_json):
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "INSERT INTO presets (name, params, created_at) VALUES (?, ?, ?) "
                 "ON CONFLICT (name) DO UPDATE SET params = excluded.params",
@@ -1671,7 +1697,7 @@ class Library:
             )
 
     def delete_preset(self, name):
-        with self.db:
+        with self.transaction():
             self.db.execute("DELETE FROM presets WHERE name = ?", (name,))
 
     # Embeddings
@@ -1697,7 +1723,7 @@ class Library:
 
     def write_embeddings(self, model, vectors=(), failed=()):
         """`vectors`: (content_id, float16 blob); `failed`: (content_id, message)."""
-        with self.db:
+        with self.transaction():
             self.db.executemany(
                 "INSERT OR REPLACE INTO embeddings (content_id, model, vector, error) "
                 "VALUES (?, ?, ?, NULL)",
@@ -1745,7 +1771,7 @@ class Library:
     def add_job(self, kind, folder_id):
         """Queue a job, or return the unfinished one of that kind for that folder."""
         now = time.time()
-        with self._checked_write():
+        with self.transaction():
             row = self.db.execute(
                 "SELECT id FROM jobs WHERE kind = ? AND folder_id IS ? AND state IN (?, ?)",
                 (kind, folder_id, *UNFINISHED),
@@ -1763,7 +1789,7 @@ class Library:
         allowed = {"state", "phase", "done", "total", "message"}
         assert set(fields) <= allowed, fields
         sets = ", ".join(f"{name} = ?" for name in fields)
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 f"UPDATE jobs SET {sets}, updated_at = ? WHERE id = ?",
                 (*fields.values(), time.time(), job_id),
@@ -1771,7 +1797,7 @@ class Library:
 
     def add_failures(self, job_id, failures):
         """[(path, message)] a job could not do."""
-        with self.db:
+        with self.transaction():
             self.db.executemany(
                 "INSERT INTO job_failures (job_id, path, message) VALUES (?, ?, ?)",
                 [(job_id, path, message) for path, message in failures],
@@ -1799,11 +1825,10 @@ class Library:
         folder `folder_id` (whose scan then finds them), queued: in one transaction.
         Returns the job's id."""
         now = time.time()
-        # Before the transaction: volume_id() commits one of its own
         keys = {item.source_key for item in items} | {item.key for item in items}
         keys |= {item.backup_key for item in items if item.backup_key}
         ids = {key: self.volume_id(key) for key in keys}
-        with self.db:
+        with self.transaction():
             job = self.db.execute(
                 "INSERT INTO jobs (kind, folder_id, state, total, created_at, updated_at) "
                 "VALUES ('import', ?, ?, ?, ?, ?)",
@@ -1847,7 +1872,7 @@ class Library:
     def set_import_item(self, item_id, state, path=None, message=None):
         """An item copied (COPIED, to `path` from its volume's root) or not (NOT_COPIED,
         with why)."""
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE import_items SET state = ?, path = ?, message = ? WHERE id = ?",
                 (state, path.strip("/") if path else None, message, item_id),
@@ -1860,7 +1885,7 @@ class Library:
         `folder` as `options_json` says; with `replace`, over files that exist. In one
         transaction. Returns the job's id."""
         now = time.time()
-        with self.db:
+        with self.transaction():
             job = self.db.execute(
                 "INSERT INTO jobs (kind, state, total, created_at, updated_at) "
                 "VALUES ('export', ?, ?, ?, ?)",
@@ -1896,7 +1921,7 @@ class Library:
         return [ExportItem(*row) for row in rows]
 
     def set_export_item(self, item_id, state, message=None):
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE export_items SET state = ?, message = ? WHERE id = ?",
                 (state, message, item_id),
@@ -1908,7 +1933,7 @@ class Library:
         """A camera session whose frames go in `folder` (from the root) of the volume
         `volume_key`. Returns its id."""
         volume = self.volume_id(volume_key)
-        with self.db:
+        with self.transaction():
             return self.db.execute(
                 "INSERT INTO tether_sessions (name, volume_id, folder, keep, collection_id, "
                 "started_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1937,7 +1962,7 @@ class Library:
 
     def add_tether_item(self, session_id, camera, camera_folder, camera_name, on_card):
         """A frame the camera told of, before it is fetched. Returns its id."""
-        with self.db:
+        with self.transaction():
             return self.db.execute(
                 "INSERT INTO tether_items (session_id, camera, camera_folder, camera_name, "
                 "on_card, added_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1966,7 +1991,7 @@ class Library:
     def set_tether_item(self, item_id, state, name=None, message=None):
         """A frame saved (TETHER_SAVED, as `name` in its session's folder), not saved
         (TETHER_FAILED, with why), or to fetch again (TETHER_PENDING)."""
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE tether_items SET state = ?, name = ?, message = ? WHERE id = ?",
                 (state, name, message, item_id),
@@ -2007,9 +2032,8 @@ class Library:
         the job of kind `kind` that makes it in the library folder `folder_id`, queued:
         both in one transaction. Returns the job's id."""
         now = time.time()
-        # Before the transaction: volume_id() commits one of its own
         volumes = [self.volume_id(source.volume_key) for source in sources]
-        with self.db:
+        with self.transaction():
             derived = self.db.execute(
                 "INSERT INTO derived (kind, settings, created_at) VALUES (?, ?, ?)",
                 (kind, settings_json, now),
@@ -2045,7 +2069,7 @@ class Library:
     def set_derived_result(self, derived_id, volume_key, path):
         """The derived photo was written: it is the file at `path` of volume `volume_key`."""
         volume = self.volume_id(volume_key)
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE derived SET volume_id = ?, path = ? WHERE id = ?",
                 (volume, path.strip("/"), derived_id),

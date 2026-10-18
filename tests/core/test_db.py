@@ -638,3 +638,35 @@ def test_a_rating_outlives_a_missing_file_and_a_changed_one(library):
     library.write_scan(folder, volume, changed=[(photo, 2, 2, "2021")])
 
     assert library.ratings([photo]) == {photo: 4}
+
+
+def test_a_transaction_inside_another_commits_with_the_outer_one(tmp_path, library):
+    other = sqlite3.connect(library.path)
+    with library.transaction():
+        library.volume_id("a")  # used to commit the outer block's work
+        with library.transaction():
+            library.volume_id("b")
+        assert other.execute("SELECT COUNT(*) FROM volumes").fetchone()[0] == 0
+    assert other.execute("SELECT COUNT(*) FROM volumes").fetchone()[0] == 2
+
+
+def test_a_failed_inner_transaction_rolls_back_alone(library):
+    with library.transaction():
+        library.volume_id("kept")
+        with pytest.raises(ValueError):
+            with library.transaction():
+                library.volume_id("lost")
+                raise ValueError
+    keys = [r[0] for r in library.db.execute("SELECT key FROM volumes")]
+    assert keys == ["kept"]
+
+
+def test_a_failed_outer_transaction_rolls_everything_back(library):
+    with pytest.raises(ValueError):
+        with library.transaction():
+            library.volume_id("lost")
+            with library.transaction():
+                library.volume_id("also lost")
+            raise ValueError
+    assert library.db.execute("SELECT COUNT(*) FROM volumes").fetchone()[0] == 0
+    assert not library.db.in_transaction
