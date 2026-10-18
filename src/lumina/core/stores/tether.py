@@ -19,6 +19,22 @@ class TetherStore:
                 (name, volume, folder.strip("/"), keep, collection_id, time.time()),
             ).lastrowid
 
+    def start_tether_session(self, name, volume_key, folder, keep):
+        """A camera session as `add_tether_session`, in the manual collection `name`, made
+        when there is none (none when a smart collection has the name), in one transaction.
+        Returns (its TetherSession, the id of the collection made or None)."""
+        with self.transaction():
+            row = self.db.execute(
+                "SELECT id, query FROM collections WHERE name = ? COLLATE NOCASE", (name,)
+            ).fetchone()
+            made = None
+            if row is None:
+                collection = made = self.add_collection(name)
+            else:
+                collection = row[0] if row[1] is None else None
+            session_id = self.add_tether_session(name, volume_key, folder, keep, collection)
+            return self.tether_session(session_id), made
+
     def tether_session(self, session_id):
         row = self.db.execute(
             "SELECT s.id, s.name, v.key, s.folder, s.keep, s.collection_id, s.started_at "

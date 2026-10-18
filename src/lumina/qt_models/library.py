@@ -609,6 +609,22 @@ class LibraryService(QObject):
             lambda _: self.collections_changed.emit(collection_id),
         )
 
+    # Shooting tethered
+
+    def start_tether_session(self, name, volume_key, folder, keep, on_done, on_error):
+        """Write a camera session, in the manual collection `name` (made when there is
+        none), then `on_done(its TetherSession)`."""
+
+        def then(result):
+            session, made = result
+            if made is not None:
+                self.collections_changed.emit(made)
+            on_done(session)
+
+        self._write(
+            lambda db: db.start_tether_session(name, volume_key, folder, keep), then, on_error
+        )
+
     # Edits and presets
 
     def edit_json(self, photo_id, copy=0, settle=True):

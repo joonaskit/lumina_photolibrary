@@ -98,6 +98,10 @@ class CameraService(QObject):
         self._in_process = in_process
         self._timing = {}
         self.session = None
+        # The session is being written: running, with no session or process yet
+        self._starting = False
+        # The app is exiting: a session written after this does not start
+        self._closed = False
         self.where = None
         self.info = None
         self.settings = {}
@@ -129,7 +133,7 @@ class CameraService(QObject):
 
     @property
     def running(self):
-        return self.session is not None
+        return self.session is not None or self._starting
 
     @property
     def connected(self):
@@ -139,7 +143,8 @@ class CameraService(QObject):
         """Shoot into the library folder `folder_id`, in `name` under `layout` (as an
         import lays out a day); each photo gets the preset `preset` (None: none). Raises
         ValueError when the folder is not connected, KeyError and NewerParams for the preset
-        (as HotFolder.start)."""
+        (as HotFolder.start). The session is written on the library's writer thread, and
+        its process starts when it is: meanwhile it is running, looking for the camera."""
         if self.running:
             raise ValueError("A session is running: end it first")
         folder = self.library.db.folder(folder_id)
@@ -152,23 +157,31 @@ class CameraService(QObject):
         where = os.path.join(base, importing.subfolder(datetime.now(), layout), name)
         relative = "/".join(part for part in (folder.path, os.path.relpath(where, base)) if part)
         self.hot.start(folder_id, preset)
-        collection = self._collection(name)
-        session_id = self.library.db.add_tether_session(
-            name, folder.volume_key, relative, keep, collection
-        )
-        self.session = self.library.db.tether_session(session_id)
+        self._starting = True
         self.where = where
         self.info, self.settings, self.message = None, {}, "Looking for the camera…"
         self.saved_count, self.fetching, self.failures, self._paths = 0, {}, {}, set()
         self._ending = False
         self.live, self.frame, self._live_start, self._paused = LiveState(None), None, None, False
         self._last_saved = None
+        self.library.start_tether_session(
+            name, folder.volume_key, relative, keep, self._started, self._not_started
+        )
+        self.changed.emit()
+
+    def _started(self, session):
+        """The session is written: its process starts, unless it was ended meanwhile."""
+        self._starting = False
+        self.session = session
+        if self._ending or self._closed:
+            self._end()
+            return
         folders = self._folders()
-        folders[session_id] = where
-        session = tether.Session(session_id, where, keep, folders)
+        folders[session.id] = self.where
+        work = tether.Session(session.id, self.where, session.keep, folders)
         commands, events, frames = (workers.make_queue() for _ in range(3))
         self._commands = commands
-        args = (self.library.path, session, commands, events, self._camera, frames)
+        args = (self.library.path, work, commands, events, self._camera, frames)
         if self._in_process:
             worker = workers.start_process(_serve, *args, self._timing)
         else:
@@ -179,6 +192,11 @@ class CameraService(QObject):
         reader.start()
         threading.Thread(target=self._read_frames, args=(worker, frames), daemon=True).start()
         self.changed.emit()
+
+    def _not_started(self, error):
+        self._starting = False
+        self.error.emit(f"The session could not be started: {error}")
+        self._end()
 
     @property
     def ending(self):
@@ -191,11 +209,13 @@ class CameraService(QObject):
             return
         self._ending = True
         self.message = "Ending the session…"
-        self._commands.put((tether.STOP,))
+        # Still starting: it ends once written
+        self._send(tether.STOP)
         self.changed.emit()
 
     def close(self):
         """For the app's exit: the process is told to stop and given a moment."""
+        self._closed = True
         if self._commands is not None:
             self._commands.put((tether.STOP,))
         worker = self._worker
@@ -377,18 +397,6 @@ class CameraService(QObject):
             if where is not None:
                 found[session.id] = where
         return found
-
-    def _collection(self, name):
-        """The id of the manual collection `name`, made if there is none; None when a smart
-        collection has the name."""
-        for each in self.library.collections():
-            if each.name.casefold() == name.casefold():
-                return each.id if each.query is None else None
-        # Made here, with the session that is written next, not on the writer thread:
-        # starting waits for both
-        made = self.library.db.add_collection(name)
-        self.library.collections_changed.emit(made)
-        return made
 
     def _collect(self, added):
         """Photos the hot folder took in: those of this session go in its collection."""
