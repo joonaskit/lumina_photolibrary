@@ -18,6 +18,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from lumina.core import backup, keywords, metadata, xmp
 
@@ -419,6 +420,17 @@ def _migrate_12(db):
     )
 
 
+def _migrate_13(db):
+    _script(
+        db,
+        """
+        -- The photos of a folder in a stretch of time (the bracket search in a folder of
+        -- hundreds of thousands) without reading all of the folder
+        CREATE INDEX photos_folder_time ON photos (folder_id, COALESCE(captured, file_time));
+        """,
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
 _MIGRATIONS = [
     _migrate_1,
@@ -433,6 +445,7 @@ _MIGRATIONS = [
     _migrate_10,
     _migrate_11,
     _migrate_12,
+    _migrate_13,
 ]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -1955,12 +1968,18 @@ class Library:
     def photos_near(self, folder_id, taken, seconds):
         """Photos of the folder taken within `seconds` of `taken` (ISO text), as dicts with
         their details, in time order: where a bracket is looked for."""
+        # A range on the indexed time, as text, a little wider than asked (the times are
+        # text of different lengths); the exact test is made on what it finds
+        centre = datetime.fromisoformat(taken)
+        reach = timedelta(seconds=seconds + 2)
+        low, high = ((centre + sign * reach).strftime("%Y-%m-%d %H:%M:%S") for sign in (-1, 1))
         rows = self.db.execute(
             "SELECT p.*, v.key AS volume_key, COALESCE(p.captured, p.file_time) AS taken "
             "FROM photos p JOIN volumes v ON v.id = p.volume_id WHERE p.folder_id = ? "
+            "AND COALESCE(p.captured, p.file_time) BETWEEN ? AND ? "
             "AND abs(julianday(COALESCE(p.captured, p.file_time)) - julianday(?)) * 86400 <= ? "
             "ORDER BY taken, p.path",
-            (folder_id, taken, seconds),
+            (folder_id, low, high, taken, seconds),
         )
         return [dict(row) for row in rows]
 
@@ -1992,8 +2011,11 @@ def _where(shown):
         clauses.append("p.folder_id = ?")
         args.append(shown.folder_id)
     if shown.year is not None:
-        clauses.append("substr(COALESCE(p.captured, p.file_time), 1, 4) = ?")
-        args.append(shown.year)
+        # A range, so that the index on the time is used
+        clauses.append(
+            "COALESCE(p.captured, p.file_time) >= ? AND COALESCE(p.captured, p.file_time) < ?"
+        )
+        args.extend([f"{int(shown.year):04d}", f"{int(shown.year) + 1:04d}"])
     if shown.model is not None:
         clauses.append("p.model = ?")
         args.append(shown.model)
