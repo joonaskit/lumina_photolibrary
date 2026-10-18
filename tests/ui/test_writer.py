@@ -4,8 +4,9 @@ write lock, they are made in order, and a read after one sees it."""
 import sqlite3
 import time
 
+from conftest import TIMEOUT
+
 from lumina.core import db as dbm
-from tests.ui.conftest import TIMEOUT
 
 
 def add_photo(service):
