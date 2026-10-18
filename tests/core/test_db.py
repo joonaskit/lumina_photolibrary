@@ -147,6 +147,53 @@ def test_photos_are_in_time_order_and_filtered(library):
     assert library.choices() == (["2024", "2021", "2019"], ["90D", "R6"], ["EF", "RF"])
 
 
+def _plan_of_last_select(library, call):
+    statements = []
+    library.db.set_trace_callback(statements.append)
+    try:
+        call()
+    finally:
+        library.db.set_trace_callback(None)
+    select = [s for s in statements if s.lstrip().startswith("SELECT")][-1]
+    return " ".join(row[3] for row in library.db.execute("EXPLAIN QUERY PLAN " + select))
+
+
+def test_the_year_filter_and_the_bracket_search_use_the_index_on_the_time(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    add_photos(library, folder, volume, ["p/a.jpg"])
+
+    year = _plan_of_last_select(library, lambda: library.photos(Filter(year="2021")))
+    near = _plan_of_last_select(
+        library, lambda: library.photos_near(folder, "2021-06-01 12:00:00", 5)
+    )
+
+    assert "photos_time" in year
+    assert "photos_folder_time" in near
+
+
+def test_photos_near_finds_those_within_the_seconds_and_no_others(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    other = library.add_folder("uuid:A", "q")
+    names = ["p/a.jpg", "p/b.jpg", "p/c.jpg", "p/d.jpg"]
+    times = [
+        "2021-06-01 12:00:00.000000",
+        "2021-06-01 12:00:04.500000",
+        "2021-06-01 12:00:07.000000",
+        "2021-05-31 23:59:58.000000",
+    ]
+    add_photos(library, folder, volume, names, **dict(zip(names, times, strict=True)))
+    add_photos(library, other, volume, ["q/e.jpg"], **{"q/e.jpg": times[0]})
+
+    found = library.photos_near(folder, "2021-06-01 12:00:00", 5)
+
+    assert [row["path"] for row in found] == ["p/a.jpg", "p/b.jpg"]
+    # Across midnight
+    found = library.photos_near(folder, "2021-06-01 00:00:01", 5)
+    assert [row["path"] for row in found] == ["p/d.jpg"]
+
+
 def test_an_unfinished_job_is_not_queued_twice(library):
     folder = library.add_folder("uuid:A", "p")
     job = library.add_job("scan", folder)
@@ -154,6 +201,39 @@ def test_an_unfinished_job_is_not_queued_twice(library):
     assert library.add_job("scan", folder) == job
     library.update_job(job, state=dbm.DONE)
     assert library.add_job("scan", folder) != job
+
+
+def test_two_connections_adding_the_same_folder_make_one_folder(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    path = tmp_path / "library.sqlite3"
+    real = Library.folders
+
+    def slow(self):
+        found = real(self)
+        # Long enough for the other connection to look too, were it not kept waiting
+        time.sleep(0.3)
+        return found
+
+    Library(path).close()
+    monkeypatch.setattr(Library, "folders", slow)
+    ids = []
+
+    def add():
+        with Library(path) as library:
+            ids.append(library.add_folder("uuid:A", "photos"))
+
+    threads = [threading.Thread(target=add) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    monkeypatch.undo()
+
+    with Library(path) as library:
+        assert len(library.folders()) == 1
+    assert len(set(ids)) == 1 and len(ids) == 2
 
 
 def test_a_library_from_schema_1_is_brought_up_to_date_with_its_data(tmp_path, monkeypatch):
@@ -176,6 +256,42 @@ def test_a_library_from_schema_1_is_brought_up_to_date_with_its_data(tmp_path, m
         assert library.edit(photo.id) == '{"version": 1}'
         # Schema 4: not flagged
         assert photo.flag == dbm.UNFLAGGED
+
+
+def test_a_migration_that_fails_half_way_leaves_the_library_as_it_was(tmp_path, monkeypatch):
+    path = tmp_path / "library.sqlite3"
+    monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:1])
+    monkeypatch.setattr(dbm, "SCHEMA_VERSION", 1)
+    with Library(path):
+        pass
+    monkeypatch.undo()
+
+    def columns():
+        db = sqlite3.connect(path)
+        try:
+            return (
+                [row[1] for row in db.execute("PRAGMA table_info(photos)")],
+                db.execute("PRAGMA user_version").fetchone()[0],
+            )
+        finally:
+            db.close()
+
+    before = columns()
+
+    def broken(db):
+        dbm._script(db, "ALTER TABLE photos ADD COLUMN half INTEGER; NOT SQL;")
+
+    monkeypatch.setattr(dbm, "_MIGRATIONS", [dbm._MIGRATIONS[0], broken])
+    monkeypatch.setattr(dbm, "SCHEMA_VERSION", 2)
+    with pytest.raises(sqlite3.Error):
+        Library(path)
+    assert columns() == before
+
+    # The next start, with the migration fixed, goes through
+    monkeypatch.setattr(dbm, "_MIGRATIONS", dbm._MIGRATIONS[:1] + [lambda db: None])
+    with Library(path):
+        pass
+    assert columns()[1] == 2
 
 
 def test_a_library_from_schema_5_reads_its_cr3s_again_to_find_damage(tmp_path, monkeypatch):
@@ -355,6 +471,21 @@ def test_edits_and_virtual_copies(library):
     assert library.edit(photo) is None and library.copies(photo) == [1]
 
 
+def test_virtual_copies_of_many_photos_are_made_all_or_none(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    ids = add_photos(library, folder, volume, ["p/a.jpg", "p/b.jpg"])
+    a, b = ids["p/a.jpg"], ids["p/b.jpg"]
+
+    assert library.new_copies({a: '{"exposure": 1}', b: '{"exposure": 2}'}) == {a: 1, b: 1}
+    assert library.edit(b, 1) == '{"exposure": 2}'
+
+    with pytest.raises(sqlite3.Error):
+        library.new_copies({a: '{"exposure": 3}', b: None})
+
+    assert library.copies(a) == [1] and library.copies(b) == [1]
+
+
 def test_edits_are_saved_for_many_photos_at_once(library):
     volume = library.volume_id("uuid:A")
     folder = library.add_folder("uuid:A", "p")
@@ -507,3 +638,35 @@ def test_a_rating_outlives_a_missing_file_and_a_changed_one(library):
     library.write_scan(folder, volume, changed=[(photo, 2, 2, "2021")])
 
     assert library.ratings([photo]) == {photo: 4}
+
+
+def test_a_transaction_inside_another_commits_with_the_outer_one(tmp_path, library):
+    other = sqlite3.connect(library.path)
+    with library.transaction():
+        library.volume_id("a")  # used to commit the outer block's work
+        with library.transaction():
+            library.volume_id("b")
+        assert other.execute("SELECT COUNT(*) FROM volumes").fetchone()[0] == 0
+    assert other.execute("SELECT COUNT(*) FROM volumes").fetchone()[0] == 2
+
+
+def test_a_failed_inner_transaction_rolls_back_alone(library):
+    with library.transaction():
+        library.volume_id("kept")
+        with pytest.raises(ValueError):
+            with library.transaction():
+                library.volume_id("lost")
+                raise ValueError
+    keys = [r[0] for r in library.db.execute("SELECT key FROM volumes")]
+    assert keys == ["kept"]
+
+
+def test_a_failed_outer_transaction_rolls_everything_back(library):
+    with pytest.raises(ValueError):
+        with library.transaction():
+            library.volume_id("lost")
+            with library.transaction():
+                library.volume_id("also lost")
+            raise ValueError
+    assert library.db.execute("SELECT COUNT(*) FROM volumes").fetchone()[0] == 0
+    assert not library.db.in_transaction

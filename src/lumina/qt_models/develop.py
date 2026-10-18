@@ -470,19 +470,28 @@ class DevelopSession(QObject):
         if not self.is_open() or not self._raw or self._making_profile or self._shot is None:
             return
         model = self._shot.model
-        paths = self.service.raw_files_of(model, limit)
-        if not paths:
-            self.failed.emit(f"No RAW files of the {model} are connected to learn from")
-            return
         token = self._token
         self._set_making(True)
-        workers.submit(
-            _session.fit_camera_look,
-            paths,
-            model,
-            on_done=lambda made: self._on_profile_made(token, made, "look", len(paths)),
-            on_error=lambda error: self._on_making_failed(token, error),
-            owner=self,
+
+        def found(paths):
+            if token != self._token:
+                self._set_making(False)
+                return
+            if not paths:
+                self._set_making(False)
+                self.failed.emit(f"No RAW files of the {model} are connected to learn from")
+                return
+            workers.submit(
+                _session.fit_camera_look,
+                paths,
+                model,
+                on_done=lambda made: self._on_profile_made(token, made, "look", len(paths)),
+                on_error=lambda error: self._on_making_failed(token, error),
+                owner=self,
+            )
+
+        self.service.raw_files_of(
+            model, limit, found, lambda error: self._on_making_failed(token, error)
         )
 
     def make_checker_profile(self, corners, linear=False):

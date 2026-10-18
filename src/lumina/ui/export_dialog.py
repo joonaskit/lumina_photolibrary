@@ -1,8 +1,9 @@
-"""Choosing where and how to export the photo being edited."""
+"""Choosing where and how to export the photo being edited, or the photos chosen."""
 
 import os
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -24,9 +25,12 @@ _FORMAT_NAMES = (("jpeg", "JPEG"), ("png", "PNG"), ("tiff", "TIFF"))
 
 
 class ExportDialog(QDialog):
-    def __init__(self, source_path, parent=None, copy=0):
+    def __init__(self, source_path, parent=None, copy=0, count=1):
+        """The photo `source_path` (and its virtual copy `copy`), or with a `count` above
+        one the photos chosen: named as they are, with a choice of replacing files."""
         super().__init__(parent)
-        self.setWindowTitle("Export Photo")
+        self.batch = count > 1
+        self.setWindowTitle(f"Export {count} Photos" if self.batch else "Export Photo")
         self.source_path = source_path
         self.copy = copy
         choices = settings.export_choices()
@@ -80,6 +84,13 @@ class ExportDialog(QDialog):
 
         self.name = QLineEdit()
         form.addRow("Name", self.name)
+        self.replace = QCheckBox("Replace files that are there")
+        self.replace.setToolTip(
+            "Without it, a file with the name of an export is kept, and named when done"
+        )
+        form.addRow("", self.replace)
+        form.setRowVisible(self.name, not self.batch)
+        form.setRowVisible(self.replace, self.batch)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
@@ -111,6 +122,8 @@ class ExportDialog(QDialog):
         self.long_side.setEnabled(bool(self.size_mode.currentData()))
 
     def _suggest_name(self):
+        if self.batch:
+            return
         name = suggested_name(self.source_path, self.options(), self.copy)
         # Never the original's own name in its own folder: export does not write there
         if os.path.realpath(os.path.join(self.folder.text(), name)) == os.path.realpath(
@@ -135,6 +148,9 @@ class ExportDialog(QDialog):
 
     def destination(self):
         return os.path.join(os.path.expanduser(self.folder.text()), self.name.text().strip())
+
+    def destination_folder(self):
+        return os.path.expanduser(self.folder.text())
 
     def accept(self):
         settings.set_export_choices(

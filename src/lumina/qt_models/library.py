@@ -11,11 +11,12 @@ not running. A quit in the middle of a job leaves it queued for the next start.
 """
 
 import os
+import queue
 import threading
 import time
 from dataclasses import dataclass, replace
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
 
 from lumina.core import bursts, embed, images, lensdb, metadata, raw, similar, thumbs, volumes
 from lumina.core import db as dbm
@@ -107,10 +108,62 @@ class PasteResult:
     failed: tuple
 
 
+class _Writer:
+    """The one thread the window's point writes (flags, ratings, keywords, edits, stacks)
+    run on, with a connection of its own: a write that waits for a scan's write lock
+    waits here, not in the window. Writes run in the order they were queued."""
+
+    def __init__(self, path, done):
+        self._path = path
+        self._done = done
+        self._queue = queue.Queue()
+        self._pending = 0
+        self._idle = threading.Condition()
+        self._thread = threading.Thread(target=self._run, name="lumina-writer", daemon=True)
+        self._thread.start()
+
+    def submit(self, work, then, failed):
+        with self._idle:
+            self._pending += 1
+        self._queue.put((work, then, failed))
+
+    def settle(self):
+        """Wait until every write queued so far has been made."""
+        with self._idle:
+            while self._pending:
+                self._idle.wait()
+
+    def close(self):
+        self._queue.put(None)
+        self._thread.join()
+
+    def _run(self):
+        library = None
+        try:
+            while (item := self._queue.get()) is not None:
+                work, then, failed = item
+                try:
+                    if library is None:
+                        library = dbm.Library(self._path)
+                    outcome = (then, work(library), None)
+                except Exception as error:
+                    outcome = (then, None, (failed, error))
+                self._done(outcome)
+                with self._idle:
+                    self._pending -= 1
+                    self._idle.notify_all()
+        finally:
+            if library is not None:
+                library.close()
+
+
 class LibraryService(QObject):
     folders_changed = Signal()
     # Photos were added or changed: the grid reads them again
     photos_changed = Signal()
+    # The edits of these photos (a set of ids) changed: the grid updates their rows and
+    # does not read them all again
+    edits_changed = Signal(object)
     # The drives connected changed
     mounts_changed = Signal()
     presets_changed = Signal()
@@ -128,6 +181,10 @@ class LibraryService(QObject):
     job_ended = Signal(object)
     # The thumbnail cache was looked after: a thumbs.Pruned
     thumbnails_pruned = Signal(object)
+    # Something done on a thread failed: what to tell the user
+    failed = Signal(str)
+    # A write made on the writer thread ended: (what to do next, its result, its error)
+    _written = Signal(object)
 
     def __init__(
         self,
@@ -143,6 +200,8 @@ class LibraryService(QObject):
         self._exiftool = exiftool
         # The main thread's connection: small reads (folders, filter choices) only
         self.db = dbm.Library(self.path)
+        self._written.connect(self._on_written)
+        self._writer = _Writer(self.path, self._written.emit)
         self.mounts = read_mounts()
         self._running = None
         self._stop = None
@@ -157,6 +216,12 @@ class LibraryService(QObject):
         self._counting = 0
         self._quitting = threading.Event()
         self._remove_after = set()
+        # Folder id -> the directories its queued scan is limited to (none: all of it), and
+        # those that changed while its scan ran, to scan when it ends
+        self._partial = {}
+        self._later = {}
+        # Folders being forgotten on a thread: not scanned meanwhile
+        self._removing = set()
         self._photos_told = 0.0
         # The most the thumbnail cache may take, in bytes, or None for no limit; the
         # application sets it from the settings
@@ -203,7 +268,35 @@ class LibraryService(QObject):
         self._quitting.set()
         if self._stop is not None:
             self._stop.set()
+        # The queued writes are made, not dropped
+        self._writer.close()
         self.db.close()
+
+    # Writes on the writer thread
+
+    def _write(self, work, then=None):
+        """Make `work(library)` on the writer thread, then `then(result)` here. The
+        window does not wait; a failure is told by `failed`."""
+        self._writer.submit(work, then, None)
+
+    def _on_written(self, outcome):
+        then, result, error = outcome
+        if self._quitting.is_set():
+            return
+        if error is not None:
+            self.failed.emit(str(error[1]))
+        elif then is not None:
+            then(result)
+
+    def settle(self):
+        """Wait for the writes queued so far, before reading what they change. Short
+        unless a scan holds the write lock."""
+        self._writer.settle()
+
+    def flush(self):
+        """`settle`, and hear of the writes made at once (for tests, and the exit)."""
+        self.settle()
+        QCoreApplication.sendPostedEvents(self, 0)
 
     # Folders
 
@@ -240,18 +333,64 @@ class LibraryService(QObject):
             self._remove_after.add(folder_id)
             self._stop.set()
             return
-        self.db.remove_folder(folder_id)
-        self.folders_changed.emit()
-        self.photos_changed.emit()
-        self.keyword_list()
-        self.keywords_changed.emit()
-        self.collections_changed.emit(None)
+        self._forget_folder(folder_id)
 
-    def rescan(self, folder_id=None):
-        """Scan one folder, or all."""
+    def _forget_folder(self, folder_id):
+        """On a thread (a folder of 100,000 photos is a long delete): the folder and its
+        photos go, then the window hears of it."""
+        self._partial.pop(folder_id, None)
+        self._later.pop(folder_id, None)
+        self._removing.add(folder_id)
+
+        def done(_result):
+            self._removing.discard(folder_id)
+            if self._quitting.is_set():
+                return
+            self.folders_changed.emit()
+            self.photos_changed.emit()
+            self.keyword_list()
+            self.keywords_changed.emit()
+            self.collections_changed.emit(None)
+
+        workers.submit(
+            _remove_folder,
+            self.path,
+            folder_id,
+            on_done=done,
+            on_error=lambda error: (
+                self._removing.discard(folder_id),
+                self.failed.emit(str(error)),
+            ),
+            owner=self,
+            process=False,
+        )
+
+    def rescan(self, folder_id=None, directories=None):
+        """Scan one folder, or all. With `directories` (absolute) of one folder, just
+        those, without what is below them: where something changed, as the watcher says."""
+        if directories is not None and folder_id is not None:
+            self._rescan_directories(folder_id, set(directories))
+            return
         ids = [folder_id] if folder_id is not None else [f.id for f in self.db.folders()]
         for folder in ids:
+            # All of it, whatever was asked for before
+            self._partial.pop(folder, None)
+            self._later.pop(folder, None)
             self.db.add_job(scanning.SCAN, folder)
+        self._next_job()
+
+    def _rescan_directories(self, folder_id, directories):
+        if self._running is not None and self._running[1] == folder_id:
+            # Its scan may have passed them: again when it ends
+            self._later.setdefault(folder_id, set()).update(directories)
+            return
+        if any(job.folder_id == folder_id for job in self._scans()):
+            # Waiting: a scan of all of it covers these, one of some gets them too
+            if folder_id in self._partial:
+                self._partial[folder_id] |= directories
+            return
+        self._partial[folder_id] = set(directories)
+        self.db.add_job(scanning.SCAN, folder_id)
         self._next_job()
 
     def is_connected(self, folder_id):
@@ -291,24 +430,25 @@ class LibraryService(QObject):
 
     def photo_details(self, photo_id):
         """Everything the library knows of one photo, as a dict, or None."""
+        self.settle()
         return self.db.photo(photo_id)
 
     # Flags and ratings
 
     def set_flags(self, flags):
         """{photo id: flag}. The grid's model keeps its rows up to date itself."""
-        self.db.set_flags(flags)
-        self.sidecars_due()
+        self._write(lambda db: db.set_flags(flags), lambda _: self.sidecars_due())
 
     def flags(self, ids):
+        self.settle()
         return self.db.flags(ids)
 
     def set_ratings(self, ratings):
         """{photo id: stars, 0 for none}."""
-        self.db.set_ratings(ratings)
-        self.sidecars_due()
+        self._write(lambda db: db.set_ratings(ratings), lambda _: self.sidecars_due())
 
     def ratings(self, ids):
+        self.settle()
         return self.db.ratings(ids)
 
     # Keywords
@@ -355,14 +495,18 @@ class LibraryService(QObject):
         return made
 
     def photo_keywords(self, ids):
+        self.settle()
         return self.db.photo_keywords(ids)
 
     def set_photo_keywords(self, values):
         """{photo id: ids of its keywords}. The grid's model keeps its rows up to date."""
-        self.db.set_photo_keywords(values)
-        self.sidecars_due()
-        self.keyword_list()
-        self.keywords_changed.emit()
+
+        def done(_):
+            self.sidecars_due()
+            self.keyword_list()
+            self.keywords_changed.emit()
+
+        self._write(lambda db: db.set_photo_keywords(values), done)
 
     def rename_keyword(self, path, new_path):
         """Rename a keyword and those below it. Returns False when there is no such
@@ -422,9 +566,11 @@ class LibraryService(QObject):
 
     def edit_json(self, photo_id, copy=0):
         """The photo's edit (its own, or virtual copy `copy`) as parameters JSON, or None."""
+        self.settle()
         return self.db.edit(photo_id, copy)
 
     def copies(self, photo_id):
+        self.settle()
         """The numbers of the photo's virtual copies, in order (its own edit is 0)."""
         return [copy for copy in self.db.copies(photo_id) if copy > 0]
 
@@ -432,6 +578,7 @@ class LibraryService(QObject):
         """A new virtual copy of the photo, with the edit of `copy` (or `params_json`, when
         the caller has an edit not stored yet). The original file is not touched, and nor
         is any edit already stored. Returns the new copy's number."""
+        self.settle()
         if params_json is None:
             params_json = self.db.edit(photo_id, copy)
         if params_json is None:
@@ -443,19 +590,19 @@ class LibraryService(QObject):
 
     def make_copies(self, photo_ids):
         """A virtual copy of each photo, from its own edit, in one go."""
-        for photo_id in photo_ids:
-            params_json = self.db.edit(photo_id) or _params.Params().to_json()
-            self.db.new_copy(photo_id, params_json)
-        self.sidecars_due()
-        self.photos_changed.emit()
+        plain = _params.Params().to_json()
+        photo_ids = list(photo_ids)
+
+        def work(db):
+            db.new_copies({photo_id: db.edit(photo_id) or plain for photo_id in photo_ids})
+
+        self._write(work, lambda _: self._stacks_changed())
 
     def delete_copy(self, photo_id, copy):
         """Remove virtual copy `copy`. The photo's own edit (0) can't be removed this way."""
         if copy <= 0:
             raise ValueError("The photo's own edit is not a virtual copy")
-        self.db.delete_edit(photo_id, copy)
-        self.sidecars_due()
-        self.photos_changed.emit()
+        self._write(lambda db: db.delete_edit(photo_id, copy), lambda _: self._stacks_changed())
 
     def lens_shot(self, photo_id):
         """How the photo was taken, as the lens database wants it (lensdb.Shot), or None."""
@@ -470,40 +617,52 @@ class LibraryService(QObject):
             photo["aperture"],
         )
 
-    def raw_files_of(self, model, limit):
-        """Paths of up to `limit` connected RAW files of the camera `model`, spread over the
-        time they were taken."""
-        found = []
-        for row in self.db.photos(dbm.Filter(model=model)):
-            if not row.available:
-                continue
-            path = self.resolve(row.volume_key, row.path)
-            if path is not None and raw.is_raw(path) and os.path.exists(path):
-                found.append(os.fspath(path))
-        if len(found) > limit:
-            step = len(found) / limit
-            found = [found[int(i * step)] for i in range(limit)]
-        return found
+    def raw_files_of(self, model, limit, on_done, on_error):
+        """On a thread, then `on_done(paths)`: up to `limit` connected RAW files of the
+        camera `model`, spread over the time they were taken."""
+        workers.submit(
+            _raw_files_of,
+            self.path,
+            self.mounts,
+            model,
+            limit,
+            on_done=on_done,
+            on_error=on_error,
+            owner=self,
+            process=False,
+        )
 
     # Stacks
 
     def make_stack(self, photo_ids):
         """Stack these photos, the first on top. Fewer than two make none."""
-        if self.db.make_stack(photo_ids) is not None:
-            self._stacks_changed()
+        photo_ids = list(photo_ids)
 
-    def stack_bursts(self, rows):
+        def done(made):
+            if made is not None:
+                self._stacks_changed()
+
+        self._write(lambda db: db.make_stack(photo_ids), done)
+
+    def stack_bursts(self, rows, on_done, on_error):
         """Stack the bursts among `rows` (PhotoRows): shots a moment apart that look alike,
-        the best on top (core/bursts.py). Photos already stacked stay as they are. Returns
-        how many stacks were made."""
-        vectors = self.db.vectors_of(embed.MODEL.name, [r.content_id for r in rows])
-        vectors = dict(zip(vectors, embed.from_blobs(list(vectors.values())), strict=True))
-        found = bursts.find(rows, vectors)
-        for group in found:
-            self.db.make_stack(group)
-        if found:
-            self._stacks_changed()
-        return len(found)
+        the best on top (core/bursts.py). Photos already stacked stay as they are. On a
+        thread, then `on_done(how many stacks were made)`."""
+
+        def done(made):
+            if made:
+                self._stacks_changed()
+            on_done(made)
+
+        workers.submit(
+            _stack_bursts,
+            self.path,
+            rows,
+            on_done=done,
+            on_error=on_error,
+            owner=self,
+            process=False,
+        )
 
     def find_similar(self, similarity, only, on_done, on_error):
         """Look through the library, or only the photos with the ids `only`, on a thread,
@@ -523,21 +682,23 @@ class LibraryService(QObject):
 
     def unstack(self, photo_ids):
         """Take apart the stacks these photos are in."""
-        self.db.unstack(photo_ids)
-        self._stacks_changed()
+        photo_ids = list(photo_ids)
+        self._write(lambda db: db.unstack(photo_ids), lambda _: self._stacks_changed())
 
     def leave_stack(self, photo_ids):
         """Take these photos out of their stacks."""
-        self.db.leave_stack(photo_ids)
-        self._stacks_changed()
+        photo_ids = list(photo_ids)
+        self._write(lambda db: db.leave_stack(photo_ids), lambda _: self._stacks_changed())
 
     def set_stack_top(self, photo_id):
-        self.db.set_stack_top(photo_id)
-        self._stacks_changed()
+        self._write(lambda db: db.set_stack_top(photo_id), lambda _: self._stacks_changed())
 
     def set_stacks_collapsed(self, stack_ids, collapsed):
-        self.db.set_stacks_collapsed(stack_ids, collapsed)
-        self.photos_changed.emit()
+        stack_ids = list(stack_ids)
+        self._write(
+            lambda db: db.set_stacks_collapsed(stack_ids, collapsed),
+            lambda _: self.photos_changed.emit(),
+        )
 
     def _stacks_changed(self):
         self.sidecars_due()
@@ -548,18 +709,25 @@ class LibraryService(QObject):
         The grid hears of it."""
         if params_json is None and copy > 0:
             raise ValueError("A virtual copy always has an edit")
-        if params_json is None:
-            self.db.delete_edit(photo_id)
-        else:
-            self.db.save_edit(photo_id, params_json, copy)
-        self.sidecars_due()
-        self.photos_changed.emit()
+
+        def work(db):
+            if params_json is None:
+                db.delete_edit(photo_id)
+            else:
+                db.save_edit(photo_id, params_json, copy)
+
+        def done(_):
+            self.sidecars_due()
+            self.edits_changed.emit({photo_id})
+
+        self._write(work, done)
 
     # Copying settings from one photo to others
 
     def settings_document(self, photo_id, sections):
         """The `sections` of the photo's own edit as a document to put over other photos
         (see `paste_settings`). Raises NewerParams for an edit from a newer Lumina."""
+        self.settle()
         stored = self.db.edit(photo_id)
         edit = _params.from_json(stored) if stored else _params.Params()
         return _params.preset(edit, sections)
@@ -576,6 +744,7 @@ class LibraryService(QObject):
         they were. A photo whose edit is from a newer Lumina is left alone and named in
         the result's `failed`. The photos' files are not touched, nor is a photo on a
         drive that is not connected left out: edits live in the library."""
+        self.settle()
         document = document if document is not None else self.copied.document
         edits, failed = {}, []
         for photo_id in photo_ids:
@@ -586,7 +755,7 @@ class LibraryService(QObject):
         self.db.save_edits(edits)
         self.sidecars_due()
         if edits:
-            self.photos_changed.emit()
+            self.edits_changed.emit(set(edits))
         return PasteResult(len(edits), tuple(failed))
 
     def _photo_name(self, photo_id):
@@ -594,15 +763,16 @@ class LibraryService(QObject):
         return os.path.basename(photo["path"]) if photo else str(photo_id)
 
     def presets(self):
+        self.settle()
         return self.db.presets()
 
     def save_preset(self, name, params_json):
-        self.db.save_preset(name, params_json)
-        self.presets_changed.emit()
+        self._write(
+            lambda db: db.save_preset(name, params_json), lambda _: self.presets_changed.emit()
+        )
 
     def delete_preset(self, name):
-        self.db.delete_preset(name)
-        self.presets_changed.emit()
+        self._write(lambda db: db.delete_preset(name), lambda _: self.presets_changed.emit())
 
     # Drives
 
@@ -749,7 +919,7 @@ class LibraryService(QObject):
         if self._running is not None or self._quitting.is_set():
             return
         for job in self._scans():
-            if self.is_connected(job.folder_id):
+            if job.folder_id not in self._removing and self.is_connected(job.folder_id):
                 self._run(job)
                 return
         # What is left waits for its drive
@@ -761,6 +931,7 @@ class LibraryService(QObject):
         name = self._folder_name(job.folder_id)
         quitting = self._quitting
         self._tell(job.id, name)
+        only = self._partial.pop(job.folder_id, None)
         # Kept for the tests, which wait for a job to end
         self.future = workers.submit(
             _run_scan,
@@ -773,6 +944,7 @@ class LibraryService(QObject):
             self._exiftool,
             self.gentle_scans,
             self.sidecars,
+            only,
             lambda *args: workers.call_on_main(self, self._on_progress, job.id, name, *args),
             on_done=lambda state: self._on_ended(job.id, job.folder_id, name, state),
             on_error=lambda error: self._on_failed(job.id, job.folder_id, name, error),
@@ -796,10 +968,13 @@ class LibraryService(QObject):
         self._running = self._stop = None
         if self._quitting.is_set():
             return
+        later = self._later.pop(folder_id, None)
+        if later:
+            self._rescan_directories(folder_id, later)
         status = self._status(job_id, name)
         if folder_id in self._remove_after:
             self._remove_after.discard(folder_id)
-            self.db.remove_folder(folder_id)
+            self._forget_folder(folder_id)
         self.folders_changed.emit()
         self.photos_changed.emit()
         # Sidecars read may have changed what the library holds, and the library's own
@@ -867,6 +1042,38 @@ def _last_seen(folder):
     return "/" + folder.path
 
 
+def _raw_files_of(path, mounts, model, limit):
+    """On a worker thread: see LibraryService.raw_files_of."""
+    found = []
+    with dbm.Library(path) as library:
+        rows = library.raw_candidates(model)
+    for key, relative in rows:
+        where = volumes.resolve(key, relative, mounts)
+        if where is not None and raw.is_raw(where) and os.path.exists(where):
+            found.append(os.fspath(where))
+    if len(found) > limit:
+        step = len(found) / limit
+        found = [found[int(i * step)] for i in range(limit)]
+    return found
+
+
+def _stack_bursts(path, rows):
+    """On a worker thread, with a connection of its own."""
+    with dbm.Library(path) as library:
+        vectors = library.vectors_of(embed.MODEL.name, [r.content_id for r in rows])
+        vectors = dict(zip(vectors, embed.from_blobs(list(vectors.values())), strict=True))
+        found = bursts.find(rows, vectors)
+        for group in found:
+            library.make_stack(group)
+    return len(found)
+
+
+def _remove_folder(path, folder_id):
+    """On a worker thread, with a connection of its own."""
+    with dbm.Library(path) as library:
+        library.remove_folder(folder_id)
+
+
 def _prune_thumbnails(path, root, limit, volume_keys):
     """On the cache thread, with a connection of its own."""
     with dbm.Library(path) as library:
@@ -875,7 +1082,7 @@ def _prune_thumbnails(path, root, limit, volume_keys):
 
 
 def _run_scan(
-    path, job_id, folder_id, mounts, stop, quitting, exiftool, gentle, read_sidecars, report
+    path, job_id, folder_id, mounts, stop, quitting, exiftool, gentle, read_sidecars, only, report
 ):
     """On a worker thread, with a connection of its own."""
     with dbm.Library(path) as library:
@@ -889,6 +1096,7 @@ def _run_scan(
             exiftool=exiftool,
             gentle=gentle,
             read_sidecars=read_sidecars,
+            only=only,
         )
         if state == dbm.CANCELLED and quitting.is_set():
             # Stopped by a quit, not by the user: run again at the next start

@@ -98,10 +98,28 @@ def export(
     if options.max_side:
         linear = source.fitted(linear, params, options.max_side)
     check_stop()
+    _check_size(destination, options, linear.shape[1], linear.shape[0], params)
     pixels = pipeline.render(linear, params, bits=options.bits, full=full, camera=camera)
     check_stop()
     _write(pixels, destination, options, replace, source_path, check_stop)
     return destination
+
+
+# A classic TIFF holds 32-bit offsets: its pixels and its header must end below 4 GiB
+_TIFF_LIMIT = 4 * 1024**3 - 1024**2
+
+
+def _check_size(destination, options, width, height, params):
+    """Refuse, before the render is made, a TIFF that its format can't hold."""
+    if options.format != "tiff":
+        return
+    width, height = pipeline.output_size(width, height, params)
+    if width * height * 3 * (options.bits // 8) > _TIFF_LIMIT:
+        raise PhotoError(
+            destination,
+            f"is too large for a TIFF ({width} x {height} pixels at {options.bits} bits "
+            "is over 4 GB): export a smaller size, or as PNG",
+        )
 
 
 def _refuse_original(source_path, destination):

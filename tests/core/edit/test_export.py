@@ -251,3 +251,25 @@ def test_a_folder_that_cannot_be_written_is_named(photo, tmp_path):
 def test_an_option_a_format_cant_hold_is_refused(photo, out):
     with pytest.raises(ValueError):
         export(photo, Params(), out / "a.jpg", ExportOptions("jpeg", 16))
+
+
+def test_a_tiff_too_large_for_its_format_is_refused_naming_the_file(photo, out, monkeypatch):
+    # A 700 MP panorama: tested with the size, not with the pixels
+    big = np.zeros((2, 2, 3), np.float32)
+    monkeypatch.setattr(
+        "lumina.core.edit.source.load_for_edit", lambda path: (big, None), raising=True
+    )
+    monkeypatch.setattr(
+        "lumina.core.edit.pipeline.output_size", lambda width, height, params: (30000, 30000)
+    )
+    destination = str(out / "huge.tiff")
+
+    with pytest.raises(PhotoError) as raised:
+        export(str(photo), Params(), destination, ExportOptions("tiff", 16))
+
+    assert raised.value.path == destination
+    assert "too large for a TIFF" in raised.value.message
+    assert not os.path.exists(destination)
+    # PNG has no such limit; 8 bits at that size fits
+    exporting._check_size(destination, ExportOptions("png", 16), 30000, 30000, Params())
+    exporting._check_size(destination, ExportOptions("tiff", 8), 30000, 30000, Params())

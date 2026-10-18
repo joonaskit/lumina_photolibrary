@@ -4,7 +4,7 @@ A photo and a query that mean the same thing get vectors pointing the same way:
 search is the cosine between them. Vectors are L2-normalised float32 here and kept
 as float16 in the database.
 
-Preprocessing is the model's own (PLAN.md, Phase 4 decisions): the photo squashed to
+Preprocessing is the model's own (docs/history.md, Phase 4 decisions): the photo squashed to
 224 x 224 and scaled to [-1, 1]; the text lowercased, tokenized with `<eos>` and
 padded with zeros to 64 tokens.
 """

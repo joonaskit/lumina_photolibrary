@@ -9,8 +9,9 @@ from lumina.core.metadata import Metadata, MetadataUnavailable
 
 class FakeExifTool:
     """Says every photo is from a 90D taken on 2022-05-09, except: a name in `models`
-    gets that camera, a name in `warnings` that warning, a path in `broken` fails, and
-    after `dies_after` batches it stops. The file type is the name's extension.
+    gets that camera, a name in `warnings` that warning, a path in `broken` fails, a path
+    in `hangs` makes the batch it is in time out, and after `dies_after` batches it stops.
+    The file type is the name's extension.
     `delay` seconds per batch make a scan slow enough to stop in the middle."""
 
     calls = []
@@ -20,9 +21,10 @@ class FakeExifTool:
     # Whether a scan asked for the lowest priority, as the last one did
     gentle = False
 
-    def __init__(self, broken=(), dies_after=None):
+    def __init__(self, broken=(), dies_after=None, hangs=()):
         self.broken = set(map(str, broken))
         self.dies_after = dies_after
+        self.hangs = set(map(str, hangs))
 
     def read_many(self, paths):
         FakeExifTool.calls.append(list(paths))
@@ -30,6 +32,9 @@ class FakeExifTool:
             time.sleep(FakeExifTool.delay)
         if self.dies_after is not None and len(FakeExifTool.calls) > self.dies_after:
             raise MetadataUnavailable("exiftool stopped")
+        if self.hangs.intersection(paths):
+            # As the real one does when a file never gets an answer
+            raise MetadataUnavailable("exiftool did not answer in 30 s")
         return {p: self._one(p) for p in paths}
 
     def _one(self, path):
@@ -477,3 +482,15 @@ def live_jpeg(level=128, size=(96, 64)):
     out = io.BytesIO()
     Image.new("RGB", size, (level, level, level)).save(out, "JPEG", quality=90)
     return out.getvalue()
+
+
+def work_or_die(value):
+    """For a worker process: gives `value` back after a moment, but a 0 kills the process
+    as a decoder does that crashes on a broken file."""
+    import os
+    import time
+
+    time.sleep(0.3)
+    if value == 0:
+        os._exit(1)
+    return value

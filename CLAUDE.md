@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Lumina: a local desktop photo library with semantic search and a small non-destructive editor, built for large libraries including Canon `.CR3` RAW files. [PLAN.md](PLAN.md) is the source of truth for design, phases and open decisions; read the relevant section before implementing anything, and update it when a decision changes.
+Lumina: a local desktop photo library with semantic search and a small non-destructive editor, built for large libraries including Canon `.CR3` RAW files. [PLAN.md](PLAN.md) is the source of truth for design, current decisions and what comes next ([docs/history.md](docs/history.md) is the record of how it was built); read the relevant section before implementing anything, and update it when a decision changes.
 
 The sibling project `../filehouse` uses the same stack and conventions; look there for patterns (thread pool, thumbnails, theme, layer test) before inventing new ones.
 

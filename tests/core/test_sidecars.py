@@ -419,10 +419,62 @@ def test_a_newer_sidecar_wins_and_replaces_the_edits(library, drive):
 
     assert "1 sidecar read in" in job.message
     assert library.edit(a) == '{"version": 1, "new": true}'
-    assert library.copies(a) == [0]
+    # Both sides had changed: what was replaced stays, as copies after the sidecar's
+    assert library.copies(a) == [0, 1, 2]
+    assert {library.edit(a, 1), library.edit(a, 2)} == {
+        '{"version": 1, "old": true}',
+        '{"version": 1, "copy": true}',
+    }
     held = library.sidecar_state(a)
     assert (held.flag, held.rating, held.keywords) == (1, 2, ("Cat",))
     assert library.sidecar_pending() == []
+
+
+def test_a_newer_sidecar_replacing_what_was_already_written_keeps_no_extra_copies(library, drive):
+    scan(library, drive)
+    a = ids(library)["a.jpg"]
+    path = str(drive / "Photos" / "a.jpg")
+    library.save_edit(a, '{"version": 1, "mine": true}')
+    sidecars.write_pending(library, mounted(drive))
+    newer = xmp.SidecarState(
+        updated=library.sidecar_state(a).updated + 100,
+        edits=((0, '{"version": 1, "theirs": true}'),),
+    )
+    xmp.write(path, newer)
+
+    scan(library, drive, read_sidecars=True)
+
+    assert library.edit(a) == '{"version": 1, "theirs": true}'
+    assert library.copies(a) == [0]
+
+
+@pytest.mark.parametrize(
+    ("edit", "why"),
+    [
+        ("{not json", "damaged"),
+        ("[1, 2]", "damaged"),
+        ('{"exposure": 1}', "damaged"),
+        ('{"version": 9999}', "newer Lumina"),
+    ],
+)
+def test_a_sidecar_with_a_bad_edit_is_named_and_the_librarys_edits_stay(library, drive, edit, why):
+    scan(library, drive)
+    a = ids(library)["a.jpg"]
+    library.save_edit(a, '{"version": 1, "mine": true}')
+    newer = xmp.SidecarState(
+        updated=library.sidecar_state(a).updated + 100,
+        rating=4,
+        edits=((0, edit),),
+    )
+    xmp.write(str(drive / "Photos" / "a.jpg"), newer)
+
+    job = scan(library, drive, read_sidecars=True)
+
+    assert job.state == dbm.DONE
+    [(failed, message)] = library.failures(job.id)
+    assert failed == str(drive / "Photos" / "a.jpg.xmp") and why in message
+    assert library.edit(a) == '{"version": 1, "mine": true}'
+    assert library.photo(a)["rating"] == 0
 
 
 def test_a_sidecar_is_read_once_until_the_file_changes(library, drive):
@@ -497,9 +549,11 @@ def test_a_schema_9_library_notes_what_was_marked_before(tmp_path):
         "UPDATE photos SET changed_at = NULL;"
         "ALTER TABLE photos DROP COLUMN changed_at; ALTER TABLE photos DROP COLUMN sidecar_at; "
         "ALTER TABLE photos DROP COLUMN sidecar_mtime_ns; "
-        "DROP INDEX photos_stack; ALTER TABLE photos DROP COLUMN stack_id; "
+        "DROP INDEX photos_stack; DROP INDEX photos_folder_time; "
+        "ALTER TABLE photos DROP COLUMN stack_id; "
         "ALTER TABLE photos DROP COLUMN stack_position; DROP TABLE stacks; "
         "DROP TABLE tether_items; DROP TABLE tether_sessions; "
+        "DROP TABLE export_items; DROP TABLE export_jobs; "
         "PRAGMA user_version = 9;"
     )
     raw.close()

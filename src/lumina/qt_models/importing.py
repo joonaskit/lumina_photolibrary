@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from lumina.core import db as dbm
-from lumina.core import importing, metadata, tether
+from lumina.core import importing, metadata, tether, volumes
 from lumina.core import library as scanning
 from lumina.qt_models import workers
 
@@ -347,7 +347,9 @@ def _run_import(path, job_id, mounts, stop, quitting, report, make_camera, lock)
 
 
 def _run_locked(library, job_id, mounts, stop, quitting, report, make_camera):
-    state = importing.run(library, job_id, mounts, stop.is_set, report, make_camera)
+    state = importing.run(
+        library, job_id, mounts, stop.is_set, report, make_camera, volumes.read_mounts
+    )
     if state == dbm.CANCELLED and quitting.is_set():
         # Stopped by a quit, not by the user: run again at the next start
         library.update_job(job_id, state=dbm.QUEUED, message=None)

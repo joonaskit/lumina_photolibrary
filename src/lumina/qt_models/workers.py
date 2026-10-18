@@ -9,6 +9,7 @@ QObject that asked for it still exists: a window can be closed while its work ru
 import multiprocessing
 import os
 import threading
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import partial
@@ -72,6 +73,8 @@ SIDECARS = "sidecars"
 IMPORT = "import"
 # One thread for backing up the library's database, which reads all of it
 BACKUP = "backup"
+# One thread for export jobs, which wait on the process pool for each file
+EXPORT = "export"
 # One thread for a tethered folder's photos, which never wait for a scan
 TETHER = "tether"
 _NAMED_PROCESSES = {DEVELOP, EMBED, QUERY, MERGING}
@@ -124,9 +127,32 @@ def submit(fn, *args, on_done, on_error, owner, process=True):
     of the named pools above, with `process=DEVELOP` and so on), then `on_done(result)` or
     `on_error(exception)` on the main thread, unless the QObject `owner` has been
     deleted by then. Call from the main thread. Returns the future; cancelling it
-    before it starts calls neither."""
+    before it starts calls neither.
+
+    When a worker dies, every call in flight in its pool fails with BrokenProcessPool,
+    and only one of them did it. Those are run again, one at a time in a new pool: the
+    one that kills its worker again is the one that fails (with that error)."""
     relay = _the_relay()
     pick = _pool_for(process)
+
+    def deliver(done):
+        error = done.exception()
+        call = partial(on_error, error) if error else partial(on_done, done.result())
+        relay.deliver.emit(owner, call)
+
+    def finished(done, pool):
+        if done.cancelled():
+            return
+        if isinstance(done.exception(), BrokenProcessPool):
+            _forget_pool(pool)
+            _run_alone(pick, fn, args, deliver)
+        else:
+            deliver(done)
+
+    return _submit_to(pick, fn, args, finished)
+
+
+def _submit_to(pick, fn, args, finished):
     pool = pick()
     try:
         future = pool.submit(fn, *args)
@@ -135,18 +161,47 @@ def submit(fn, *args, on_done, on_error, owner, process=True):
         _forget_pool(pool)
         pool = pick()
         future = pool.submit(fn, *args)
-
-    def finished(done):
-        if done.cancelled():
-            return
-        error = done.exception()
-        if isinstance(error, BrokenProcessPool):
-            _forget_pool(pool)
-        call = partial(on_error, error) if error else partial(on_done, done.result())
-        relay.deliver.emit(owner, call)
-
-    future.add_done_callback(finished)
+    future.add_done_callback(lambda done: finished(done, pool))
     return future
+
+
+_alone = deque()
+_alone_busy = False
+_alone_lock = threading.Lock()
+
+
+def _run_alone(pick, fn, args, deliver):
+    """Run a call that was in flight when its pool broke, after those queued before it
+    and with nothing else of this kind running."""
+    with _alone_lock:
+        _alone.append((pick, fn, args, deliver))
+    _run_next_alone()
+
+
+def _run_next_alone():
+    global _alone_busy
+    with _alone_lock:
+        if _alone_busy or not _alone:
+            return
+        _alone_busy = True
+        pick, fn, args, deliver = _alone.popleft()
+
+    def finished(done, pool):
+        global _alone_busy
+        if isinstance(done.exception(), BrokenProcessPool):
+            _forget_pool(pool)
+        if not done.cancelled():
+            deliver(done)
+        with _alone_lock:
+            _alone_busy = False
+        _run_next_alone()
+
+    try:
+        _submit_to(pick, fn, args, finished)
+    except Exception:
+        with _alone_lock:
+            _alone_busy = False
+        raise
 
 
 def _pool_for(process):
@@ -167,15 +222,18 @@ def _forget_pool(pool):
 
 def call(process, fn, *args):
     """From a worker thread: run `fn(*args)` in the pool `process` (as submit()'s) and
-    wait for it. A worker that died is replaced for the next call, and its
-    BrokenProcessPool raised for this one."""
+    wait for it. A worker that died is replaced, and the call made again once; if that
+    kills its worker too, the BrokenProcessPool is raised."""
     pick = _pool_for(process)
-    pool = pick()
-    try:
-        return pool.submit(fn, *args).result()
-    except BrokenProcessPool:
-        _forget_pool(pool)
-        raise
+    for attempt in (1, 2):
+        pool = pick()
+        try:
+            return pool.submit(fn, *args).result()
+        except BrokenProcessPool:
+            # Others in flight may have been the cause: once more in a new pool
+            _forget_pool(pool)
+            if attempt == 2:
+                raise
 
 
 def start_process(target, *args):
