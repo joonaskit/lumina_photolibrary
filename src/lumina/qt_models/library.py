@@ -443,9 +443,8 @@ class LibraryService(QObject):
 
     def make_copies(self, photo_ids):
         """A virtual copy of each photo, from its own edit, in one go."""
-        for photo_id in photo_ids:
-            params_json = self.db.edit(photo_id) or _params.Params().to_json()
-            self.db.new_copy(photo_id, params_json)
+        plain = _params.Params().to_json()
+        self.db.new_copies({photo_id: self.db.edit(photo_id) or plain for photo_id in photo_ids})
         self.sidecars_due()
         self.photos_changed.emit()
 

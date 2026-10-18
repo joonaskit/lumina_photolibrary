@@ -391,6 +391,21 @@ def test_edits_and_virtual_copies(library):
     assert library.edit(photo) is None and library.copies(photo) == [1]
 
 
+def test_virtual_copies_of_many_photos_are_made_all_or_none(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    ids = add_photos(library, folder, volume, ["p/a.jpg", "p/b.jpg"])
+    a, b = ids["p/a.jpg"], ids["p/b.jpg"]
+
+    assert library.new_copies({a: '{"exposure": 1}', b: '{"exposure": 2}'}) == {a: 1, b: 1}
+    assert library.edit(b, 1) == '{"exposure": 2}'
+
+    with pytest.raises(sqlite3.Error):
+        library.new_copies({a: '{"exposure": 3}', b: None})
+
+    assert library.copies(a) == [1] and library.copies(b) == [1]
+
+
 def test_edits_are_saved_for_many_photos_at_once(library):
     volume = library.volume_id("uuid:A")
     folder = library.add_folder("uuid:A", "p")

@@ -1539,16 +1539,24 @@ class Library:
 
     def new_copy(self, photo_id, params_json):
         """A virtual copy of a photo with these parameters. Returns its number."""
+        return self.new_copies({photo_id: params_json})[photo_id]
+
+    def new_copies(self, params_by_photo):
+        """A virtual copy of each photo {photo id: parameters JSON}, all or none. Returns
+        {photo id: the copy's number}."""
+        numbers = {}
         with self.db:
-            row = self.db.execute(
-                "SELECT COALESCE(MAX(copy), 0) + 1 FROM edits WHERE photo_id = ?", (photo_id,)
-            ).fetchone()
-            self.db.execute(
-                "INSERT INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?)",
-                (photo_id, row[0], params_json, time.time()),
-            )
-            self._touch([photo_id])
-        return row[0]
+            for photo_id, params_json in params_by_photo.items():
+                row = self.db.execute(
+                    "SELECT COALESCE(MAX(copy), 0) + 1 FROM edits WHERE photo_id = ?", (photo_id,)
+                ).fetchone()
+                self.db.execute(
+                    "INSERT INTO edits (photo_id, copy, params, updated_at) VALUES (?, ?, ?, ?)",
+                    (photo_id, row[0], params_json, time.time()),
+                )
+                numbers[photo_id] = row[0]
+            self._touch(list(params_by_photo))
+        return numbers
 
     def presets(self):
         """[(name, parameters JSON)] by name."""
