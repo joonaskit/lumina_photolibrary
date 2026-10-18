@@ -106,3 +106,23 @@ def test_the_edit_filter_works_with_the_flag_filter_and_the_hidden_count(qtbot, 
     # The unedited third photo is not hidden by the flags, only by the edit filter
     assert window.model.hidden_count() == 1
     assert third not in names(window)
+
+
+def test_saving_an_edit_updates_its_row_and_does_not_read_the_library_again(
+    qtbot, service, drive, monkeypatch
+):
+    window = open_window(qtbot, service, drive / "Photos")
+    loads = []
+    real = window.model._load
+    monkeypatch.setattr(window.model, "_load", lambda reset: loads.append(reset) or real(reset))
+    changed = []
+    window.model.dataChanged.connect(lambda first, last: changed.append((first.row(), last.row())))
+
+    edit_photo(qtbot, window, 1)
+
+    assert window.model.edit(1) is not None
+    assert [window.model.edit(row) for row in (0, 2)] == [None, None]
+    assert loads == []
+    assert changed == [(1, 1)]
+    edit_photo(qtbot, window, 1, edit=False)
+    assert window.model.edit(1) is None and loads == []

@@ -174,5 +174,5 @@ def test_an_edit_from_a_newer_lumina_is_not_opened_or_overwritten(library, photo
 
 
 def test_saving_tells_the_grid(session, library, qtbot):
-    with qtbot.waitSignal(library.photos_changed, timeout=TIMEOUT):
+    with qtbot.waitSignal(library.edits_changed, timeout=TIMEOUT):
         session.commit(Params(exposure=1.0))

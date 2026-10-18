@@ -65,6 +65,8 @@ SHOW, DIM, HIDE = "show", "dim", "hide"
 _RESEARCH_EVERY = 3.0
 # Flag and rating changes that can be undone
 _HISTORY = 200
+# Edits saved for more photos than this make the grid read its rows again
+_EDITS_IN_PLACE = 50
 # The service's methods that read and write a field of many photos
 _READ = {"flag": "flags", "rating": "ratings", "keywords": "photo_keywords"}
 _WRITE = {"flag": "set_flags", "rating": "set_ratings", "keywords": "set_photo_keywords"}
@@ -142,6 +144,7 @@ class LibraryModel(QAbstractListModel):
         self.thumbnails.changed.connect(self._thumbnail_changed)
         self.failed = self.thumbnails.failed
         service.photos_changed.connect(self.refresh)
+        service.edits_changed.connect(self._on_edits_changed)
         service.mounts_changed.connect(self._on_mounts_changed)
         self._searched = 0.0
         self._research = QTimer(self)
@@ -163,6 +166,46 @@ class LibraryModel(QAbstractListModel):
     def refresh(self):
         """Read the rows again with the same filter: after a scan wrote some."""
         self._load(reset=False)
+
+    def _on_edits_changed(self, photo_ids):
+        """The edits of `photo_ids` were saved: their rows are updated where they stand,
+        not all read again (a library of 200,000 photos costs the window most of a second
+        to take a new list in)."""
+        if len(photo_ids) > _EDITS_IN_PLACE or self._querying:
+            self.refresh()
+            return
+        changed = []
+        for photo_id in photo_ids:
+            place = self._positions.get(photo_id)
+            if place is None:
+                continue
+            edit = self.service.edit_json(photo_id)
+            row = self._all[place]
+            if edit == row.edit:
+                continue
+            new = replace(row, edit=edit)
+            self._all[place] = new
+            members = self._stacks.get(row.stack)
+            if members is not None:
+                self._stacks[row.stack] = [new if m.id == photo_id else m for m in members]
+            changed.append((photo_id, row, new))
+        if not changed:
+            return
+        if self.edit_filter is not None or any(i in self._copies_open for i, _r, _n in changed):
+            # What is shown may differ: a photo edited under the edit filter stays until
+            # the user moves on
+            for photo_id, old, new in changed:
+                if self.edit_filter is not None and self._edit_passes(old) != self._edit_passes(
+                    new
+                ):
+                    self._kept.add(photo_id)
+            self._show(self._compose(), reset=False)
+            return
+        for photo_id, _old, new in changed:
+            shown = self._index.get(photo_id)
+            if shown is not None:
+                self._rows[shown] = new
+                self.dataChanged.emit(self.index(shown), self.index(shown))
 
     # Searching
 

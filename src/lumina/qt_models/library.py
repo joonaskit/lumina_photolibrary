@@ -111,6 +111,9 @@ class LibraryService(QObject):
     folders_changed = Signal()
     # Photos were added or changed: the grid reads them again
     photos_changed = Signal()
+    # The edits of these photos (a set of ids) changed: the grid updates their rows and
+    # does not read them all again
+    edits_changed = Signal(object)
     # The drives connected changed
     mounts_changed = Signal()
     presets_changed = Signal()
@@ -577,7 +580,7 @@ class LibraryService(QObject):
         else:
             self.db.save_edit(photo_id, params_json, copy)
         self.sidecars_due()
-        self.photos_changed.emit()
+        self.edits_changed.emit({photo_id})
 
     # Copying settings from one photo to others
 
@@ -610,7 +613,7 @@ class LibraryService(QObject):
         self.db.save_edits(edits)
         self.sidecars_due()
         if edits:
-            self.photos_changed.emit()
+            self.edits_changed.emit(set(edits))
         return PasteResult(len(edits), tuple(failed))
 
     def _photo_name(self, photo_id):
