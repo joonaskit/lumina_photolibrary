@@ -92,6 +92,12 @@ def render(source, params, destination, options, replace, should_stop=lambda: Fa
     return _export.export(source, params, destination, options, replace, should_stop)
 
 
+def render_blind(source, params, destination, options, replace):
+    """`render` without a `should_stop`, for a worker process (a function can't be sent
+    there): a cancel waits for the file being written."""
+    return _export.export(source, params, destination, options, replace)
+
+
 def run(library, job_id, mounts, should_stop=lambda: False, report=None, render=render):
     """Run export job `job_id` to its end and return its state. Raises NotConnected,
     leaving the job queued, when a photo's drive is not mounted. `render(source, params,

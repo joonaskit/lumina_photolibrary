@@ -108,21 +108,16 @@ Built, in the order it was built (details in [docs/history.md](docs/history.md))
 
 ## Next
 
-A code review (#113 and the issues it points to) found that the app grew in breadth faster than in depth. **Robustness comes before new features.** The order, with the reason for each step:
+A code review (#113 and the issues it points to) found that the app grew in breadth faster than in depth. **Robustness comes before new features.** The order, with the reason for each step and where it stands:
 
-1. **Data safety, one pull request each; each brings its fault test (#112).**
-   1. #99 Migrations that are atomic. A failed migration locks the library out for good, and #108's transaction helper builds on it.
-   2. #102 Unplugged drive or card mid-job. Breaks safety rule 3 and loses photos' details for good.
-   3. #101 An exiftool hang stops a folder's scan on every run.
-   4. #100 A crashing file takes down the thumbnails and exports in flight.
-   5. #104 Small fixes, as separate pull requests: part files left in photo folders, checks outside the transaction, 16-bit TIFF over 4 GB, indexing skipping photos, `make_copies` in one transaction.
-   6. #103 First the cheap part: validate sidecar edits and keep the state a sidecar replaces. The merge design waits for its open decision.
-2. **A large library stays usable.** #111 first (index-friendly queries, then the watcher scanning changed directories only), then #105 (a flag or star updates its row, not the whole grid) with the scale test of #112, then #106 (writes off the UI thread, one writer).
-3. **Export as a job (#107)**, then #97 on top of it. Safety rules 4 to 6 do not hold for export today.
-4. **Structure**, once the above has shown what is needed: #108 (split `Library` and `MainWindow`, transactions), with the decision of #109 alongside, then #110 (one scheduler), which takes the retry from #100 and the job runner from #107.
+1. **Data safety** (done on the `canary` branch, each with its fault test, #112):
+   #99 atomic migrations; #102 an unplugged drive or card waits instead of failing photos for good; #101 a file that hangs exiftool is named, not the folder's scan; #100 a worker that dies fails only the file that did it; #104 the small fixes; #103 a sidecar conflict keeps the edits it replaces and a bad edit refuses the sidecar (the merge design waits for its open decision).
+2. **A large library stays usable.** Done: #111 (ranges on the indexed time, schema 13, the watcher scans only the directories that changed), #105 (an edit saved updates its row; flags and ratings already did), and the 100,000-photo tests of #112 (`tests/ui/test_scale.py`). #106 partly: removing a folder, stacking bursts and finding RAW files run on threads, and the unfinished jobs are one query. **Left for #106:** one writer thread for the point writes the window makes (flags, ratings, keywords, edits, stacks, copies), which can still wait on a scan's write lock; the grid query building 200,000 dataclasses on a thread that holds the GIL; leaving the edit JSON out of `Library.photos()`.
+3. **Export as a job (#107)**, done for the grid: "Export Selected…" queues a job (schema 14), one row a file, resumable, cancellable between files, never over an existing file unless Replace, every failure naming its file. **Left:** the Develop view's own export is still a single call that cannot be cancelled and decodes the RAW again; presets, names and watermarks (#97) come next on this base.
+4. **Structure**, once the above has shown what is needed: #108 (split `Library` and `MainWindow`, explicit transactions; `volume_id()` still commits a transaction of its own), with the decision of #109 alongside, then #110 (one scheduler), which takes the retry from #100 and the job runner shared by import, export, merge and scan.
 5. **The backlog** (#76 to #98, #60, #62, #49), chosen by what the author needs while using the app. Cheap and visible first: #79 sort, #80 counts, #95 colour labels, #81 clipping warnings, #82 type a value and reset, #96 auto tone.
 
-New features that touch the database, jobs or export wait for step 1 at least.
+New features that touch the database, jobs or export wait for step 4 where they can.
 
 ## Risks
 

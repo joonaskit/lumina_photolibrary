@@ -58,7 +58,7 @@ from lumina.ui.grid_size import NAMES as GRID_SIZE_NAMES
 from lumina.ui.grid_size import GridSizeSwitch
 from lumina.ui.image_view import ImageView
 from lumina.ui.import_dialog import ImportDialog
-from lumina.ui.job_status import JobStatus, import_status, merge_status
+from lumina.ui.job_status import JobStatus, export_status, import_status, merge_status
 from lumina.ui.keywords_dialog import KeywordsDialog
 from lumina.ui.live_view import LivePanel
 from lumina.ui.merge_dialog import MergeDialog, PanoramaDialog
@@ -212,13 +212,15 @@ class MainWindow(QMainWindow):
         backups=None,
         tether=None,
         camera=None,
+        exporter=None,
     ):
         """`search` is the SearchService; without one there is no search. `merge` is the
         MergeService; without one there are no merges. `importer` is the ImportService;
         without one there is no importing. `backups` is the BackupService; without one
         the settings have no Backups section. `tether` is the HotFolder; without one no
         folder can be tethered. `camera` is the CameraService (which takes its photos in
-        through `tether`); without one there is no shooting with a camera."""
+        through `tether`); without one there is no shooting with a camera. `exporter` is the
+        ExportService; without one the photos chosen in the grid can't be exported."""
         super().__init__(parent)
         self.service = service
         self.backups = backups
@@ -227,6 +229,7 @@ class MainWindow(QMainWindow):
         self.search = search
         self.merge = merge
         self.importer = importer
+        self.exporter = exporter
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(style.app_icon())
         self.resize(style.px(1280), style.px(820))
@@ -408,6 +411,11 @@ class MainWindow(QMainWindow):
             merge.job_changed.connect(self.merge_status.show_status)
         self.import_status = import_status()
         self.statusBar().addPermanentWidget(self.import_status)
+        self.export_status = export_status()
+        self.statusBar().addPermanentWidget(self.export_status)
+        if exporter is not None:
+            self.export_status.cancel_requested.connect(exporter.cancel)
+            exporter.job_changed.connect(self.export_status.show_status)
         self.tether_status = TetherStatus()
         self.statusBar().addPermanentWidget(self.tether_status)
         if tether is not None:
@@ -565,6 +573,11 @@ class MainWindow(QMainWindow):
         self.next_copy_action = QAction("Next Copy", self)
         self.next_copy_action.setShortcut(QKeySequence("Ctrl+Down"))
         self.next_copy_action.triggered.connect(lambda: self.step_copy(1))
+        self.export_selected_action = QAction("Export Selected…", self)
+        self.export_selected_action.setToolTip(
+            "Write the chosen photos, with their edits, to a folder as JPEG, PNG or TIFF"
+        )
+        self.export_selected_action.triggered.connect(self.export_selected)
         self.stack_action = QAction("Stack", self)
         self.stack_action.setShortcut(QKeySequence("Ctrl+G"))
         self.stack_action.setToolTip("Group the chosen photos in one stack (Ctrl+G)")
@@ -743,6 +756,7 @@ class MainWindow(QMainWindow):
             self.edit_action,
             self.similar_action,
             self.find_duplicates_action,
+            self.export_selected_action,
             self.larger_action,
             self.smaller_action,
         )
@@ -1556,6 +1570,9 @@ class MainWindow(QMainWindow):
         menu.addAction(self.paste_settings_action)
         if in_grid:
             menu.addAction(self.sync_settings_action)
+            if self.exporter is not None:
+                menu.addSeparator()
+                menu.addAction(self.export_selected_action)
         if self.merge is not None:
             menu.addSeparator()
             menu.addAction(self.merge_hdr_action)
@@ -2369,6 +2386,11 @@ class MainWindow(QMainWindow):
         stacked = [row for row in rows if self.model.stack(row) is not None]
         shortcuts.enable(self.stack_action, len(rows) > 1, "Choose two or more photos")
         shortcuts.enable(
+            self.export_selected_action,
+            self.exporter is not None and bool(rows),
+            "Choose photos in the grid",
+        )
+        shortcuts.enable(
             self.stack_bursts_action,
             self.pages.currentIndex() == _GRID and self.model.rowCount() > 1,
             "In the grid, with more than one photo",
@@ -2380,6 +2402,27 @@ class MainWindow(QMainWindow):
             len(rows) == 1 and bool(stacked) and not self.model.is_stack_top(rows[0]),
             "Choose one photo of a stack, not its top",
         )
+
+    def export_selected(self):
+        """Export the photos chosen in the grid, each with its edit (a virtual copy's own),
+        to a folder: a job, with Cancel in the status bar, that goes on after a restart."""
+        rows = self._stack_rows()
+        if self.exporter is None or not rows:
+            return
+        entries = [(self.model.photo_id(row), self.model.copy(row)) for row in rows]
+        first = self.model.path(rows[0]) or self.model.name(rows[0])
+        dialog = ExportDialog(first, self, count=len(rows))
+        if dialog.exec() != ExportDialog.DialogCode.Accepted:
+            return
+        try:
+            self.exporter.export(
+                entries,
+                dialog.destination_folder(),
+                dialog.options(),
+                dialog.replace.isChecked(),
+            )
+        except (ValueError, OSError) as error:
+            QMessageBox.warning(self, "Export Failed", str(error))
 
     def stack_photos(self):
         """Group the photos chosen in one stack, the first shown on top, collapsed."""

@@ -5,7 +5,7 @@ from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QToolButton, QWidget
 
 from lumina.integration import style
-from lumina.qt_models import importing, library, merge
+from lumina.qt_models import exporting, importing, library, merge
 
 # How long the end of a job stays in the status bar
 _KEEP_MS = 10000
@@ -165,3 +165,25 @@ def describe_import(status):
     if status.state == library.DONE:
         return f"{status.message or 'Imported'} into {name}{more}"
     return (status.message or f"Could not import into {name}") + more
+
+
+def export_status():
+    """A JobStatus for exports."""
+    return JobStatus(
+        words=describe_export, counted=(exporting.EXPORTING,), cancel_tip="Stop exporting"
+    )
+
+
+def describe_export(status):
+    """An ExportStatus in words, for the status bar."""
+    name = status.name
+    more = f"  ·  {status.queued} more waiting" if status.queued else ""
+    if status.state == library.QUEUED or (status.state == library.RUNNING and not status.phase):
+        return (status.message or f"Waiting to export to {name}") + more
+    if status.state == library.RUNNING:
+        return f"Exporting to {name}: {status.done} of {status.total}{more}"
+    if status.state == library.CANCELLED:
+        return f"Stopped exporting to {name}{more}"
+    if status.state == library.DONE:
+        return f"{status.message or 'Exported'} to {name}{more}"
+    return (status.message or f"Could not export to {name}") + more
