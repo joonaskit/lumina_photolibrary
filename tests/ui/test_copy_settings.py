@@ -141,6 +141,7 @@ def test_copied_settings_go_over_the_edits_of_the_photos_chosen(qtbot, service, 
     questions = confirm(monkeypatch)
 
     window.paste_settings()
+    window.service.flush()
 
     assert "2 photos" in questions[0] and "a.jpg" in questions[0]
     expected = Params(exposure=1.0, basic=LOOK.basic, hsl=LOOK.hsl)
@@ -164,6 +165,7 @@ def test_pasting_to_many_photos_asks_first_and_no_leaves_them_alone(
     confirm(monkeypatch, QMessageBox.StandardButton.No)
 
     window.paste_settings()
+    window.service.flush()
 
     assert stored(window, "b.jpg") is None and stored(window, "c.dng") is None
     settled(qtbot, window)
@@ -179,6 +181,7 @@ def test_pasting_to_one_photo_does_not_ask(qtbot, service, drive, monkeypatch):
     questions = confirm(monkeypatch)
 
     window.paste_settings()
+    window.service.flush()
 
     assert not questions
     assert stored(window, "b.jpg") == Params(exposure=1.0)
@@ -207,6 +210,7 @@ def test_copying_from_a_photo_without_an_edit_pastes_the_original_over_the_secti
     select(window, "b.jpg")
 
     window.paste_settings()
+    window.service.flush()
 
     # Exposure back to none; the tint was not in what was copied
     assert stored(window, "b.jpg") == Params(tint=9)
@@ -215,6 +219,7 @@ def test_copying_from_a_photo_without_an_edit_pastes_the_original_over_the_secti
     window.copy_settings()
     select(window, "b.jpg")
     window.paste_settings()
+    window.service.flush()
     # Nothing left of the edit: it is gone, not kept empty
     assert stored(window, "b.jpg") is None
     settled(qtbot, window)
@@ -234,6 +239,7 @@ def test_an_edit_from_a_newer_lumina_is_left_alone_and_named(qtbot, service, dri
     monkeypatch.setattr(QMessageBox, "warning", lambda *a: warned.append(a[2]))
 
     window.paste_settings()
+    window.service.flush()
 
     assert window.service.edit_json(photo_id(window, "b.jpg")) == newer
     assert stored(window, "c.dng") == Params(exposure=1.0)
@@ -254,6 +260,7 @@ def test_syncing_copies_the_current_photos_sections_to_the_others_chosen(
     asked = answer_dialog(monkeypatch, ["white_balance", "colour"])
 
     window.sync_settings()
+    window.service.flush()
 
     assert asked[0][0] == "Sync Settings" and asked[0][1] == "Sync"
     expected = Params(temperature=25, colour=LOOK.colour)
@@ -322,6 +329,7 @@ def test_pasting_in_the_viewer_edits_the_photo_shown(qtbot, service, drive, monk
     assert window.paste_settings_action.isEnabled()
 
     window.paste_settings()
+    window.service.flush()
 
     assert stored(window, "b.jpg") == Params(exposure=1.0, hsl=LOOK.hsl)
     settled(qtbot, window)
@@ -354,6 +362,7 @@ def test_settings_can_be_pasted_on_a_photo_on_a_drive_that_is_not_connected(
     select(window, "b.jpg")
 
     window.paste_settings()
+    window.service.flush()
 
     # Edits live in the library, not on the drive
     assert stored(window, "b.jpg") == Params(exposure=1.0)

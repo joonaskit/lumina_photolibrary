@@ -18,6 +18,7 @@ be undone, in one order, for any photo, also one no longer shown.
 
 import json
 import os
+import string
 import time
 from dataclasses import dataclass, replace
 
@@ -528,12 +529,27 @@ class LibraryModel(QAbstractListModel):
     def add_keywords(self, rows, names):
         """Give the photos of `rows` the keywords `names` (as typed: "Places > Finland").
         Returns the keyword paths given, or [] for no change (nothing to add, or every
-        photo has them)."""
+        photo has them). Keywords that are new are made first, on the writer thread: the
+        photos have them once it has (`flags_changed` tells)."""
         paths = [path for path in map(keywordm.parse, names) if path]
         photos = [self._rows[row] for row in rows if 0 <= row < len(self._rows)]
         if not paths or not photos:
             return []
-        ids = self.service.ensure_keywords(paths)
+        # The keywords there are, spelt as the library compares them (NOCASE: ASCII only)
+        known = {_nocase(path): k for k, path in self.service.keyword_paths.items()}
+        ids = {path: known.get(_nocase(path)) for path in paths}
+        if None not in ids.values():
+            return paths if self._give_keywords(photos, ids) else []
+        ids = {photo.id for photo in photos}
+        self.service.ensure_keywords(paths, on_done=lambda made: self._keywords_made(ids, made))
+        return paths
+
+    def _keywords_made(self, photo_ids, made):
+        # The photos as they are now, those still in the library's rows
+        photos = [self._all[self._positions[i]] for i in photo_ids if i in self._positions]
+        self._give_keywords(photos, made)
+
+    def _give_keywords(self, photos, ids):
         wanted = set(ids.values())
         changes = {
             photo.id: tuple(sorted(set(photo.keywords) | wanted))
@@ -541,7 +557,7 @@ class LibraryModel(QAbstractListModel):
             if not wanted <= set(photo.keywords)
         }
         self._change_keywords(photos, changes)
-        return list(ids) if changes else []
+        return bool(changes)
 
     def remove_keywords(self, rows, names):
         """Take the keywords `names` off the photos of `rows` (not those below them: a
@@ -845,6 +861,14 @@ def _query(path, shown, settle):
     settle()
     with dbm.Library(path) as library:
         return library.photos(shown)
+
+
+def _nocase(text):
+    # As SQLite's NOCASE compares: only A to Z folded
+    return text.translate(_ASCII_LOWER)
+
+
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
 
 def damage_text(warning):

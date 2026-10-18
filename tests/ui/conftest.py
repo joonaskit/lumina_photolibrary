@@ -10,6 +10,15 @@ TIMEOUT = 20000
 DRIVE = "uuid:TEST-DRIVE"
 
 
+def written(write, *args, **kwargs):
+    """What a LibraryService write that tells through `on_done` gave, once it is made."""
+    results = []
+    write(*args, on_done=results.append, **kwargs)
+    write.__self__.flush()
+    [result] = results
+    return result
+
+
 @pytest.fixture(autouse=True)
 def themed_app(qapp):
     style.apply(qapp, theme.load_theme("/nonexistent/theme.json"))

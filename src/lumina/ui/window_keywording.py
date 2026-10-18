@@ -50,8 +50,13 @@ class KeywordingMixin:
 
         dialog.add_requested.connect(add)
         dialog.remove_requested.connect(remove)
+        # Keywords that were new are given once they are made
+        self.service.keywords_changed.connect(refresh)
         refresh()
-        dialog.exec()
+        try:
+            dialog.exec()
+        finally:
+            self.service.keywords_changed.disconnect(refresh)
         self._update_flag_actions()
         self._update_status()
 
@@ -63,13 +68,17 @@ class KeywordingMixin:
         new = " > ".join([*names[:-1], text.strip()]) if ok and text.strip() else None
         if new is None or new == path:
             return
-        try:
-            self.service.rename_keyword(path, new)
-        except ValueError as error:
-            QMessageBox.warning(self, "Rename Keyword", str(error))
-            return
-        if self.filters.keyword_value() == path:
-            self.filters.set_keyword(new)
+
+        def renamed(_found):
+            if self.filters.keyword_value() == path:
+                self.filters.set_keyword(new)
+
+        self.service.rename_keyword(
+            path,
+            new,
+            on_done=renamed,
+            on_error=lambda error: QMessageBox.warning(self, "Rename Keyword", str(error)),
+        )
 
     def delete_keyword(self, path):
         answer = QMessageBox.question(

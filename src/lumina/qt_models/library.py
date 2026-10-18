@@ -108,10 +108,16 @@ class PasteResult:
     failed: tuple
 
 
+def _photo_name(db, photo_id):
+    photo = db.photo(photo_id)
+    return os.path.basename(photo.path) if photo else str(photo_id)
+
+
 class _Writer:
-    """The one thread the window's point writes (flags, ratings, keywords, edits, stacks)
-    run on, with a connection of its own: a write that waits for a scan's write lock
-    waits here, not in the window. Writes run in the order they were queued."""
+    """The one thread the window's writes (flags, ratings, keywords, collections, edits,
+    copies, stacks, presets) run on, with a connection of its own: a write that waits
+    for a scan's write lock waits here, not in the window. Writes run in the order they
+    were queued."""
 
     def __init__(self, path, done):
         self._path = path
@@ -132,6 +138,10 @@ class _Writer:
         with self._idle:
             while self._pending:
                 self._idle.wait()
+
+    def idle(self):
+        with self._idle:
+            return not self._pending
 
     def close(self):
         self._queue.put(None)
@@ -274,19 +284,33 @@ class LibraryService(QObject):
 
     # Writes on the writer thread
 
-    def _write(self, work, then=None):
+    def _write(self, work, then=None, on_error=None):
         """Make `work(library)` on the writer thread, then `then(result)` here. The
-        window does not wait; a failure is told by `failed`."""
-        self._writer.submit(work, then, None)
+        window does not wait; a failure goes to `on_error(error)` here, or without one
+        is told by `failed`."""
+        self._writer.submit(work, then, on_error)
 
     def _on_written(self, outcome):
         then, result, error = outcome
         if self._quitting.is_set():
             return
         if error is not None:
-            self.failed.emit(str(error[1]))
+            on_error, error = error
+            if on_error is not None:
+                on_error(error)
+            else:
+                self.failed.emit(str(error))
         elif then is not None:
             then(result)
+
+    def _then(self, told, on_done):
+        # `told(result)`, what the service says of a write, then the caller's `on_done`
+        def then(result):
+            told(result)
+            if on_done is not None:
+                on_done(result)
+
+        return then
 
     def settle(self):
         """Wait for the writes queued so far, before reading what they change. Short
@@ -294,9 +318,13 @@ class LibraryService(QObject):
         self._writer.settle()
 
     def flush(self):
-        """`settle`, and hear of the writes made at once (for tests, and the exit)."""
-        self.settle()
-        QCoreApplication.sendPostedEvents(self, 0)
+        """`settle`, and hear of the writes made at once, and of those they queued (for
+        tests, and the exit)."""
+        while True:
+            self.settle()
+            QCoreApplication.sendPostedEvents(self, 0)
+            if self._writer.idle():
+                return
 
     # Folders
 
@@ -487,12 +515,15 @@ class LibraryService(QObject):
             self._list_keywords()
             self.keywords_changed.emit()
 
-    def ensure_keywords(self, paths):
-        """{path: id} of the keywords `paths` (see core/keywords.parse), made when new."""
-        made = self.db.ensure_keywords(paths)
-        self.keyword_list()
-        self.keywords_changed.emit()
-        return made
+    def ensure_keywords(self, paths, on_done=None):
+        """Make the keywords `paths` (see core/keywords.parse) that are new, then
+        `on_done({path: id})`."""
+
+        def told(_made):
+            self.keyword_list()
+            self.keywords_changed.emit()
+
+        self._write(lambda db: db.ensure_keywords(paths), self._then(told, on_done))
 
     def photo_keywords(self, ids):
         self.settle()
@@ -508,59 +539,75 @@ class LibraryService(QObject):
 
         self._write(lambda db: db.set_photo_keywords(values), done)
 
-    def rename_keyword(self, path, new_path):
-        """Rename a keyword and those below it. Returns False when there is no such
-        keyword; a ValueError when the new name is another keyword's."""
-        renamed = self.db.rename_keyword(path, new_path)
-        self.sidecars_due()
-        self.keyword_list()
-        self.keywords_changed.emit()
-        return renamed
+    def rename_keyword(self, path, new_path, on_done=None, on_error=None):
+        """Rename a keyword and those below it, then `on_done(renamed)`: False when there
+        is no such keyword. `on_error` hears a ValueError when the new name is another
+        keyword's."""
+        self._write(
+            lambda db: db.rename_keyword(path, new_path),
+            self._then(self._keywords_written, on_done),
+            on_error,
+        )
 
-    def delete_keyword(self, path):
-        gone = self.db.delete_keyword(path)
+    def delete_keyword(self, path, on_done=None):
+        self._write(lambda db: db.delete_keyword(path), self._then(self._keywords_written, on_done))
+
+    def _keywords_written(self, _result):
         self.sidecars_due()
         self.keyword_list()
         self.keywords_changed.emit()
-        return gone
 
     # Collections
 
     def collections(self):
+        self.settle()
         return self.db.collections()
 
     def last_import(self):
         """The id of the last import job that copied photos, or None."""
         return self.db.last_import()
 
-    def add_collection(self, name, query=None):
-        """Make a collection (smart with a saved filter's JSON); returns its id. A
-        ValueError says what is wrong with the name."""
-        made = self.db.add_collection(name, query)
-        self.collections_changed.emit(made)
-        return made
+    def add_collection(self, name, query=None, on_done=None, on_error=None):
+        """Make a collection (smart with a saved filter's JSON), then `on_done(its id)`.
+        `on_error` hears a ValueError saying what is wrong with the name."""
+        self._write(
+            lambda db: db.add_collection(name, query),
+            self._then(self.collections_changed.emit, on_done),
+            on_error,
+        )
 
-    def rename_collection(self, collection_id, name):
-        self.db.rename_collection(collection_id, name)
-        self.collections_changed.emit(collection_id)
+    def rename_collection(self, collection_id, name, on_error=None):
+        self._write(
+            lambda db: db.rename_collection(collection_id, name),
+            lambda _: self.collections_changed.emit(collection_id),
+            on_error,
+        )
 
     def set_collection_query(self, collection_id, query):
-        self.db.set_collection_query(collection_id, query)
-        self.collections_changed.emit(collection_id)
+        self._write(
+            lambda db: db.set_collection_query(collection_id, query),
+            lambda _: self.collections_changed.emit(collection_id),
+        )
 
     def delete_collection(self, collection_id):
-        self.db.delete_collection(collection_id)
-        self.collections_changed.emit(collection_id)
+        self._write(
+            lambda db: db.delete_collection(collection_id),
+            lambda _: self.collections_changed.emit(collection_id),
+        )
 
-    def add_to_collection(self, collection_id, photo_ids):
-        """Returns how many photos were added (those in it already are not)."""
-        added = self.db.add_to_collection(collection_id, photo_ids)
-        self.collections_changed.emit(collection_id)
-        return added
+    def add_to_collection(self, collection_id, photo_ids, on_done=None):
+        """Put the photos in the collection, then `on_done(how many were added)`: those
+        in it already are not."""
+        self._write(
+            lambda db: db.add_to_collection(collection_id, photo_ids),
+            self._then(lambda _: self.collections_changed.emit(collection_id), on_done),
+        )
 
     def remove_from_collection(self, collection_id, photo_ids):
-        self.db.remove_from_collection(collection_id, photo_ids)
-        self.collections_changed.emit(collection_id)
+        self._write(
+            lambda db: db.remove_from_collection(collection_id, photo_ids),
+            lambda _: self.collections_changed.emit(collection_id),
+        )
 
     # Edits and presets
 
@@ -574,19 +621,20 @@ class LibraryService(QObject):
         """The numbers of the photo's virtual copies, in order (its own edit is 0)."""
         return [copy for copy in self.db.copies(photo_id) if copy > 0]
 
-    def make_copy(self, photo_id, copy=0, params_json=None):
+    def make_copy(self, photo_id, copy=0, params_json=None, on_done=None):
         """A new virtual copy of the photo, with the edit of `copy` (or `params_json`, when
-        the caller has an edit not stored yet). The original file is not touched, and nor
-        is any edit already stored. Returns the new copy's number."""
-        self.settle()
-        if params_json is None:
-            params_json = self.db.edit(photo_id, copy)
-        if params_json is None:
-            params_json = _params.Params().to_json()
-        number = self.db.new_copy(photo_id, params_json)
-        self.sidecars_due()
-        self.photos_changed.emit()
-        return number
+        the caller has an edit not stored yet), then `on_done(the new copy's number)`.
+        The original file is not touched, and nor is any edit already stored."""
+
+        def work(db):
+            stored = params_json if params_json is not None else db.edit(photo_id, copy)
+            return db.new_copy(photo_id, stored or _params.Params().to_json())
+
+        def told(_number):
+            self.sidecars_due()
+            self.photos_changed.emit()
+
+        self._write(work, self._then(told, on_done))
 
     def make_copies(self, photo_ids):
         """A virtual copy of each photo, from its own edit, in one go."""
@@ -738,29 +786,36 @@ class LibraryService(QObject):
         self.copied = CopiedSettings(document, name, tuple(sections))
         self.settings_copied.emit()
 
-    def paste_settings(self, photo_ids, document=None):
+    def paste_settings(self, photo_ids, document=None, on_done=None):
         """Put the sections of `document` (what was copied, without one) over the edits
-        of the photos `photo_ids`, in one go: the other sections of each edit stay as
-        they were. A photo whose edit is from a newer Lumina is left alone and named in
-        the result's `failed`. The photos' files are not touched, nor is a photo on a
-        drive that is not connected left out: edits live in the library."""
-        self.settle()
+        of the photos `photo_ids`, in one go, then `on_done(PasteResult)`: the other
+        sections of each edit stay as they were. A photo whose edit is from a newer
+        Lumina is left alone and named in the result's `failed`. The photos' files are
+        not touched, nor is a photo on a drive that is not connected left out: edits
+        live in the library."""
         document = document if document is not None else self.copied.document
-        edits, failed = {}, []
-        for photo_id in photo_ids:
-            try:
-                edits[photo_id] = _params.pasted(self.db.edit(photo_id), document)
-            except _params.NewerParams as error:
-                failed.append((self._photo_name(photo_id), str(error)))
-        self.db.save_edits(edits)
-        self.sidecars_due()
-        if edits:
-            self.edits_changed.emit(set(edits))
-        return PasteResult(len(edits), tuple(failed))
+        photo_ids = list(photo_ids)
 
-    def _photo_name(self, photo_id):
-        photo = self.db.photo(photo_id)
-        return os.path.basename(photo.path) if photo else str(photo_id)
+        def work(db):
+            edits, failed = {}, []
+            with db.transaction():
+                for photo_id in photo_ids:
+                    try:
+                        edits[photo_id] = _params.pasted(db.edit(photo_id), document)
+                    except _params.NewerParams as error:
+                        failed.append((_photo_name(db, photo_id), str(error)))
+                db.save_edits(edits)
+            return set(edits), PasteResult(len(edits), tuple(failed))
+
+        def then(outcome):
+            pasted, result = outcome
+            self.sidecars_due()
+            if pasted:
+                self.edits_changed.emit(pasted)
+            if on_done is not None:
+                on_done(result)
+
+        self._write(work, then)
 
     def presets(self):
         self.settle()

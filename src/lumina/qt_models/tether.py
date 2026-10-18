@@ -384,7 +384,11 @@ class CameraService(QObject):
         for each in self.library.collections():
             if each.name.casefold() == name.casefold():
                 return each.id if each.query is None else None
-        return self.library.add_collection(name)
+        # Made here, with the session that is written next, not on the writer thread:
+        # starting waits for both
+        made = self.library.db.add_collection(name)
+        self.library.collections_changed.emit(made)
+        return made
 
     def _collect(self, added):
         """Photos the hot folder took in: those of this session go in its collection."""
