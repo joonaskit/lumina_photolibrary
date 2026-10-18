@@ -102,8 +102,8 @@ def time_left(seconds):
 
 
 def describe(status):
-    """A JobStatus in words, for the status bar."""
-    name = status.folder_name
+    """A scan's JobStatus in words, for the status bar."""
+    name = status.name
     more = f"  ·  {status.queued} more waiting" if status.queued else ""
     if status.state == QUEUED or status.phase is None:
         return f"Waiting to scan {name}{more}"
@@ -142,7 +142,7 @@ _WORDS = {
 
 
 def describe_merge(status):
-    """A MergeStatus (an HDR merge's or a panorama's) in words, for the status bar."""
+    """A merge's JobStatus (an HDR merge's or a panorama's) in words, for the status bar."""
     name = status.name
     verb, doing, done, planning = _WORDS.get(status.kind, _WORDS[HDR])
     more = f"  ·  {status.queued} more waiting" if status.queued else ""
@@ -168,7 +168,7 @@ def import_status():
 
 
 def describe_import(status):
-    """An ImportStatus in words, for the status bar."""
+    """An import's JobStatus in words, for the status bar."""
     name = status.name
     more = f"  ·  {status.queued} more waiting" if status.queued else ""
     if status.state == QUEUED or (status.state == RUNNING and not status.phase):
@@ -188,7 +188,7 @@ def export_status():
 
 
 def describe_export(status):
-    """An ExportStatus in words, for the status bar."""
+    """An export's JobStatus in words, for the status bar."""
     name = status.name
     more = f"  ·  {status.queued} more waiting" if status.queued else ""
     if status.state == QUEUED or (status.state == RUNNING and not status.phase):

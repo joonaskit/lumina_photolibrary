@@ -15,7 +15,6 @@ the window (ui/settings.py).
 import json
 import os
 import queue
-import threading
 
 from PySide6.QtCore import QObject, Signal
 
@@ -82,7 +81,7 @@ class HotFolder(QObject):
         self._end()
         self.folder, self.preset, self.count, self._edit = folder_id, preset, 0, edit
         self._changes = queue.SimpleQueue()
-        self._stop = threading.Event()
+        self._stop = workers.Token()
         self.library.watcher.set_hot(folder_id)
         # What was written since the last scan, and not seen by a watch yet
         base = self._base()
@@ -115,11 +114,11 @@ class HotFolder(QObject):
     def close(self):
         """For the app's exit."""
         if self._stop is not None:
-            self._stop.set()
+            self._stop.cancel()
 
     def _end(self):
         if self._stop is not None:
-            self._stop.set()
+            self._stop.cancel()
         self.folder = self.preset = self._edit = self._changes = self._stop = None
         self._running = False
         self.library.watcher.set_hot(None)
@@ -174,7 +173,7 @@ class HotFolder(QObject):
             on_done=lambda _none: self._ended(stop),
             on_error=lambda error: self._failed(stop, error),
             owner=self,
-            process=workers.TETHER,
+            lane=workers.TETHER,
         )
 
     def _added(self, stop, added):
@@ -199,7 +198,7 @@ class HotFolder(QObject):
             return
         self._running = False
         # A change that came after the pass last looked
-        if not self._changes.empty() and not stop.is_set():
+        if not self._changes.empty() and not stop.cancelled():
             self._run()
 
     def _failed(self, stop, error):
@@ -228,7 +227,7 @@ def _run_pass(path, folder_id, mounts, changes, stop, exiftool, edit, settle, li
             volume,
             base,
             changes,
-            stop.is_set,
+            stop,
             added,
             read,
             exiftool=exiftool,

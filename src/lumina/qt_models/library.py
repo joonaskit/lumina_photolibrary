@@ -1,7 +1,8 @@
 """The library for the UI: its folders, its scan jobs, and which drives are connected.
 
-Jobs run one at a time on a worker thread, each with its own database connection;
-progress comes back to the main thread as queued calls. The mounts are read again
+Scans run one at a time on a thread of their own (workers.SCAN, by the JobRunner of
+qt_models/jobs.py), each with its own database connection; progress comes back to the
+main thread as queued calls. The mounts are read again
 every few seconds: a drive that is plugged in has its folders scanned, one that is
 unplugged has its photos shown as not connected.
 
@@ -15,6 +16,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, replace
+from functools import partial
 
 from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
 
@@ -24,6 +26,7 @@ from lumina.core import library as scanning
 from lumina.core import sidecars as sidecarsm
 from lumina.core.edit import params as _params
 from lumina.qt_models import workers
+from lumina.qt_models.jobs import JobRunner
 from lumina.qt_models.watcher import FolderWatcher
 
 # For the application, which tells the user
@@ -62,21 +65,6 @@ class FolderInfo:
     connected: bool
     # The drive's label, for one that is not connected
     volume_label: str | None
-
-
-@dataclass(frozen=True)
-class JobStatus:
-    folder_name: str
-    state: str
-    phase: str | None
-    done: int
-    total: int | None
-    message: str | None
-    failures: tuple
-    # Jobs waiting after this one
-    queued: int
-    # Seconds left of the details, as far as the rate so far tells; None when not known
-    eta: float | None = None
 
 
 @dataclass(frozen=True)
@@ -201,9 +189,23 @@ class LibraryService(QObject):
         self._written.connect(self._on_written)
         self._writer = _Writer(self.path, self._written.emit)
         self.mounts = read_mounts()
-        self._running = None
-        self._stop = None
-        self.future = None
+        self.jobs = JobRunner(
+            self,
+            self,
+            {dbm.SCAN},
+            workers.SCAN,
+            prepare=self._prepare_scan,
+            name=lambda job: self._folder_name(job.folder_id),
+            changed=self.job_changed.emit,
+            ended=self._scan_ended,
+            progress=self._scan_progress,
+            # Unplugged as it started: the mounts tell it, and it waits for the drive
+            waits=lambda _job, _error: self._unplugged(),
+            ready=lambda job: (
+                job.folder_id not in self._removing and self.is_connected(job.folder_id)
+            ),
+        )
+        self._quitting = self.jobs.quitting
         # What Copy Settings kept, or None
         self.copied = None
         # Every keyword as (id, path, count), by path, and {id: path}: kept up to date,
@@ -212,7 +214,6 @@ class LibraryService(QObject):
         self.keyword_paths = {}
         self._keyword_counts = {}
         self._counting = 0
-        self._quitting = threading.Event()
         self._remove_after = set()
         # Folder id -> the directories its queued scan is limited to (none: all of it), and
         # those that changed while its scan ran, to scan when it ends
@@ -232,16 +233,14 @@ class LibraryService(QObject):
         # Whether XMP sidecars are written and read; the application sets it from the
         # settings (`set_sidecars`)
         self.sidecars = False
-        self._writing_sidecars = False
-        self._sidecars_again = False
+        self._sidecar_pass = workers.Coalescing()
         self._sidecar_timer = QTimer(self)
         self._sidecar_timer.setSingleShot(True)
         self._sidecar_timer.setInterval(_SIDECARS_AFTER_MS)
         self._sidecar_timer.timeout.connect(self.write_sidecars)
         # Off until the application turns it on (from the settings)
         self.watcher = FolderWatcher(self, parent=self)
-        self._pruning = False
-        self._prune_again = False
+        self._pruning = workers.Coalescing()
         self._pruned_at = None
         self.prune_future = None
         self._timer = QTimer(self)
@@ -253,7 +252,7 @@ class LibraryService(QObject):
         for folder in self.db.folders():
             self.db.add_job(dbm.SCAN, folder.id)
         self._timer.start()
-        self._next_job()
+        self.jobs.start()
         self.prune_thumbnails()
         if self.sidecars:
             self.write_sidecars()
@@ -263,9 +262,7 @@ class LibraryService(QObject):
         self._timer.stop()
         self._sidecar_timer.stop()
         self.watcher.close()
-        self._quitting.set()
-        if self._stop is not None:
-            self._stop.set()
+        self.jobs.close()
         # The queued writes are made, not dropped
         self._writer.close()
         self.db.close()
@@ -280,7 +277,7 @@ class LibraryService(QObject):
 
     def _on_written(self, outcome):
         then, result, error = outcome
-        if self._quitting.is_set():
+        if self._quitting.cancelled():
             return
         if error is not None:
             on_error, error = error
@@ -345,9 +342,10 @@ class LibraryService(QObject):
     def remove_folder(self, folder_id):
         """Forget a folder and its photos; the files are not touched. A scan of it in
         progress is stopped first."""
-        if self._running is not None and self._running[1] == folder_id:
+        if self._scanning(folder_id):
             self._remove_after.add(folder_id)
-            self._stop.set()
+            self.jobs.forget(folder_id)
+            self.jobs.stop()
             return
         self._forget_folder(folder_id)
 
@@ -360,7 +358,7 @@ class LibraryService(QObject):
 
         def done(_result):
             self._removing.discard(folder_id)
-            if self._quitting.is_set():
+            if self._quitting.cancelled():
                 return
             self.folders_changed.emit()
             self.photos_changed.emit()
@@ -378,7 +376,7 @@ class LibraryService(QObject):
                 self.failed.emit(str(error)),
             ),
             owner=self,
-            process=False,
+            lane=workers.IO,
         )
 
     def rescan(self, folder_id=None, directories=None):
@@ -392,22 +390,20 @@ class LibraryService(QObject):
             # All of it, whatever was asked for before
             self._partial.pop(folder, None)
             self._later.pop(folder, None)
-            self.db.add_job(dbm.SCAN, folder)
-        self._next_job()
+            self.jobs.add(dbm.SCAN, folder)
 
     def _rescan_directories(self, folder_id, directories):
-        if self._running is not None and self._running[1] == folder_id:
+        if self._scanning(folder_id):
             # Its scan may have passed them: again when it ends
             self._later.setdefault(folder_id, set()).update(directories)
             return
-        if any(job.folder_id == folder_id for job in self._scans()):
+        if any(job.folder_id == folder_id for job in self.jobs.jobs()):
             # Waiting: a scan of all of it covers these, one of some gets them too
             if folder_id in self._partial:
                 self._partial[folder_id] |= directories
             return
         self._partial[folder_id] = set(directories)
-        self.db.add_job(dbm.SCAN, folder_id)
-        self._next_job()
+        self.jobs.add(dbm.SCAN, folder_id)
 
     def is_connected(self, folder_id):
         folder = self.db.folder(folder_id)
@@ -483,7 +479,7 @@ class LibraryService(QObject):
             on_done=lambda counts: self._keywords_counted(counting, counts),
             on_error=lambda _error: None,
             owner=self,
-            process=False,
+            lane=workers.IO,
         )
         return self.keyword_items
 
@@ -498,7 +494,7 @@ class LibraryService(QObject):
 
     def _keywords_counted(self, counting, counts):
         # The newest read only
-        if counting == self._counting and not self._quitting.is_set():
+        if counting == self._counting and not self._quitting.cancelled():
             self._keyword_counts = counts
             self._list_keywords()
             self.keywords_changed.emit()
@@ -689,7 +685,7 @@ class LibraryService(QObject):
             on_done=on_done,
             on_error=on_error,
             owner=self,
-            process=False,
+            lane=workers.IO,
         )
 
     # Stacks
@@ -721,7 +717,7 @@ class LibraryService(QObject):
             on_done=done,
             on_error=on_error,
             owner=self,
-            process=False,
+            lane=workers.IO,
         )
 
     def find_similar(self, similarity, only, on_done, on_error):
@@ -737,7 +733,7 @@ class LibraryService(QObject):
             on_done=on_done,
             on_error=on_error,
             owner=self,
-            process=False,
+            lane=workers.IO,
         )
 
     def unstack(self, photo_ids):
@@ -861,7 +857,7 @@ class LibraryService(QObject):
         for folder in self.db.folders():
             if folder.volume_key in arrived:
                 self.db.add_job(dbm.SCAN, folder.id)
-        self._next_job()
+        self.jobs.wake()
         # Photos on a drive that came can have their sidecars written now
         self.sidecars_due()
 
@@ -883,40 +879,35 @@ class LibraryService(QObject):
 
     def sidecars_due(self):
         """Something sidecars hold changed: write them once changes stop for a moment."""
-        if self.sidecars and not self._quitting.is_set():
+        if self.sidecars and not self._quitting.cancelled():
             self._sidecar_timer.start()
 
     def write_sidecars(self):
         """Write the sidecars that are out of date, on a thread of its own; one pass at a
         time, and another after it when something changed meanwhile."""
-        if not self.sidecars or self._quitting.is_set():
+        if not self.sidecars or self._quitting.cancelled() or not self._sidecar_pass.begin():
             return
-        if self._writing_sidecars:
-            self._sidecars_again = True
-            return
-        self._writing_sidecars = True
-        self._sidecars_again = False
         quitting = self._quitting
         workers.submit(
             _write_sidecars,
             self.path,
             self.mounts,
             # Turned off meanwhile: no more
-            lambda: quitting.is_set() or not self.sidecars,
+            lambda: quitting.cancelled() or not self.sidecars,
             on_done=self._sidecars_done,
             on_error=lambda error: self._sidecars_done(
                 sidecarsm.Written(failures=[("sidecars", str(error))])
             ),
             owner=self,
-            process=workers.SIDECARS,
+            lane=workers.SIDECARS,
         )
 
     def _sidecars_done(self, result):
-        self._writing_sidecars = False
-        if self._quitting.is_set():
+        again = self._sidecar_pass.end()
+        if self._quitting.cancelled():
             return
         self.sidecars_written.emit(result)
-        if self._sidecars_again:
+        if again:
             self.write_sidecars()
 
     # The thumbnail cache
@@ -931,13 +922,8 @@ class LibraryService(QObject):
         thread of its own; those of photos on drives that are not connected last. At the
         start, when the limit changes, and after a scan. It is the cache only: no photo,
         and nothing in the library, is touched."""
-        if self.thumbnail_limit is None or self._quitting.is_set():
+        if self.thumbnail_limit is None or self._quitting.cancelled() or not self._pruning.begin():
             return
-        if self._pruning:
-            self._prune_again = True
-            return
-        self._pruning = True
-        self._prune_again = False
         keys = [mount.volume_id for mount in self.mounts]
         self.prune_future = workers.submit(
             _prune_thumbnails,
@@ -948,17 +934,17 @@ class LibraryService(QObject):
             on_done=self._on_pruned,
             on_error=lambda _error: self._on_pruned(None),
             owner=self,
-            process=workers.CACHE,
+            lane=workers.CACHE,
         )
 
     def _on_pruned(self, result):
-        self._pruning = False
+        again = self._pruning.end()
         self._pruned_at = time.monotonic()
-        if self._quitting.is_set():
+        if self._quitting.cancelled():
             return
         if result is not None:
             self.thumbnails_pruned.emit(result)
-        if self._prune_again:
+        if again:
             self.prune_thumbnails()
 
     def thumbnail_usage(self, on_done):
@@ -970,80 +956,44 @@ class LibraryService(QObject):
             on_done=on_done,
             on_error=lambda _error: on_done(None),
             owner=self,
-            process=workers.CACHE,
+            lane=workers.CACHE,
         )
 
     # Jobs
 
     def is_busy(self):
-        return self._running is not None
+        return self.jobs.is_busy()
 
     def cancel(self):
         """Stop the running scan and drop the queued ones. Indexing for search is the
         SearchService's."""
-        for job in self._scans():
-            if self._running is None or job.id != self._running[0]:
-                self.db.update_job(job.id, state=dbm.CANCELLED, message="Cancelled")
-        if self._stop is not None:
-            self._stop.set()
+        self.jobs.cancel()
 
-    def _next_job(self):
-        if self._running is not None or self._quitting.is_set():
-            return
-        for job in self._scans():
-            if job.folder_id not in self._removing and self.is_connected(job.folder_id):
-                self._run(job)
-                return
-        # What is left waits for its drive
+    def _scanning(self, folder_id):
+        return self.jobs.running is not None and self.jobs.running.folder_id == folder_id
 
-    def _run(self, job):
-        stop = threading.Event()
-        self._stop = stop
-        self._running = (job.id, job.folder_id)
-        name = self._folder_name(job.folder_id)
-        quitting = self._quitting
-        self._tell(job.id, name)
+    def _prepare_scan(self, job):
         only = self._partial.pop(job.folder_id, None)
-        # Kept for the tests, which wait for a job to end
-        self.future = workers.submit(
-            _run_scan,
-            self.path,
-            job.id,
-            job.folder_id,
-            self.mounts,
-            stop,
-            quitting,
-            self._exiftool,
-            self.gentle_scans,
-            self.sidecars,
-            only,
-            lambda *args: workers.call_on_main(self, self._on_progress, job.id, name, *args),
-            on_done=lambda state: self._on_ended(job.id, job.folder_id, name, state),
-            on_error=lambda error: self._on_failed(job.id, job.folder_id, name, error),
-            owner=self,
-            process=False,
-        )
+        return partial(_scan, job.folder_id, self._exiftool, self.gentle_scans, self.sidecars, only)
 
-    def _on_progress(self, job_id, name, phase, done, total, changed):
-        if self._quitting.is_set() or self._running is None or self._running[0] != job_id:
-            return
-        # The phase the scan reported, not the one the database has by the time this is
-        # delivered: a quick phase would otherwise never be told
-        status = replace(self._status(job_id, name), phase=phase)
-        self.job_changed.emit(replace(status, eta=self._time_left(job_id, phase, done, total)))
+    def _scan_progress(self, job, status, changed):
+        self.job_changed.emit(
+            replace(status, eta=self._time_left(job.id, status.phase, status.done, status.total))
+        )
         now = time.monotonic()
         if changed and now - self._photos_told >= _PHOTOS_EVERY:
             self._photos_told = now
             self.photos_changed.emit()
 
-    def _on_ended(self, job_id, folder_id, name, _state):
-        self._running = self._stop = None
-        if self._quitting.is_set():
-            return
+    def _unplugged(self):
+        self.mounts = self._read_mounts()
+        self.folders_changed.emit()
+
+    def _scan_ended(self, job, status):
+        folder_id = job.folder_id
         later = self._later.pop(folder_id, None)
         if later:
             self._rescan_directories(folder_id, later)
-        status = self._status(job_id, name)
         if folder_id in self._remove_after:
             self._remove_after.discard(folder_id)
             self._forget_folder(folder_id)
@@ -1055,24 +1005,9 @@ class LibraryService(QObject):
         # Details read may have brought keywords in
         self.keyword_list()
         self.keywords_changed.emit()
-        self.job_changed.emit(status)
         self.job_ended.emit(status)
-        self._next_job()
         if self._pruned_at is None or time.monotonic() - self._pruned_at >= _PRUNE_EVERY:
             self.prune_thumbnails()
-
-    def _on_failed(self, job_id, folder_id, name, error):
-        if isinstance(error, scanning.NotConnected):
-            # Unplugged as it started: the job waits for the drive
-            self._running = self._stop = None
-            self.mounts = self._read_mounts()
-            self.folders_changed.emit()
-            self._next_job()
-            return
-        message = f"{type(error).__name__}: {error}"
-        if not self._quitting.is_set():
-            self.db.update_job(job_id, state=dbm.FAILED_JOB, message=message)
-        self._on_ended(job_id, folder_id, name, dbm.FAILED_JOB)
 
     def _time_left(self, job_id, phase, done, total):
         """Seconds until the details are all read at the rate so far, or None: not told
@@ -1088,20 +1023,6 @@ class LibraryService(QObject):
         if now - began < _ETA_AFTER_SECONDS:
             return None
         return (total - done) * (now - began) / read
-
-    def _tell(self, job_id, name):
-        self.job_changed.emit(self._status(job_id, name))
-
-    def _status(self, job_id, name):
-        job = self.db.job(job_id)
-        failures = tuple(self.db.failures(job_id)[:20]) if job.failures else ()
-        queued = sum(1 for other in self._scans() if other.id != job_id)
-        return JobStatus(
-            name, job.state, job.phase, job.done, job.total, job.message, failures, queued
-        )
-
-    def _scans(self):
-        return [job for job in self.db.unfinished_jobs() if job.kind == dbm.SCAN]
 
     def _folder_name(self, folder_id):
         info = next((f for f in self.folders() if f.id == folder_id), None)
@@ -1153,27 +1074,20 @@ def _prune_thumbnails(path, root, limit, volume_keys):
     return thumbs.prune(root, limit, keep)
 
 
-def _run_scan(
-    path, job_id, folder_id, mounts, stop, quitting, exiftool, gentle, read_sidecars, only, report
-):
-    """On a worker thread, with a connection of its own."""
-    with dbm.Library(path) as library:
-        state = scanning.scan(
-            library,
-            job_id,
-            folder_id,
-            mounts,
-            stop.is_set,
-            report,
-            exiftool=exiftool,
-            gentle=gentle,
-            read_sidecars=read_sidecars,
-            only=only,
-        )
-        if state == dbm.CANCELLED and quitting.is_set():
-            # Stopped by a quit, not by the user: run again at the next start
-            library.update_job(job_id, state=dbm.QUEUED, message=None)
-        return state
+def _scan(folder_id, exiftool, gentle, read_sidecars, only, library, job_id, mounts, stop, report):
+    """On the scan thread."""
+    return scanning.scan(
+        library,
+        job_id,
+        folder_id,
+        mounts,
+        stop,
+        report,
+        exiftool=exiftool,
+        gentle=gentle,
+        read_sidecars=read_sidecars,
+        only=only,
+    )
 
 
 # For the UI: where the similarity setting starts

@@ -274,7 +274,7 @@ class LibraryModel(QAbstractListModel):
             on_done=lambda rows: self._loaded(generation, rows, reset),
             on_error=lambda _error: self._loaded(generation, [], reset),
             owner=self,
-            process=False,
+            lane=workers.IO,
         )
 
     def _loaded(self, generation, rows, reset):

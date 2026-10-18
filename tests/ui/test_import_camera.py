@@ -58,7 +58,7 @@ def make_importer(root, monkeypatch):
     yield make
     for importer in made:
         importer.close()
-        for future in (importer.future, importer.read_future):
+        for future in (importer.jobs.future, importer.read_future):
             if future is not None:
                 # A read or an import that ended in an error has been told of it already
                 future.exception(timeout=TIMEOUT / 1000)

@@ -210,6 +210,9 @@ class SearchStatus(QWidget):
 
 def describe_indexing(status):
     if status.state in (QUEUED, RUNNING):
+        if status.total is None:
+            # Starting: not counted yet
+            return "Indexing for search"
         return f"Indexing for search: {status.done:,} of {status.total:,}".replace(",", " ")
     if status.state == CANCELLED:
         return "Stopped indexing for search"

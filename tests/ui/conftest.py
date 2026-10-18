@@ -107,8 +107,8 @@ def make_service(tmp_path, mounts, qtbot):
     yield make
     for service in made:
         service.close()
-        if service.future is not None:
-            service.future.result(timeout=TIMEOUT / 1000)
+        if service.jobs.future is not None:
+            service.jobs.future.result(timeout=TIMEOUT / 1000)
 
 
 @pytest.fixture(autouse=True)

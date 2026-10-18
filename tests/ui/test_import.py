@@ -11,7 +11,8 @@ from rawfiles import make_dng
 
 from lumina.core import volumes
 from lumina.core.dbtypes import CANCELLED, DONE, FAILED_JOB, QUEUED, RUNNING
-from lumina.qt_models.importing import ImportService, ImportStatus
+from lumina.qt_models.importing import ImportService
+from lumina.qt_models.jobs import JobStatus
 from lumina.ui import main_window, settings
 from lumina.ui.import_dialog import ImportDialog
 from lumina.ui.job_status import describe_import
@@ -75,7 +76,7 @@ def make_importer():
     yield make
     for importer in made:
         importer.close()
-        for future in (importer.future, importer.read_future):
+        for future in (importer.jobs.future, importer.read_future):
             if future is not None:
                 future.result(timeout=TIMEOUT / 1000)
 
@@ -251,7 +252,7 @@ def test_an_import_waits_for_its_card_and_resumes_at_the_next_start(
 
 def test_an_import_in_words():
     def status(state, phase=None, done=0, total=None, message=None, queued=0):
-        return ImportStatus("Photos", state, phase, done, total, message, (), queued)
+        return JobStatus("Photos", state, phase, done, total, message, (), queued)
 
     assert describe_import(status(QUEUED)) == "Waiting to import into Photos"
     assert describe_import(status(RUNNING, "copying", 2, 9, queued=1)) == (

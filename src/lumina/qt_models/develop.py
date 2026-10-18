@@ -163,7 +163,7 @@ class DevelopSession(QObject):
             on_done=lambda opened: self._on_opened(token, opened),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def close(self):
@@ -184,7 +184,7 @@ class DevelopSession(QObject):
             on_done=lambda _r: None,
             on_error=lambda _e: None,
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def is_open(self):
@@ -367,7 +367,7 @@ class DevelopSession(QObject):
             on_done=lambda choices: self._on_profiles(token, choices),
             on_error=lambda _error: self._on_profiles(token, []),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_profiles(self, token, choices):
@@ -389,7 +389,7 @@ class DevelopSession(QObject):
             on_done=lambda found: self._on_profile_stored(token, found),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_profile_stored(self, token, found):
@@ -428,6 +428,7 @@ class DevelopSession(QObject):
                 on_done=lambda made: self._on_profile_made(token, made, "look", len(paths)),
                 on_error=lambda error: self._on_making_failed(token, error),
                 owner=self,
+                priority=workers.LATER,
             )
 
         self.service.raw_files_of(
@@ -452,7 +453,7 @@ class DevelopSession(QObject):
             on_done=lambda made: self._on_profile_made(token, made, "target", 1),
             on_error=lambda error: self._on_making_failed(token, error),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_profile_made(self, token, made, kind, count):
@@ -510,7 +511,7 @@ class DevelopSession(QObject):
             on_done=lambda names: self._on_lenses(token, names),
             on_error=lambda _error: self._on_lenses(token, []),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_lenses(self, token, names):
@@ -529,7 +530,7 @@ class DevelopSession(QObject):
             on_done=lambda profile: self._on_lens_chosen(token, profile),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_lens_chosen(self, token, profile):
@@ -617,7 +618,7 @@ class DevelopSession(QObject):
             on_done=lambda rendered: self._on_rendered(token, job, rendered),
             on_error=lambda error: self._on_failed(token, error),
             owner=self,
-            process=workers.DEVELOP,
+            lane=workers.DEVELOP,
         )
 
     def _on_rendered(self, token, job, rendered):
@@ -663,6 +664,7 @@ class DevelopSession(QObject):
             on_done=lambda path: self.exported.emit(path, None),
             on_error=lambda error: self._on_export_failed(destination, error),
             owner=self,
+            priority=workers.LATER,
         )
 
     def _on_export_failed(self, destination, error):

@@ -77,7 +77,7 @@ def test_a_quit_in_the_middle_leaves_the_job_for_the_next_start(
     qtbot.waitUntil(lambda: len(FakeExifTool.calls) >= 1, timeout=TIMEOUT)
 
     service.close()
-    service.future.result(timeout=TIMEOUT / 1000)
+    service.jobs.future.result(timeout=TIMEOUT / 1000)
 
     with dbm.Library(service.path) as db:
         assert [job.state for job in db.unfinished_jobs()] == [dbm.QUEUED]
@@ -95,6 +95,25 @@ def test_cancel_stops_the_job(service, drive, qtbot):
         service.cancel()
 
     assert ended.args[0].state == CANCELLED
+    assert service.db.unfinished_jobs() == []
+
+
+def test_a_rescan_asked_for_while_the_folder_is_scanned_runs_after_it(service, drive, qtbot):
+    for n in range(40):
+        make_jpeg(drive / "Photos" / f"more{n:03}.jpg")
+    FakeExifTool.delay = 0.05
+    ended = []
+    service.job_ended.connect(ended.append)
+    folder = service.add_folder(drive / "Photos")
+    qtbot.waitUntil(lambda: len(FakeExifTool.calls) >= 1, timeout=TIMEOUT)
+    # The scan may be past where this goes
+    make_jpeg(drive / "Photos" / "000 late.jpg", colour=(7, 7, 7))
+
+    service.rescan(folder)
+
+    qtbot.waitUntil(lambda: len(ended) == 2, timeout=TIMEOUT)
+    assert [status.state for status in ended] == [DONE, DONE]
+    assert len(service.db.photos(dbm.Filter(folder_id=folder))) == 44
     assert service.db.unfinished_jobs() == []
 
 
@@ -187,7 +206,7 @@ def test_the_thumbnail_cache_is_pruned_and_a_drive_not_connected_is_kept_longest
 
     with qtbot.waitSignal(service.thumbnails_pruned, timeout=TIMEOUT) as pruned:
         service.set_thumbnail_limit(6700)
-    qtbot.waitUntil(lambda: not service._pruning, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: not service._pruning.busy(), timeout=TIMEOUT)
 
     # 9000 bytes to 6030 or less: the three of the photo here go, none of the others
     assert not any(path.exists() for path in gone)

@@ -3,13 +3,13 @@
 import pytest
 
 from lumina.core.dbtypes import DETAILS, FINDING, RUNNING
-from lumina.qt_models import library
+from lumina.qt_models.jobs import JobStatus
 from lumina.ui import job_status
 
 
 def status(**fields):
     base = dict(
-        folder_name="Photos",
+        name="Photos",
         state=RUNNING,
         phase=DETAILS,
         done=500,
@@ -18,7 +18,7 @@ def status(**fields):
         failures=(),
         queued=0,
     )
-    return library.JobStatus(**{**base, **fields})
+    return JobStatus(**{**base, **fields})
 
 
 def test_the_details_say_how_far_and_how_long_is_left():

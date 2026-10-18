@@ -2,8 +2,8 @@
 job (core/importing.py).
 
 A card is read on a thread, newest read wins. One import at a time is copied, on a thread
-of its own (workers.IMPORT), so a scan or a merge never waits for it, nor it for them.
-Jobs are in the library's database: one queued or stopped by a quit is run again at
+of its own (workers.IMPORT, by the JobRunner of qt_models/jobs.py), so a scan or a merge
+never waits for it, nor it for them. A job queued or stopped by a quit is run again at
 the next start, from the photo it had got to; one whose card or drive is not connected
 waits for it. When an import is done its folder is scanned, which puts the photos in
 the grid.
@@ -13,14 +13,15 @@ import contextlib
 import os
 import shutil
 import threading
-from dataclasses import dataclass
+from functools import partial
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from lumina.core import db as dbm
 from lumina.core import importing, metadata, tether, volumes
-from lumina.core import library as scanning
+from lumina.core.errors import CameraBusy
 from lumina.qt_models import workers
+from lumina.qt_models.jobs import JobRunner, waiting_for
 
 LAYOUTS = tuple(importing.LAYOUTS)
 NAMINGS = importing.NAMINGS
@@ -31,22 +32,8 @@ file_name = importing.file_name
 _CAMERA_RETRY = 4000
 
 
-@dataclass(frozen=True)
-class ImportStatus:
-    # Where the photos go: the library folder's name
-    name: str
-    state: str
-    phase: str | None
-    done: int
-    total: int | None
-    message: str | None
-    failures: tuple
-    # Imports waiting after this one
-    queued: int
-
-
 class ImportService(QObject):
-    # An ImportStatus, while one runs and when it ends
+    # A JobStatus, while one runs and when it ends
     job_changed = Signal(object)
     # The cards mounted changed: the list of their mount points
     cards_changed = Signal(object)
@@ -74,30 +61,32 @@ class ImportService(QObject):
         self._retry.setSingleShot(True)
         self._retry.setInterval(_CAMERA_RETRY)
         self._retry.timeout.connect(self._look_for_camera)
-        # Looking again for a camera: the bar keeps saying it waits, it does not flicker
-        self._looking = False
-        self._quitting = threading.Event()
-        self._stop = None
-        self._running = None
-        self._waiting = set()
+        self.jobs = JobRunner(
+            self,
+            library,
+            {dbm.IMPORT},
+            workers.IMPORT,
+            prepare=self._prepare,
+            name=self._folder_name,
+            changed=self.job_changed.emit,
+            ended=self._ended,
+            waits=self._waits,
+            failed=lambda _job, error: f"Could not import: {error}",
+        )
         self._reading = None
-        self.future = None
         self.read_future = None
         self._cards = importing.find_cards(library.mounts)
         library.mounts_changed.connect(self._drives_changed)
 
     def start(self):
         """Resume the imports a quit or a crash stopped."""
-        self._next_job()
+        self.jobs.start()
 
     def close(self):
         """For the app's exit: an import in progress stops and is queued for the next
         start; a card being read stops."""
-        self._quitting.set()
-        if self._stop is not None:
-            self._stop.set()
-        if self._reading is not None:
-            self._reading.set()
+        self.jobs.close()
+        self.stop_reading()
 
     # Reading a card
 
@@ -111,7 +100,7 @@ class ImportService(QObject):
         cannot be read, `on_done` with the error. `on_progress(done, total)` meanwhile.
         Only reads."""
         self.stop_reading()
-        stop = threading.Event()
+        stop = workers.Token()
         self._reading = stop
         report = on_progress or (lambda done, total: None)
         self.read_future = workers.submit(
@@ -124,7 +113,7 @@ class ImportService(QObject):
             on_done=_unless(stop, on_done),
             on_error=_unless(stop, on_done),
             owner=self,
-            process=False,
+            lane=workers.IO,
         )
 
     def cameras(self):
@@ -136,7 +125,7 @@ class ImportService(QObject):
         or None)`, or the error (NotConnected, CameraBusy with who has it and how to let
         it go). Only reads."""
         self.stop_reading()
-        stop = threading.Event()
+        stop = workers.Token()
         self._reading = stop
         report = on_progress or (lambda done, total: None)
         self.read_future = workers.submit(
@@ -149,12 +138,12 @@ class ImportService(QObject):
             on_done=_unless(stop, on_done),
             on_error=_unless(stop, on_done),
             owner=self,
-            process=False,
+            lane=workers.IO,
         )
 
     def stop_reading(self):
         if self._reading is not None:
-            self._reading.set()
+            self._reading.cancel()
             self._reading = None
 
     def free_space(self, path):
@@ -176,18 +165,14 @@ class ImportService(QObject):
         importing.queue(
             self.library.db, candidates, destination, self.library.mounts, layout, naming, backup
         )
-        self._next_job()
+        self.jobs.next()
 
     def is_busy(self):
-        return self._running is not None
+        return self.jobs.is_busy()
 
     def cancel(self):
         """Stop the running import and drop those waiting."""
-        for job in self._imports():
-            if job.id != self._running:
-                self.library.db.update_job(job.id, state=dbm.CANCELLED, message="Cancelled")
-        if self._stop is not None:
-            self._stop.set()
+        self.jobs.cancel()
 
     def _drives_changed(self):
         cards = importing.find_cards(self.library.mounts)
@@ -197,112 +182,31 @@ class ImportService(QObject):
             self.cards_changed.emit(list(cards))
             for card in arrived:
                 self.card_arrived.emit(card)
-        self._waiting.clear()
-        self._next_job()
+        self.jobs.wake()
 
     def _look_for_camera(self):
-        if self._quitting.is_set():
-            return
-        self._waiting.clear()
-        self._looking = True
-        self._next_job()
-        self._looking = False
+        # The bar keeps saying it waits: it does not flicker
+        self.jobs.wake(tell=False)
 
-    def _next_job(self):
-        if self._running is not None or self._quitting.is_set():
-            return
-        job = next((job for job in self._imports() if job.id not in self._waiting), None)
-        if job is not None:
-            self._run(job)
-
-    def _run(self, job):
-        stop = threading.Event()
-        self._stop = stop
-        self._running = job.id
-        name = self._folder_name(job.folder_id)
+    def _prepare(self, job):
         if any(importing.is_camera(i.source_key) for i in self.library.db.import_items(job.id)):
             # The camera is for this import: a read of it for the dialog gives way
             self.stop_reading()
-        if not self._looking:
-            self.job_changed.emit(self._status(job.id, name))
-        self.future = workers.submit(
-            _run_import,
-            self.library.path,
-            job.id,
-            self.library.mounts,
-            stop,
-            self._quitting,
-            lambda *args: workers.call_on_main(self, self._on_progress, job.id, name, *args),
-            self._camera,
-            self._camera_lock,
-            on_done=lambda _state: self._on_ended(job, name),
-            on_error=lambda error: self._on_failed(job, name, error),
-            owner=self,
-            process=workers.IMPORT,
-        )
+        return partial(_run_import, self._camera, self._camera_lock)
 
-    def _on_progress(self, job_id, name, phase, done, total, _changed):
-        if self._quitting.is_set() or self._running != job_id:
-            return
-        status = self._status(job_id, name)
-        self.job_changed.emit(
-            ImportStatus(name, dbm.RUNNING, phase, done, total, None, (), status.queued)
-        )
-
-    def _on_ended(self, job, name):
-        self._running = self._stop = None
-        if self._quitting.is_set():
-            return
-        status = self._status(job.id, name)
-        self.job_changed.emit(status)
+    def _ended(self, job, status):
         if job.folder_id is not None and status.state in (dbm.DONE, dbm.CANCELLED):
             # What was copied goes in the grid with the folder's next scan
             self.library.rescan(job.folder_id)
-        self._next_job()
 
-    def _on_failed(self, job, name, error):
-        if isinstance(error, scanning.NotConnected):
-            self._running = self._stop = None
-            self._waiting.add(job.id)
-            if str(error).startswith("the camera") or isinstance(error, importing.CameraBusy):
-                # A camera plugged in changes no mount: look for it now and then
-                self._retry.start()
-            self.job_changed.emit(
-                ImportStatus(
-                    name,
-                    dbm.QUEUED,
-                    None,
-                    0,
-                    None,
-                    str(error)
-                    if isinstance(error, importing.CameraBusy)
-                    else f"Waiting for {error} to be connected",
-                    (),
-                    0,
-                )
-            )
-            self._next_job()
-            return
-        if not self._quitting.is_set():
-            self.library.db.update_job(
-                job.id, state=dbm.FAILED_JOB, message=f"Could not import: {error}"
-            )
-        self._on_ended(job, name)
+    def _waits(self, _job, error):
+        if str(error).startswith("the camera") or isinstance(error, CameraBusy):
+            # A camera plugged in changes no mount: look for it now and then
+            self._retry.start()
+        return str(error) if isinstance(error, CameraBusy) else waiting_for(error)
 
-    def _status(self, job_id, name):
-        db = self.library.db
-        job = db.job(job_id)
-        failures = tuple(db.failures(job_id)[:20]) if job.failures else ()
-        queued = sum(1 for other in self._imports() if other.id != job_id)
-        return ImportStatus(
-            name, job.state, job.phase, job.done, job.total, job.message, failures, queued
-        )
-
-    def _imports(self):
-        return [job for job in self.library.db.unfinished_jobs() if job.kind == dbm.IMPORT]
-
-    def _folder_name(self, folder_id):
-        info = next((f for f in self.library.folders() if f.id == folder_id), None)
+    def _folder_name(self, job):
+        info = next((f for f in self.library.folders() if f.id == job.folder_id), None)
         return info.name if info is not None else "the library"
 
 
@@ -310,7 +214,7 @@ def _unless(stop, fn):
     """`fn`, but doing nothing once `stop` is set: the answer of a read no longer wanted."""
 
     def call(*args):
-        if not stop.is_set():
+        if not stop.cancelled():
             fn(*args)
 
     return call
@@ -319,35 +223,24 @@ def _unless(stop, fn):
 def _read(path, root, stop, exiftool, report):
     """On a worker thread, with a connection of its own."""
     with dbm.Library(path) as library:
-        return importing.read_source(library, root, stop.is_set, report, exiftool)
+        return importing.read_source(library, root, stop, report, exiftool)
 
 
 def _read_camera(path, make_camera, lock, stop, report):
     """On a worker thread, with a connection of its own."""
     if not lock.acquire(blocking=False):
-        raise importing.CameraBusy("Lumina is importing from the camera: wait until it is done.")
+        raise CameraBusy("Lumina is importing from the camera: wait until it is done.")
     try:
         with dbm.Library(path) as library:
-            return importing.read_camera(library, make_camera, stop.is_set, report)
+            return importing.read_camera(library, make_camera, stop, report)
     finally:
         lock.release()
 
 
-def _run_import(path, job_id, mounts, stop, quitting, report, make_camera, lock):
-    """On the import thread, with a connection of its own."""
-    with dbm.Library(path) as library:
-        uses_camera = any(
-            importing.is_camera(item.source_key) for item in library.import_items(job_id)
+def _run_import(make_camera, lock, library, job_id, mounts, should_stop, report):
+    """On the import thread."""
+    uses_camera = any(importing.is_camera(item.source_key) for item in library.import_items(job_id))
+    with lock if uses_camera else contextlib.nullcontext():
+        return importing.run(
+            library, job_id, mounts, should_stop, report, make_camera, volumes.read_mounts
         )
-        with lock if uses_camera else contextlib.nullcontext():
-            return _run_locked(library, job_id, mounts, stop, quitting, report, make_camera)
-
-
-def _run_locked(library, job_id, mounts, stop, quitting, report, make_camera):
-    state = importing.run(
-        library, job_id, mounts, stop.is_set, report, make_camera, volumes.read_mounts
-    )
-    if state == dbm.CANCELLED and quitting.is_set():
-        # Stopped by a quit, not by the user: run again at the next start
-        library.update_job(job_id, state=dbm.QUEUED, message=None)
-    return state

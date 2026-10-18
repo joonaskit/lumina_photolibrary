@@ -42,7 +42,7 @@ ui/  →  qt_models/  →  core/
 ```
 
 - `core/` imports **no Qt**. Plain Python, numpy, OpenCV, rawpy, sqlite3, onnxruntime. It reports through callbacks.
-- `qt_models/` is the only place that runs core work on threads or processes and turns callbacks into queued Qt signals.
+- `qt_models/` is the only place that runs core work on threads or processes and turns callbacks into queued Qt signals: through the scheduler in `qt_models/workers.py`, on a lane declared there, never a pool or thread of its own (a camera session's process and the threads that read its queues aside). A job kept in the `jobs` table runs on a `JobRunner` (`qt_models/jobs.py`); work is stopped with a `workers.Token`.
 - `ui/` never calls the DB, rawpy, exiftool or onnxruntime directly. From `core/` it imports only the domain model: `core/edit/params.py`, `core/dbtypes.py`, `core/keywords.py`, `core/smart.py`, `core/edit/export_options.py` and `core/errors.py`, which are plain data and import only the standard library and each other. Don't re-export core names from `qt_models/` for the UI.
 - `tests/test_layers.py` enforces these import rules.
 

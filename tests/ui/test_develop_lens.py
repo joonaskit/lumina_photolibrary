@@ -55,8 +55,8 @@ def lens_data(tmp_path, monkeypatch):
     lensdb._load.cache_clear()
     submit = workers.submit
 
-    def on_a_thread(fn, *args, on_done, on_error, owner, process=True):
-        return submit(fn, *args, on_done=on_done, on_error=on_error, owner=owner, process=False)
+    def on_a_thread(fn, *args, on_done, on_error, owner, **_where):
+        return submit(fn, *args, on_done=on_done, on_error=on_error, owner=owner, lane=workers.IO)
 
     monkeypatch.setattr(develop.workers, "submit", on_a_thread)
     yield folder

@@ -43,8 +43,8 @@ def make_merge(tmp_path):
     yield make
     for merge in made:
         merge.close()
-        if merge.future is not None:
-            merge.future.result(timeout=TIMEOUT / 1000)
+        if merge.jobs.future is not None:
+            merge.jobs.future.result(timeout=TIMEOUT / 1000)
 
 
 def scanned(service, drive, qtbot):
@@ -75,7 +75,7 @@ def with_exposures(service, ids):
 
 
 def ended(merge, qtbot):
-    """The MergeStatus a merge ends with."""
+    """The JobStatus a merge ends with."""
     statuses = []
     merge.job_changed.connect(statuses.append)
     qtbot.waitUntil(
