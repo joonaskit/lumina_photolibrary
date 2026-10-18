@@ -1,4 +1,5 @@
 from conftest import TIMEOUT
+from fakes import work_or_die
 from photos import make_jpeg
 from PySide6.QtCore import QObject
 from shiboken6 import delete
@@ -56,3 +57,21 @@ def test_an_offline_photo_seen_before_has_its_thumbnail(qtbot, tmp_path):
     assert thumbnails.pixmap(1).width() == 200
     thumbnails.icon(2, None, "never-seen")
     qtbot.waitUntil(lambda: thumbnails.error(2) is not None, timeout=TIMEOUT)
+
+
+def test_a_call_that_kills_its_worker_does_not_fail_those_in_flight_with_it(qtbot):
+    owner = QObject()
+    done, failed = [], []
+    for value in (1, 2, 0, 3, 4):
+        workers.submit(
+            work_or_die,
+            value,
+            on_done=done.append,
+            on_error=lambda error, value=value: failed.append((value, type(error).__name__)),
+            owner=owner,
+        )
+
+    qtbot.waitUntil(lambda: len(done) + len(failed) == 5, timeout=TIMEOUT)
+
+    assert sorted(done) == [1, 2, 3, 4]
+    assert failed == [(0, "BrokenProcessPool")]

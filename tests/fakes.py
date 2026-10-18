@@ -482,3 +482,15 @@ def live_jpeg(level=128, size=(96, 64)):
     out = io.BytesIO()
     Image.new("RGB", size, (level, level, level)).save(out, "JPEG", quality=90)
     return out.getvalue()
+
+
+def work_or_die(value):
+    """For a worker process: gives `value` back after a moment, but a 0 kills the process
+    as a decoder does that crashes on a broken file."""
+    import os
+    import time
+
+    time.sleep(0.3)
+    if value == 0:
+        os._exit(1)
+    return value
