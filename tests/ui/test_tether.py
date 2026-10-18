@@ -247,13 +247,13 @@ def test_the_newest_photo_opens_in_the_viewer(qtbot, scanned, tether, drive):
 
     photo = shoot(qtbot, tether, drive / "Photos" / "IMG_0010.jpg", (20, 20, 20))
 
-    qtbot.waitUntil(lambda: window._viewed_id == photo, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: window.nav.viewed_id == photo, timeout=TIMEOUT)
     assert window.pages.currentIndex() == _VIEWER
     assert window.tether_status.label.text() == "Tethered to Photos: 1 new photo"
 
     # And the next, while the last one is looked at
     second = shoot(qtbot, tether, drive / "Photos" / "IMG_0011.jpg", (40, 40, 40))
-    qtbot.waitUntil(lambda: window._viewed_id == second, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: window.nav.viewed_id == second, timeout=TIMEOUT)
 
 
 def test_an_older_photo_looked_at_is_not_taken_away(qtbot, scanned, tether, drive):
@@ -262,20 +262,20 @@ def test_an_older_photo_looked_at_is_not_taken_away(qtbot, scanned, tether, driv
     tether.start(folder)
     wait_watched(qtbot, service, folder)
     photo = shoot(qtbot, tether, drive / "Photos" / "IMG_0020.jpg", (20, 20, 20))
-    qtbot.waitUntil(lambda: window._viewed_id == photo, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: window.nav.viewed_id == photo, timeout=TIMEOUT)
 
     # Back to an older one
     older = min(ids(service))
-    window.show_photo(window.model.row_of(older))
+    window.nav.show_photo(window.model.row_of(older))
     second = shoot(qtbot, tether, drive / "Photos" / "IMG_0021.jpg", (40, 40, 40))
     qtbot.waitUntil(lambda: window.model.row_of(second) is not None, timeout=TIMEOUT)
     qtbot.wait(100)
 
-    assert window._viewed_id == older
+    assert window.nav.viewed_id == older
     # Onto the newest again: followed from there
-    window.show_photo(window.model.row_of(second))
+    window.nav.show_photo(window.model.row_of(second))
     third = shoot(qtbot, tether, drive / "Photos" / "IMG_0022.jpg", (60, 60, 60))
-    qtbot.waitUntil(lambda: window._viewed_id == third, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: window.nav.viewed_id == third, timeout=TIMEOUT)
 
 
 def test_the_develop_view_stays_open_showing_the_new_photo(qtbot, scanned, tether, drive):
@@ -283,12 +283,12 @@ def test_the_develop_view_stays_open_showing_the_new_photo(qtbot, scanned, tethe
     window = open_window(qtbot, service, tether)
     tether.start(folder)
     wait_watched(qtbot, service, folder)
-    window.show_develop(window.model.rowCount() - 1)
+    window.nav.show_develop(window.model.rowCount() - 1)
     assert window.pages.currentIndex() == _DEVELOP
 
     photo = shoot(qtbot, tether, drive / "Photos" / "IMG_0030.jpg", (20, 20, 20))
 
-    qtbot.waitUntil(lambda: window._viewed_id == photo, timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: window.nav.viewed_id == photo, timeout=TIMEOUT)
     assert window.pages.currentIndex() == _DEVELOP
     window.session.close()
 

@@ -20,7 +20,7 @@ def window(qtbot, service, tmp_path):
     made.resize(900, 600)
     made.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        made.add_folder(folder)
+        made.browser.add_folder(folder)
     qtbot.waitUntil(lambda: made.model.rowCount() == 3, timeout=TIMEOUT)
     return made
 
@@ -36,7 +36,7 @@ def shown_width(window):
 
 
 def test_z_shows_100_percent_from_the_full_size(qtbot, window):
-    window.show_photo(0)
+    window.nav.show_photo(0)
     qtbot.waitUntil(lambda: shown_width(window) > 320, timeout=TIMEOUT)
     assert window.viewer.full_size() == (3000, 2000)
     assert shown_width(window) < 3000
@@ -50,7 +50,7 @@ def test_z_shows_100_percent_from_the_full_size(qtbot, window):
 
 
 def test_stepping_zoomed_keeps_the_zoom_and_the_place(qtbot, window):
-    window.show_photo(0)
+    window.nav.show_photo(0)
     qtbot.waitUntil(lambda: shown_width(window) > 320, timeout=TIMEOUT)
     press(qtbot, window, Qt.Key.Key_Z)
     window.viewer.pan(-200, -100)
@@ -68,7 +68,7 @@ def test_stepping_zoomed_keeps_the_zoom_and_the_place(qtbot, window):
 
 
 def test_escape_goes_back_to_fitted_then_to_the_grid(qtbot, window):
-    window.show_photo(0)
+    window.nav.show_photo(0)
     qtbot.waitUntil(lambda: shown_width(window) > 320, timeout=TIMEOUT)
     press(qtbot, window, Qt.Key.Key_Z)
 
@@ -79,12 +79,12 @@ def test_escape_goes_back_to_fitted_then_to_the_grid(qtbot, window):
     press(qtbot, window, Qt.Key.Key_Escape)
     assert window.pages.currentIndex() == 1
     # Opening a photo again starts fitted
-    window.show_photo(1)
+    window.nav.show_photo(1)
     assert not window.viewer.is_zoomed()
 
 
 def test_ctrl_plus_and_minus_zoom_in_steps(qtbot, window):
-    window.show_photo(0)
+    window.nav.show_photo(0)
     qtbot.waitUntil(lambda: shown_width(window) > 320, timeout=TIMEOUT)
     window.viewer.setFocus()
 

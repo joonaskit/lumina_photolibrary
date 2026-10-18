@@ -214,7 +214,7 @@ def test_a_collection_holds_photos_added_by_menu_or_drop(qtbot, service, drive):
     assert collection_items(window) == [("Best", "collection")]
 
     choose(window, 0)
-    window.add_to_collection(box)
+    window.collecting.add_to_collection(box)
     window.service.flush()
     window.sidebar.photos_dropped.emit(box, [window.model.photo_id(2)])
 
@@ -225,7 +225,7 @@ def test_a_collection_holds_photos_added_by_menu_or_drop(qtbot, service, drive):
 
     # Out of the collection, not out of the library
     choose(window, 0)
-    window.remove_from_collection(box)
+    window.collecting.remove_from_collection(box)
     window.service.flush()
     qtbot.waitUntil(lambda: window.model.rowCount() == 1, timeout=TIMEOUT)
     assert names(window) == [third]
@@ -253,10 +253,10 @@ def test_collection_names_are_checked(qtbot, service, drive, monkeypatch):
     warned = []
     monkeypatch.setattr(QInputDialog, "getText", lambda *_a, **_k: ("best", True))
     monkeypatch.setattr(
-        "lumina.ui.main_window.QMessageBox.warning", lambda *_a: warned.append(_a[-1])
+        "lumina.ui.controllers.collecting.QMessageBox.warning", lambda *_a: warned.append(_a[-1])
     )
 
-    window.new_collection()
+    window.collecting.new_collection()
     service.flush()
 
     assert warned and "already" in warned[0]
@@ -290,7 +290,7 @@ def test_a_smart_collection_saves_the_filters_and_updates_itself(
     assert window.model.rowCount() == 1
     monkeypatch.setattr(QInputDialog, "getText", lambda *_a, **_k: ("Cat picks", True))
 
-    window.new_smart_collection()
+    window.collecting.new_smart_collection()
     window.service.flush()
 
     assert collection_items(window) == [("Cat picks", "smart")]
@@ -321,7 +321,7 @@ def test_nothing_set_is_not_saved_as_a_smart_collection(qtbot, service, drive, m
     monkeypatch.setattr(QInputDialog, "getText", lambda *_a, **_k: asked.append(1) or ("x", True))
 
     assert not window.filters.save_button.isEnabled()
-    window.new_smart_collection()
+    window.collecting.new_smart_collection()
     window.service.flush()
 
     assert asked == [] and service.collections() == []
@@ -333,7 +333,7 @@ def test_the_viewers_status_names_the_keywords(qtbot, service, drive):
     window.service.flush()
     choose(window, 0)
 
-    window.show_photo(0)
+    window.nav.show_photo(0)
 
     assert "Keywords: Cat, Places > Helsinki" in window.status.text()
 
@@ -364,7 +364,7 @@ def test_the_last_import_is_a_view_of_the_photos_it_copied(qtbot, service, drive
         # The photo is in the library under that name already: the scan found it
         assert any(p.path.endswith(second) for p in library.photos())
 
-    window._refresh_last_import()
+    window.browser.refresh_last_import()
     window.sidebar.select_import()
 
     qtbot.waitUntil(lambda: window.model.rowCount() == 1, timeout=TIMEOUT)

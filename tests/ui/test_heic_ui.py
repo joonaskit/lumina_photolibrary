@@ -14,7 +14,7 @@ def test_a_heic_is_listed_has_a_thumbnail_and_opens(qtbot, service, drive):
     window.resize(1000, 700)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(drive / "Photos")
+        window.browser.add_folder(drive / "Photos")
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     names = [window.model.name(row) for row in range(window.model.rowCount())]
     assert "phone.heic" in names
@@ -26,7 +26,7 @@ def test_a_heic_is_listed_has_a_thumbnail_and_opens(qtbot, service, drive):
     # Stored 160 x 120 and turned a quarter: upright it is portrait
     assert thumbnail.height() > thumbnail.width()
 
-    window.show_photo(row)
+    window.nav.show_photo(row)
     qtbot.waitUntil(
         lambda: window.viewer.pixmap() is not None and window.viewer.pixmap().width() == 120,
         timeout=TIMEOUT,

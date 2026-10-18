@@ -1,15 +1,31 @@
-"""opening: the part of `MainWindow` for it (see main_window.py)."""
+"""Opening from outside: the file manager, or a second `lumina PATH`."""
 
 import os
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QMessageBox
 
 from lumina.ui.quick_view import QuickView
 
 
-class OpeningMixin:
-    # Opening from outside: the file manager, or a second `lumina PATH`
+class Opening(QObject):
+    def __init__(self, nav, model, service, browser, sidebar, parent=None):
+        """`browser` is the Browser. The parent is the window, which comes forward for what
+        is opened in it."""
+        super().__init__(parent)
+        self.nav = nav
+        self.model = model
+        self.service = service
+        self.browser = browser
+        self.sidebar = sidebar
+        # Windows of photos not in the library
+        self.quick_views = []
+        # A photo asked for that the library does not have yet (its folder is being
+        # scanned), opened as it arrives
+        self._opening = None
+        # Rows a scan wrote arrive as inserted; a load that ends has all there is
+        model.rowsInserted.connect(lambda: self._open_arrived())
+        model.loading_changed.connect(lambda loading: loading or self._open_arrived(loaded=True))
 
     def open_paths(self, paths):
         """Show what the command line or the file manager asked for: a folder is added
@@ -17,16 +33,10 @@ class OpeningMixin:
         is in the library; a photo that is not is shown in a window of its own."""
         for path in paths:
             if os.path.isdir(path):
-                self.present()
-                self.add_folder(path)
+                self.parent().present()
+                self.browser.add_folder(path)
             else:
                 self.open_photo(path)
-
-    def present(self):
-        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
-        self.show()
-        self.raise_()
-        self.activateWindow()
 
     def open_photo(self, path):
         """Open the photo at `path` in the viewer, if its folder is in the library; else
@@ -34,14 +44,14 @@ class OpeningMixin:
         a photo is told so."""
         if not self.service.is_photo_file(path):
             QMessageBox.warning(
-                self, "Cannot Open", f"{path}\n\nThis is not a photo Lumina can open."
+                self.parent(), "Cannot Open", f"{path}\n\nThis is not a photo Lumina can open."
             )
             return
         folder, _photo = self.service.locate_photo(path)
         if folder is None:
             self.show_quick(path)
             return
-        self.present()
+        self.parent().present()
         self._opening = os.path.realpath(path)
         self.sidebar.select(folder)
         self._open_arrived()
@@ -62,10 +72,13 @@ class OpeningMixin:
     def _add_from_quick(self, view, folder):
         path = view.path
         view.close()
-        self.present()
-        if self.add_folder(folder) is not None:
+        self.parent().present()
+        if self.browser.add_folder(folder) is not None:
             self._opening = path
             self._open_arrived()
+
+    def on_job_ended(self, _status):
+        self._open_arrived(scanned=True)
 
     def _open_arrived(self, loaded=False, scanned=False):
         """The photo asked for, once the grid has it. The grid fills while the folder is
@@ -79,6 +92,6 @@ class OpeningMixin:
         row = self.model.row_of(photo) if photo is not None else None
         if row is not None:
             self._opening = None
-            self.show_photo(row)
+            self.nav.show_photo(row)
         elif (scanned and photo is None) or (loaded and photo is not None):
             self._opening = None

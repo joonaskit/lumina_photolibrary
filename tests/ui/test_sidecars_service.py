@@ -100,7 +100,7 @@ def test_a_sidecar_that_could_not_be_written_is_said_in_the_status_bar(qtbot, se
     qtbot.addWidget(window)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(drive / "Photos")
+        window.browser.add_folder(drive / "Photos")
     qtbot.waitUntil(lambda: window.model.rowCount() == 3, timeout=TIMEOUT)
     service._sidecar_timer.setInterval(50)
     service.sidecars = True

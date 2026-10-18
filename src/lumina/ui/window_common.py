@@ -1,5 +1,7 @@
 """Constants and helpers the window and its parts share."""
 
+import os
+
 from PySide6.QtCore import QMargins, QPoint, QSize
 
 from lumina.integration import style
@@ -58,6 +60,12 @@ def describe_photo(photo):
     if photo.iso:
         parts.append(f"ISO {photo.iso}")
     return "  ·  ".join(parts)
+
+
+def photo_name(service, photo_id):
+    """The file name of photo `photo_id`, or its id when the library has no such photo."""
+    photo = service.photo_details(photo_id)
+    return os.path.basename(photo.path) if photo else str(photo_id)
 
 
 def _margins(gap):

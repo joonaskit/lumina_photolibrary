@@ -17,7 +17,7 @@ def open_window(qtbot, service, folder):
     window.resize(1200, 700)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(folder)
+        window.browser.add_folder(folder)
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     return window
 
@@ -43,7 +43,7 @@ def test_thumbs_and_stars_are_in_the_middle_of_the_toolbar(qtbot, service, drive
     assert abs(centre(window.marking) - window.width() / 2) <= 2
 
     # Still in the middle above a photo, with the navigation at the left
-    window.show_photo(0)
+    window.nav.show_photo(0)
     assert window.navigation.isVisible()
     assert abs(centre(window.marking) - window.width() / 2) <= 2
 
@@ -75,9 +75,9 @@ def test_how_the_grid_shows_photos_is_in_the_status_bar_while_it_shows(qtbot, se
     assert window.statusBar().isAncestorOf(window.grid_size)
     assert not window.filters.isAncestorOf(window.grid_size)
 
-    window.show_photo(0)
+    window.nav.show_photo(0)
     assert not window.grid_view_options.isVisible()
-    window.show_grid()
+    window.nav.show_grid()
     assert window.grid_view_options.isVisible()
 
 
@@ -87,7 +87,7 @@ def test_clear_shows_every_photo_again(qtbot, service, drive):
     assert not filters.clear_button.isEnabled()
 
     window.grid.setCurrentIndex(window.model.index(0))
-    window.flag_photos(PICKED)
+    window.culling.flag_photos(PICKED)
     filters.flag.setCurrentIndex(filters.flag.findData(PICKED))
     filters.year.setCurrentIndex(1)
     assert window.model.rowCount() == 1

@@ -13,6 +13,7 @@ from lumina.core.metadata import Metadata
 from lumina.qt_models import library
 from lumina.qt_models.merge import MergeService
 from lumina.ui import main_window
+from lumina.ui.controllers import merging
 from lumina.ui.job_status import describe_merge
 from lumina.ui.merge_dialog import MergeDialog, PanoramaDialog
 
@@ -210,7 +211,7 @@ def test_a_photo_in_no_bracket_says_so(service, make_merge, drive, qtbot, monkey
     qtbot.waitUntil(lambda: window.model.rowCount() == 3, timeout=TIMEOUT)
     told = []
     monkeypatch.setattr(
-        main_window.QMessageBox, "information", lambda _parent, _title, text: told.append(text)
+        merging.QMessageBox, "information", lambda _parent, _title, text: told.append(text)
     )
     row = next(r for r in range(3) if window.model.photo_id(r) == ids["c.dng"])
     window.grid.setCurrentIndex(window.model.index(row))
@@ -374,7 +375,7 @@ def test_one_photo_is_not_a_panorama(service, make_merge, drive, qtbot, monkeypa
     qtbot.waitUntil(lambda: window.model.rowCount() == 3, timeout=TIMEOUT)
     told = []
     monkeypatch.setattr(
-        main_window.QMessageBox, "information", lambda _parent, _title, text: told.append(text)
+        merging.QMessageBox, "information", lambda _parent, _title, text: told.append(text)
     )
     row = next(r for r in range(3) if window.model.photo_id(r) == ids["c.dng"])
     window.grid.setCurrentIndex(window.model.index(row))

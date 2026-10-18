@@ -370,7 +370,7 @@ def test_tether_camera_starts_a_session_and_the_new_photo_opens(
 
     with qtbot.waitSignal(camera.hot.arrived, timeout=TIMEOUT) as arrived:
         FakeCamera.shoot(root, frame(tmp_path))
-    qtbot.waitUntil(lambda: window._viewed_id == arrived.args[0], timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: window.nav.viewed_id == arrived.args[0], timeout=TIMEOUT)
     assert window.pages.currentIndex() == _VIEWER
 
     # Space, or a foot pedal sending it, takes a photo
@@ -389,7 +389,7 @@ def test_stop_tethering_in_the_sidebar_ends_the_camera_session(qtbot, scanned, c
     camera.start(folder, "Studio")
     connected(qtbot, camera)
 
-    window.stop_tethering()
+    window.tethering.stop_tethering()
 
     qtbot.waitUntil(lambda: not camera.running, timeout=TIMEOUT)
     assert camera.hot.folder is None
@@ -533,7 +533,7 @@ def test_live_view_in_the_window(qtbot, scanned, camera, root, tmp_path):
     with qtbot.waitSignal(camera.hot.arrived, timeout=TIMEOUT):
         FakeCamera.shoot(root, frame(tmp_path), "IMG_0001.JPG")
     qtbot.waitUntil(lambda: window.pages.currentIndex() == _VIEWER, timeout=TIMEOUT)
-    window.show_grid()
+    window.nav.show_grid()
 
     with qtbot.waitSignal(camera.frame_ready, timeout=TIMEOUT):
         window.camera_bar.live.click()
@@ -561,7 +561,7 @@ def test_live_view_in_the_window(qtbot, scanned, camera, root, tmp_path):
     qtbot.waitUntil(lambda: panel.canvas.zoom == 5, timeout=TIMEOUT)
 
     # The last shot over the frame
-    with qtbot.waitSignal(window.last_shot.ready, timeout=TIMEOUT):
+    with qtbot.waitSignal(window.tethering.last_shot.ready, timeout=TIMEOUT):
         panel.last.setChecked(True)
     assert panel.canvas.last_shot is not None and panel.canvas.opacity == 0.4
 

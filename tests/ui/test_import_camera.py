@@ -237,7 +237,7 @@ def test_the_window_imports_from_a_camera_with_the_dialog(
 
     monkeypatch.setattr(ImportDialog, "exec", run)
 
-    window.import_photos()
+    window.importing.import_photos()
     qtbot.waitUntil(lambda: not importer.is_busy(), timeout=TIMEOUT)
     qtbot.waitUntil(lambda: len(service.db.photos()) == 6, timeout=TIMEOUT)
 

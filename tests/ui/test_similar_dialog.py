@@ -9,8 +9,8 @@ from lumina.qt_models.library_model import REJECTED, STACK_ROLE
 
 
 def open_dialog(qtbot, window, groups):
-    window.find_duplicates()
-    dialog = window.similar_dialog
+    window.stacking.find_duplicates()
+    dialog = window.stacking.similar_dialog
     qtbot.waitUntil(lambda: dialog.summary.text() != "Looking…", timeout=TIMEOUT)
     assert dialog.tree.topLevelItemCount() == groups
     return dialog

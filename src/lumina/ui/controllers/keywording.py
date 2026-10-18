@@ -1,33 +1,48 @@
-"""keywording: the part of `MainWindow` for it (see main_window.py)."""
+"""Keywords: giving them to the photos and taking them off, the sidebar's list of them,
+and showing only the photos of one."""
 
+from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QInputDialog, QMessageBox
 
 from lumina.ui.keywords_dialog import KeywordsDialog
 
 
-class KeywordingMixin:
-    # Keywords
+class Keywording(QObject):
+    def __init__(self, nav, model, service, sidebar, filters, messages, parent=None):
+        """`messages` is the window's status bar; the parent is the window, which the
+        dialogs are over."""
+        super().__init__(parent)
+        self.nav = nav
+        self.model = model
+        self.service = service
+        self.sidebar = sidebar
+        self.filters = filters
+        self.messages = messages
+        service.keywords_changed.connect(self.on_keywords_changed)
+
+    def _changed(self):
+        self.nav.chosen_changed.emit()
+        self.nav.status_changed.emit()
 
     def set_keyword_filter(self, path):
         """Show only the photos given keyword `path` or one below it, or all."""
         self.model.set_keyword_filter(path)
         self.sidebar.select_keyword(path)
-        self._update_status()
+        self.nav.status_changed.emit()
 
-    def _on_keywords_changed(self):
+    def on_keywords_changed(self):
         items = self.service.keyword_items
         self.sidebar.set_keywords(items)
         self.filters.set_keywords([path for _id, path, _count in items])
         self.model.refilter()
-        self._update_flag_actions()
-        self._update_status()
+        self._changed()
 
     def edit_keywords(self):
         """Ask which keywords the photos chosen (or shown) get or lose."""
-        rows = self._flag_rows()
+        rows = self.nav.chosen_rows()
         if not rows:
             return
-        dialog = KeywordsDialog(self)
+        dialog = KeywordsDialog(self.parent())
 
         def refresh():
             have = {}
@@ -41,7 +56,7 @@ class KeywordingMixin:
         def add(text):
             given = self.model.add_keywords(rows, text.split(","))
             if not given:
-                self.statusBar().showMessage("Nothing to add", 3000)
+                self.messages.showMessage("Nothing to add", 3000)
             refresh()
 
         def remove(paths):
@@ -57,13 +72,12 @@ class KeywordingMixin:
             dialog.exec()
         finally:
             self.service.keywords_changed.disconnect(refresh)
-        self._update_flag_actions()
-        self._update_status()
+        self._changed()
 
     def rename_keyword(self, path):
         names = path.split(" > ")
         text, ok = QInputDialog.getText(
-            self, "Rename Keyword", f"New name for {path}:", text=names[-1]
+            self.parent(), "Rename Keyword", f"New name for {path}:", text=names[-1]
         )
         new = " > ".join([*names[:-1], text.strip()]) if ok and text.strip() else None
         if new is None or new == path:
@@ -77,12 +91,12 @@ class KeywordingMixin:
             path,
             new,
             on_done=renamed,
-            on_error=lambda error: QMessageBox.warning(self, "Rename Keyword", str(error)),
+            on_error=lambda error: QMessageBox.warning(self.parent(), "Rename Keyword", str(error)),
         )
 
     def delete_keyword(self, path):
         answer = QMessageBox.question(
-            self,
+            self.parent(),
             "Delete Keyword",
             f"Take {path}, and any keywords inside it, off every photo? The photos stay.",
         )

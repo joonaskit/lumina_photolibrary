@@ -176,7 +176,7 @@ def open_window(qtbot, service, drive):
     qtbot.addWidget(window)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(drive / "Photos")
+        window.browser.add_folder(drive / "Photos")
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     return window
 
@@ -185,43 +185,43 @@ def test_making_a_copy_in_the_viewer_shows_it_and_stepping_goes_through_the_edit
     qtbot, service, drive
 ):
     window = open_window(qtbot, service, drive)
-    window.show_photo(0)
-    photo_id = window._viewed_id
+    window.nav.show_photo(0)
+    photo_id = window.nav.viewed_id
 
-    window.make_virtual_copy()
+    window.copies.make_virtual_copy()
     window.service.flush()
 
     assert window.pages.currentIndex() == _VIEWER
-    assert window._viewed_copy == 1
+    assert window.nav.viewed_copy == 1
     assert "copy 1" in window.title.text()
     assert "Edit 2 of 2" in window.status.text()
-    window.step_copy(-1)
-    assert window._viewed_copy == 0
+    window.copies.step_copy(-1)
+    assert window.nav.viewed_copy == 0
     assert "copy" not in window.title.text()
-    window.step_copy(-1)
-    assert window._viewed_copy == 0
-    window.step_copy(1)
-    window.step_copy(1)
-    assert window._viewed_copy == 1
+    window.copies.step_copy(-1)
+    assert window.nav.viewed_copy == 0
+    window.copies.step_copy(1)
+    window.copies.step_copy(1)
+    assert window.nav.viewed_copy == 1
     qtbot.waitUntil(
         lambda: window.model.copies(window.model.row_of(photo_id)) == 1, timeout=TIMEOUT
     )
     # Another photo starts at its own edit
-    window.step(1)
-    assert window._viewed_copy == 0
+    window.nav.step(1)
+    assert window.nav.viewed_copy == 0
 
 
 def test_a_copy_is_edited_in_the_develop_view_and_deleted_there(qtbot, service, drive, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
     window = open_window(qtbot, service, drive)
-    window.show_photo(0)
-    photo_id = window._viewed_id
-    window.edit_current()
+    window.nav.show_photo(0)
+    photo_id = window.nav.viewed_id
+    window.nav.edit_current()
     assert window.pages.currentIndex() == _DEVELOP
     qtbot.waitUntil(lambda: window.session.size is not None, timeout=TIMEOUT)
 
-    window.make_virtual_copy()
+    window.copies.make_virtual_copy()
     window.service.flush()
 
     assert window.session.copy == 1 and window.session.photo_id == photo_id
@@ -231,7 +231,7 @@ def test_a_copy_is_edited_in_the_develop_view_and_deleted_there(qtbot, service, 
     assert service.edit_json(photo_id) is None
     monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
 
-    window.delete_virtual_copy()
+    window.copies.delete_virtual_copy()
 
     assert service.copies(photo_id) == []
     assert window.session.copy == 0
@@ -243,7 +243,7 @@ def test_the_grid_makes_a_copy_of_each_photo_chosen(qtbot, service, drive):
     window.grid.selectAll()
     assert window.pages.currentIndex() == _GRID
 
-    window.make_virtual_copy()
+    window.copies.make_virtual_copy()
     window.service.flush()
 
     qtbot.waitUntil(
@@ -326,14 +326,14 @@ def test_a_copy_chosen_in_the_grid_is_deleted_and_the_photo_is_not(
     window.grid.setCurrentIndex(window.model.index(window.model.row_of(photo_id)))
 
     # The photo's own cell has no copy to delete
-    window._update_copy_actions()
+    window.copies.update_actions()
     assert not window.delete_copy_action.isEnabled()
 
     window.grid.setCurrentIndex(window.model.index(row))
-    window._update_copy_actions()
+    window.copies.update_actions()
     assert window.delete_copy_action.isEnabled()
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
-    window.delete_virtual_copy()
+    window.copies.delete_virtual_copy()
 
     assert library.copies(photo_id) == [1]
     qtbot.waitUntil(
@@ -353,4 +353,4 @@ def test_a_copy_cell_opens_that_copy(qtbot, library, photo):
     window.grid.activated.emit(window.model.index(row))
 
     assert window.pages.currentIndex() == _VIEWER
-    assert window._viewed_copy == 1
+    assert window.nav.viewed_copy == 1

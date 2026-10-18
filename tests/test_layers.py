@@ -34,3 +34,12 @@ def test_layer_imports(layer):
                 assert module != forbidden and not module.startswith(forbidden + "."), (
                     f"{path.relative_to(PACKAGE)} imports {module}"
                 )
+
+
+def test_the_window_parts_do_not_import_the_window():
+    """A controller is handed what it works with (#108): none imports the window."""
+    files = list((PACKAGE / "ui" / "controllers").rglob("*.py"))
+    assert files
+    for path in files:
+        for module in imported_modules(path):
+            assert module != "lumina.ui.main_window", f"{path.relative_to(PACKAGE)} imports it"

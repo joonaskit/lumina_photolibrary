@@ -28,7 +28,7 @@ def open_window(qtbot, service, folder):
     qtbot.addWidget(window)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
-        window.add_folder(folder)
+        window.browser.add_folder(folder)
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     assert window.model.rowCount() == 3
     return window
@@ -131,7 +131,7 @@ def test_copied_settings_go_over_the_edits_of_the_photos_chosen(qtbot, service, 
     assert window.copy_settings_action.isEnabled()
     assert not window.paste_settings_action.isEnabled()
 
-    window.copy_settings()
+    window.settings_copy.copy_settings()
 
     assert asked[0][0] == "Copy Settings"
     copied = window.service.copied
@@ -140,7 +140,7 @@ def test_copied_settings_go_over_the_edits_of_the_photos_chosen(qtbot, service, 
     assert window.paste_settings_action.isEnabled()
     questions = confirm(monkeypatch)
 
-    window.paste_settings()
+    window.settings_copy.paste_settings()
     window.service.flush()
 
     assert "2 photos" in questions[0] and "a.jpg" in questions[0]
@@ -160,11 +160,11 @@ def test_pasting_to_many_photos_asks_first_and_no_leaves_them_alone(
     edit_stored(qtbot, window, "a.jpg", LOOK)
     answer_dialog(monkeypatch, ["exposure"])
     select(window, "a.jpg")
-    window.copy_settings()
+    window.settings_copy.copy_settings()
     select(window, "b.jpg", "c.dng")
     confirm(monkeypatch, QMessageBox.StandardButton.No)
 
-    window.paste_settings()
+    window.settings_copy.paste_settings()
     window.service.flush()
 
     assert stored(window, "b.jpg") is None and stored(window, "c.dng") is None
@@ -176,11 +176,11 @@ def test_pasting_to_one_photo_does_not_ask(qtbot, service, drive, monkeypatch):
     edit_stored(qtbot, window, "a.jpg", LOOK)
     answer_dialog(monkeypatch, ["exposure"])
     select(window, "a.jpg")
-    window.copy_settings()
+    window.settings_copy.copy_settings()
     select(window, "b.jpg")
     questions = confirm(monkeypatch)
 
-    window.paste_settings()
+    window.settings_copy.paste_settings()
     window.service.flush()
 
     assert not questions
@@ -193,7 +193,7 @@ def test_a_cancelled_copy_keeps_nothing(qtbot, service, drive, monkeypatch):
     answer_dialog(monkeypatch, None)
     select(window, "a.jpg")
 
-    window.copy_settings()
+    window.settings_copy.copy_settings()
 
     assert window.service.copied is None
     settled(qtbot, window)
@@ -206,19 +206,19 @@ def test_copying_from_a_photo_without_an_edit_pastes_the_original_over_the_secti
     edit_stored(qtbot, window, "b.jpg", Params(exposure=2.0, tint=9))
     answer_dialog(monkeypatch, ["exposure"])
     select(window, "a.jpg")
-    window.copy_settings()
+    window.settings_copy.copy_settings()
     select(window, "b.jpg")
 
-    window.paste_settings()
+    window.settings_copy.paste_settings()
     window.service.flush()
 
     # Exposure back to none; the tint was not in what was copied
     assert stored(window, "b.jpg") == Params(tint=9)
     answer_dialog(monkeypatch, ["exposure", "white_balance"])
     select(window, "a.jpg")
-    window.copy_settings()
+    window.settings_copy.copy_settings()
     select(window, "b.jpg")
-    window.paste_settings()
+    window.settings_copy.paste_settings()
     window.service.flush()
     # Nothing left of the edit: it is gone, not kept empty
     assert stored(window, "b.jpg") is None
@@ -232,13 +232,13 @@ def test_an_edit_from_a_newer_lumina_is_left_alone_and_named(qtbot, service, dri
     window.service.save_edit(photo_id(window, "b.jpg"), newer)
     answer_dialog(monkeypatch, ["exposure"])
     select(window, "a.jpg")
-    window.copy_settings()
+    window.settings_copy.copy_settings()
     select(window, "b.jpg", "c.dng")
     confirm(monkeypatch)
     warned = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *a: warned.append(a[2]))
 
-    window.paste_settings()
+    window.settings_copy.paste_settings()
     window.service.flush()
 
     assert window.service.edit_json(photo_id(window, "b.jpg")) == newer
@@ -259,7 +259,7 @@ def test_syncing_copies_the_current_photos_sections_to_the_others_chosen(
     assert window.sync_settings_action.isEnabled()
     asked = answer_dialog(monkeypatch, ["white_balance", "colour"])
 
-    window.sync_settings()
+    window.settings_copy.sync_settings()
     window.service.flush()
 
     assert asked[0][0] == "Sync Settings" and asked[0][1] == "Sync"
@@ -282,7 +282,7 @@ def test_the_menu_actions_follow_what_there_is_to_copy_and_paste(
     assert not window.paste_settings_action.isEnabled()
     answer_dialog(monkeypatch, ["exposure"])
     select(window, "a.jpg")
-    window.copy_settings()
+    window.settings_copy.copy_settings()
 
     assert window.paste_settings_action.isEnabled()
     assert not window.sync_settings_action.isEnabled()
@@ -296,7 +296,7 @@ def test_settings_copied_in_the_develop_view_go_to_another_photo_and_can_be_undo
     edit_stored(qtbot, window, "a.jpg", LOOK)
     select(window, "a.jpg")
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.edit_current()
+        window.nav.edit_current()
     # An edit not yet kept anywhere else: the copy is of the edit as it is now
     window.session.commit(LOOK.with_changes(grain=edit_params.Grain(amount=40)))
     answer_dialog(monkeypatch, ["exposure", "grain"])
@@ -305,10 +305,10 @@ def test_settings_copied_in_the_develop_view_go_to_another_photo_and_can_be_undo
     window.develop.copy_settings_button.click()
 
     assert window.develop.paste_settings_button.isEnabled()
-    window.go_back()
+    window.nav.go_back()
     select(window, "b.jpg")
     with qtbot.waitSignal(window.session.image_ready, timeout=TIMEOUT):
-        window.edit_current()
+        window.nav.edit_current()
     window.session.commit(Params(tint=5))
 
     window.develop.paste_settings_button.click()
@@ -324,11 +324,11 @@ def test_pasting_in_the_viewer_edits_the_photo_shown(qtbot, service, drive, monk
     edit_stored(qtbot, window, "a.jpg", LOOK)
     answer_dialog(monkeypatch, ["exposure", "hsl"])
     select(window, "a.jpg")
-    window.copy_settings()
-    window.show_photo(next(r for r in range(3) if window.model.name(r) == "b.jpg"))
+    window.settings_copy.copy_settings()
+    window.nav.show_photo(next(r for r in range(3) if window.model.name(r) == "b.jpg"))
     assert window.paste_settings_action.isEnabled()
 
-    window.paste_settings()
+    window.settings_copy.paste_settings()
     window.service.flush()
 
     assert stored(window, "b.jpg") == Params(exposure=1.0, hsl=LOOK.hsl)
@@ -340,7 +340,7 @@ def test_the_choice_of_sections_is_remembered_for_the_next_copy(qtbot, service, 
     answer_dialog(monkeypatch, ["crop", "rotate"])
     select(window, "a.jpg")
 
-    window.copy_settings()
+    window.settings_copy.copy_settings()
 
     assert settings.copy_sections() == ["rotate", "crop"]
     settled(qtbot, window)
@@ -356,12 +356,12 @@ def test_settings_can_be_pasted_on_a_photo_on_a_drive_that_is_not_connected(
     edit_stored(qtbot, window, "a.jpg", LOOK)
     answer_dialog(monkeypatch, ["exposure"])
     select(window, "a.jpg")
-    window.copy_settings()
+    window.settings_copy.copy_settings()
     mounts.plugged = False
     qtbot.waitUntil(lambda: window.model.path(0) is None, timeout=TIMEOUT)
     select(window, "b.jpg")
 
-    window.paste_settings()
+    window.settings_copy.paste_settings()
     window.service.flush()
 
     # Edits live in the library, not on the drive
