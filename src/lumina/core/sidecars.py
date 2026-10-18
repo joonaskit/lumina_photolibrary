@@ -91,12 +91,15 @@ def _bad_edit(state):
     return None
 
 
-def read_changed(library, folder_id, locate, should_stop=lambda: False, report=None):
+def read_changed(library, folder_id, locate, should_stop=lambda: False, report=None, within=None):
     """Look beside the photos of folder `folder_id` for sidecars that changed since they
     were written or read here, and take in the newer ones. `locate(relative path)` is the
-    photo's path now. `report(done, total)` as it goes. Returns a Read."""
+    photo's path now. `report(done, total)` as it goes. With `within(relative path)`, only
+    the photos it says yes to. Returns a Read."""
     result = Read()
     candidates = library.sidecar_candidates(folder_id)
+    if within is not None:
+        candidates = [c for c in candidates if within(c[1])]
     for number, (photo_id, relative, noted) in enumerate(candidates, 1):
         if should_stop():
             break

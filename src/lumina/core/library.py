@@ -84,13 +84,18 @@ def scan(
     gentle=False,
     rest=rest,
     read_sidecars=False,
+    only=None,
 ):
     """Run scan job `job_id` for folder `folder_id` to its end and return its state.
     `mounts` are the system's mounts (volumes.read_mounts()); `exiftool` makes an
     ExifTool. With `gentle`, a large scan rests between batches (`rest(seconds,
     should_stop)`) and reads at a low priority. With `read_sidecars`, the sidecars beside
-    the photos that changed are taken in last (core/sidecars.py). Raises NotConnected,
-    leaving the job queued, when the folder's volume is not mounted."""
+    the photos that changed are taken in last (core/sidecars.py). With `only`, a set of
+    directories (absolute) where something changed, just those are looked at, each
+    without what is below it, and a directory that is gone makes the photos in it and
+    below it missing: a photo copied into a folder of 100,000 does not cost a walk of
+    all of it. Raises NotConnected, leaving the job queued, when the folder's volume is
+    not mounted."""
     folder = library.folder(folder_id)
     if folder is None:
         library.update_job(job_id, state=dbm.FAILED_JOB, message="The folder is not in the library")
@@ -109,7 +114,7 @@ def scan(
         job.end(dbm.FAILED_JOB, f"Folder not found: {base}")
         return dbm.FAILED_JOB
 
-    found = _find(library, job, folder, volume, base, should_stop, gentle, rest)
+    found = _find(library, job, folder, volume, base, should_stop, gentle, rest, only)
     if found is None:
         job.end(dbm.CANCELLED, "Cancelled while finding photos")
         return dbm.CANCELLED
@@ -121,7 +126,7 @@ def scan(
         return dbm.CANCELLED
     state, note, unread = details
     if read_sidecars:
-        taken = _read_sidecars(library, job, folder, base, should_stop)
+        taken = _read_sidecars(library, job, folder, base, should_stop, only)
         if taken is None:
             job.end(dbm.CANCELLED, "Cancelled while reading sidecars")
             return dbm.CANCELLED
@@ -133,6 +138,35 @@ def scan(
     return state
 
 
+class _Scope:
+    """The directories a partial scan looks at: `directories` (absolute) of the folder
+    `folder_path` found at `base`."""
+
+    def __init__(self, folder_path, base, directories):
+        self.paths = sorted(directories)
+        self._relative = {_relative(folder_path, base, d) for d in self.paths if d == base}
+        self._relative |= {
+            _relative(folder_path, base, d) for d in self.paths if d.startswith(base + "/")
+        }
+        # Gone since: what was in them, and below them, is missing
+        self._gone = {
+            _relative(folder_path, base, d)
+            for d in self.paths
+            if (d == base or d.startswith(base + "/")) and not os.path.isdir(d)
+        }
+
+    def find(self, should_stop, on_error):
+        for directory in self.paths:
+            if should_stop():
+                return
+            if os.path.isdir(directory):
+                yield from scanner.find_photos_in(directory, on_error, _remove_stale)
+
+    def covers(self, relative):
+        """Whether the photo at `relative` is in a directory looked at, or below one gone."""
+        return relative.rpartition("/")[0] in self._relative or _under_any(relative, self._gone)
+
+
 def _remove_stale(path):
     """Remove a part file of ours that a crash left beside the photos. Nothing else."""
     try:
@@ -141,7 +175,7 @@ def _remove_stale(path):
         pass
 
 
-def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=rest):
+def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=rest, only=None):
     """Walk the folder. Returns ({"new", "changed", "missing"}: count, failures) or None
     when cancelled."""
     known = library.photo_states(folder.id)
@@ -162,10 +196,16 @@ def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=re
             return True
         return False
 
+    scope = _Scope(folder.path, base, only) if only is not None else None
+    if scope is None:
+        found = scanner.find_photos(
+            base, should_stop, on_error=unreadable_folder, on_stale=_remove_stale
+        )
+    else:
+        found = scope.find(should_stop, unreadable_folder)
+
     worked = time.monotonic()
-    for path in scanner.find_photos(
-        base, should_stop, on_error=unreadable_folder, on_stale=_remove_stale
-    ):
+    for path in found:
         relative = _relative(folder.path, base, path)
         try:
             relative.encode("utf-8")
@@ -198,7 +238,10 @@ def _find(library, job, folder, volume, base, should_stop, gentle=False, rest=re
     gone = [
         state[0]
         for relative, state in known.items()
-        if state[3] and relative not in seen and not _under_any(relative, unreadable)
+        if state[3]
+        and relative not in seen
+        and not _under_any(relative, unreadable)
+        and (scope is None or scope.covers(relative))
     ]
     library.mark_missing(gone)
     counts["missing"] = len(gone)
@@ -380,7 +423,7 @@ def take_in(library, folder, volume, base, files, edit_json=None):
     return [(state[0], paths[relative]) for relative, state in ids.items() if state is not None]
 
 
-def _read_sidecars(library, job, folder, base, should_stop):
+def _read_sidecars(library, job, folder, base, should_stop, only=None):
     """Take in sidecars that changed. Returns (a note for the summary, failures) or None
     when cancelled."""
     job.progress(SIDECARS, 0, None, force=True)
@@ -390,6 +433,7 @@ def _read_sidecars(library, job, folder, base, should_stop):
         lambda relative: _absolute(folder.path, base, relative),
         should_stop,
         lambda done, total: job.progress(SIDECARS, done, total),
+        within=_Scope(folder.path, base, only).covers if only is not None else None,
     )
     library.add_failures(job.id, result.failures)
     if should_stop():

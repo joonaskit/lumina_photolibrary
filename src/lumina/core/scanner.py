@@ -48,3 +48,27 @@ def find_photos(root, should_stop=lambda: False, on_error=None, on_stale=None):
                     continue
                 if stale:
                     on_stale(path)
+
+
+def find_photos_in(directory, on_error=None, on_stale=None):
+    """Yield the path of every photo directly in `directory` (not below it), in name
+    order, as `find_photos` does, with the same hidden files skipped and stale part files
+    passed to `on_stale`. A directory that cannot be read is passed to `on_error`."""
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError as error:
+        if on_error is not None:
+            on_error(error.filename or directory, error.strerror or str(error))
+        return
+    for name in names:
+        path = os.path.join(directory, name)
+        if name.startswith("."):
+            if on_stale is not None and name.endswith(".part"):
+                try:
+                    stale = is_stale_part(name, os.lstat(path).st_mtime)
+                except OSError:
+                    continue
+                if stale:
+                    on_stale(path)
+        elif is_photo(name) and os.path.isfile(path):
+            yield path

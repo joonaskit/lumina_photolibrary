@@ -157,6 +157,10 @@ class LibraryService(QObject):
         self._counting = 0
         self._quitting = threading.Event()
         self._remove_after = set()
+        # Folder id -> the directories its queued scan is limited to (none: all of it), and
+        # those that changed while its scan ran, to scan when it ends
+        self._partial = {}
+        self._later = {}
         self._photos_told = 0.0
         # The most the thumbnail cache may take, in bytes, or None for no limit; the
         # application sets it from the settings
@@ -247,11 +251,32 @@ class LibraryService(QObject):
         self.keywords_changed.emit()
         self.collections_changed.emit(None)
 
-    def rescan(self, folder_id=None):
-        """Scan one folder, or all."""
+    def rescan(self, folder_id=None, directories=None):
+        """Scan one folder, or all. With `directories` (absolute) of one folder, just
+        those, without what is below them: where something changed, as the watcher says."""
+        if directories is not None and folder_id is not None:
+            self._rescan_directories(folder_id, set(directories))
+            return
         ids = [folder_id] if folder_id is not None else [f.id for f in self.db.folders()]
         for folder in ids:
+            # All of it, whatever was asked for before
+            self._partial.pop(folder, None)
+            self._later.pop(folder, None)
             self.db.add_job(scanning.SCAN, folder)
+        self._next_job()
+
+    def _rescan_directories(self, folder_id, directories):
+        if self._running is not None and self._running[1] == folder_id:
+            # Its scan may have passed them: again when it ends
+            self._later.setdefault(folder_id, set()).update(directories)
+            return
+        if any(job.folder_id == folder_id for job in self._scans()):
+            # Waiting: a scan of all of it covers these, one of some gets them too
+            if folder_id in self._partial:
+                self._partial[folder_id] |= directories
+            return
+        self._partial[folder_id] = set(directories)
+        self.db.add_job(scanning.SCAN, folder_id)
         self._next_job()
 
     def is_connected(self, folder_id):
@@ -760,6 +785,7 @@ class LibraryService(QObject):
         name = self._folder_name(job.folder_id)
         quitting = self._quitting
         self._tell(job.id, name)
+        only = self._partial.pop(job.folder_id, None)
         # Kept for the tests, which wait for a job to end
         self.future = workers.submit(
             _run_scan,
@@ -772,6 +798,7 @@ class LibraryService(QObject):
             self._exiftool,
             self.gentle_scans,
             self.sidecars,
+            only,
             lambda *args: workers.call_on_main(self, self._on_progress, job.id, name, *args),
             on_done=lambda state: self._on_ended(job.id, job.folder_id, name, state),
             on_error=lambda error: self._on_failed(job.id, job.folder_id, name, error),
@@ -795,6 +822,9 @@ class LibraryService(QObject):
         self._running = self._stop = None
         if self._quitting.is_set():
             return
+        later = self._later.pop(folder_id, None)
+        if later:
+            self._rescan_directories(folder_id, later)
         status = self._status(job_id, name)
         if folder_id in self._remove_after:
             self._remove_after.discard(folder_id)
@@ -874,7 +904,7 @@ def _prune_thumbnails(path, root, limit, volume_keys):
 
 
 def _run_scan(
-    path, job_id, folder_id, mounts, stop, quitting, exiftool, gentle, read_sidecars, report
+    path, job_id, folder_id, mounts, stop, quitting, exiftool, gentle, read_sidecars, only, report
 ):
     """On a worker thread, with a connection of its own."""
     with dbm.Library(path) as library:
@@ -888,6 +918,7 @@ def _run_scan(
             exiftool=exiftool,
             gentle=gentle,
             read_sidecars=read_sidecars,
+            only=only,
         )
         if state == dbm.CANCELLED and quitting.is_set():
             # Stopped by a quit, not by the user: run again at the next start

@@ -284,6 +284,67 @@ def test_a_scan_removes_part_files_of_ours_that_a_crash_left_and_nothing_else(li
     assert {p.name for p in photos.iterdir()} == before
 
 
+def test_a_partial_scan_looks_only_at_the_directories_given(library, drive):
+    folder = add(library, drive)
+    run(library, folder, mounted(drive))
+    photos = drive / "Photos"
+    make_jpeg(photos / "new_top.jpg")
+    make_jpeg(photos / "2022" / "new_deep.jpg")
+    # Gone in both, but only one of the directories is looked at
+    (photos / "a.jpg").unlink()
+    (photos / "2022" / "b.jpg").unlink()
+
+    state, job = run(library, folder, mounted(drive), only={str(photos / "2022")})
+
+    assert state == dbm.DONE
+    states = by_path(library, folder)
+    available = {path.rsplit("/", 1)[-1]: s[3] for path, s in states.items()}
+    assert available == {
+        "a.jpg": True,  # not looked at: still believed there
+        "b.jpg": False,
+        "c.dng": True,
+        "new_deep.jpg": True,
+    }
+    assert library.count_pending_metadata(folder) == 0
+
+
+def test_a_partial_scan_of_a_directory_that_is_gone_makes_what_was_below_it_missing(library, drive):
+    folder = add(library, drive)
+    run(library, folder, mounted(drive))
+    (drive / "Photos" / "2022" / "deeper").mkdir()
+    make_jpeg(drive / "Photos" / "2022" / "deeper" / "d.jpg")
+    run(library, folder, mounted(drive))
+    shutil.rmtree(drive / "Photos" / "2022")
+
+    run(library, folder, mounted(drive), only={str(drive / "Photos" / "2022")})
+
+    available = {path.rsplit("/", 1)[-1]: s[3] for path, s in by_path(library, folder).items()}
+    assert available == {
+        "a.jpg": True,
+        "b.jpg": False,
+        "c.dng": False,
+        "d.jpg": False,
+    }
+
+
+def test_a_partial_scan_does_not_walk_the_rest_of_the_folder(library, drive, monkeypatch):
+    folder = add(library, drive)
+    run(library, folder, mounted(drive))
+    walked = []
+    real = os.walk
+    monkeypatch.setattr(
+        os, "walk", lambda *args, **kwargs: walked.append(args) or real(*args, **kwargs)
+    )
+    listed = []
+    real_list = os.listdir
+    monkeypatch.setattr(os, "listdir", lambda path: listed.append(str(path)) or real_list(path))
+
+    run(library, folder, mounted(drive), only={str(drive / "Photos" / "2022")})
+
+    assert walked == []
+    assert listed == [str(drive / "Photos" / "2022")]
+
+
 def test_a_scan_interrupted_by_a_crash_is_found_and_finished(library, drive):
     folder = add(library, drive)
     job = library.add_job(scanning.SCAN, folder)
