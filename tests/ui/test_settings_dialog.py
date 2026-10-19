@@ -237,3 +237,37 @@ def test_the_develop_panel_order_and_hidden_sections_are_kept_as_they_are_change
     assert settings.hidden_sections() == set()
     assert tuple(settings.develop_order(develop_view.SECTION_NAMES)) == develop_view.SECTION_NAMES
     assert again.sections.item(0).checkState() == Qt.CheckState.Checked
+
+
+class FakeReports:
+    def __init__(self):
+        self.island = self.notify = True
+
+    def set_island(self, on):
+        self.island = on
+
+    def set_notify(self, on):
+        self.notify = on
+
+
+def test_the_island_and_notifications_are_on_at_first_kept_and_applied(qtbot):
+    assert settings.island_jobs() is True and settings.notify_jobs() is True
+    reports = FakeReports()
+    dialog = SettingsDialog(reports=reports)
+    qtbot.addWidget(dialog)
+    assert dialog.island.isChecked() and dialog.notify.isChecked()
+
+    dialog.island.setChecked(False)
+    dialog.notify.setChecked(False)
+    assert settings.island_jobs() is False and reports.island is False
+    assert settings.notify_jobs() is False and reports.notify is False
+    again = SettingsDialog(reports=FakeReports())
+    qtbot.addWidget(again)
+    assert not again.island.isChecked() and not again.notify.isChecked()
+
+
+def test_without_the_reports_there_is_no_desktop_section(qtbot):
+    dialog = SettingsDialog()
+    qtbot.addWidget(dialog)
+
+    assert not hasattr(dialog, "island")

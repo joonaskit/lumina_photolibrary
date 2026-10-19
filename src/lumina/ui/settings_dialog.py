@@ -93,13 +93,15 @@ def backup_text(made):
 
 class SettingsDialog(QDialog):
     """`search` is the SearchService, `library` the LibraryService and `backups` the
-    BackupService; without one there is no Search, Library or Backups section."""
+    BackupService; without one there is no Search, Library or Backups section. `reports`
+    are the JobReports; without them there is no Desktop section."""
 
-    def __init__(self, search=None, library=None, parent=None, backups=None):
+    def __init__(self, search=None, library=None, parent=None, backups=None, reports=None):
         super().__init__(parent)
         self.search = search
         self.library = library
         self.backups = backups
+        self.reports = reports
         # What the backup chosen holds, once read: (path, Contents or None)
         self._contents = None
         self._closed = False
@@ -135,6 +137,31 @@ class SettingsDialog(QDialog):
                 "one, and never in the Develop view."
             )
         )
+
+        if reports is not None:
+            layout.addWidget(self._heading("Desktop"))
+            self.island = QCheckBox("Show long jobs in the shell's island")
+            self.island.setChecked(settings.island_jobs())
+            self.island.toggled.connect(self._on_island_toggled)
+            layout.addWidget(self.island)
+            layout.addWidget(
+                self._note(
+                    "A scan, indexing, an import, a merge or an export that runs more than "
+                    "a few seconds shows in Quickshell Island with how far it is and "
+                    "Cancel, and a failure stays there until you dismiss it. Without the "
+                    "island this does nothing."
+                )
+            )
+            self.notify = QCheckBox("Notify when a job ends while Lumina is in the background")
+            self.notify.setChecked(settings.notify_jobs())
+            self.notify.toggled.connect(self._on_notify_toggled)
+            layout.addWidget(self.notify)
+            layout.addWidget(
+                self._note(
+                    "When a job fails, or one that ran a minute or more ends, and you are in "
+                    "another app. Clicking the notification brings Lumina back."
+                )
+            )
 
         layout = page("Develop")
         self.sections = QListWidget()
@@ -623,6 +650,14 @@ class SettingsDialog(QDialog):
             named = ", ".join(sorted(names.get(folder, "?") for folder in watcher.unwatched))
             text += f" Too many folders inside to watch: {named}. Rescan finds their changes."
         self.watch_note.setText(text)
+
+    def _on_island_toggled(self, on):
+        settings.set_island_jobs(on)
+        self.reports.set_island(on)
+
+    def _on_notify_toggled(self, on):
+        settings.set_notify_jobs(on)
+        self.reports.set_notify(on)
 
     def _on_sidecars_toggled(self, on):
         settings.set_sidecars(on)

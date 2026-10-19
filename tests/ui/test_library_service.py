@@ -7,7 +7,7 @@ from photos import make_jpeg
 
 from lumina.core import db as dbm
 from lumina.core.dbtypes import CANCELLED, DETAILS, DONE, FINDING
-from lumina.qt_models import library
+from lumina.qt_models import jobs
 
 
 def test_an_added_folder_is_scanned(service, drive, qtbot, wait_idle):
@@ -272,23 +272,20 @@ def test_a_scan_is_gentle_when_the_service_says_so_and_the_library_is_large(
     assert not FakeExifTool.gentle
 
 
-def test_the_time_left_is_told_from_the_rate_of_the_details(service, qtbot, monkeypatch):
-    now = [100.0]
-    monkeypatch.setattr(library.time, "monotonic", lambda: now[0])
+def test_the_time_left_is_told_from_the_rate_of_the_details():
+    # As the scan's runner times them: the details, once 100 are read
+    estimate = jobs.Estimate(100)
     job = 7
 
     # The walk has no end to tell; the details tell nothing until there is a rate
-    assert service._time_left(job, FINDING, 300, None) is None
-    assert service._time_left(job, DETAILS, 0, 1000) is None
-    now[0] += 2
-    assert service._time_left(job, DETAILS, 200, 1000) is None
-    now[0] += 8
+    assert estimate(job, FINDING, 300, None, 100.0) is None
+    assert estimate(job, DETAILS, 0, 1000, 100.0) is None
+    assert estimate(job, DETAILS, 200, 1000, 102.0) is None
     # 400 read in 10 seconds: 600 left take 15
-    assert service._time_left(job, DETAILS, 400, 1000) == pytest.approx(15)
+    assert estimate(job, DETAILS, 400, 1000, 110.0) == pytest.approx(15)
     # Few read: not told, a new job or phase starts again
-    assert service._time_left(8, DETAILS, 0, 1000) is None
-    now[0] += 20
-    assert service._time_left(8, DETAILS, 50, 1000) is None
+    assert estimate(8, DETAILS, 0, 1000, 110.0) is None
+    assert estimate(8, DETAILS, 50, 1000, 130.0) is None
 
 
 def test_the_raw_files_of_a_camera_are_found_on_a_thread(service, drive, qtbot):

@@ -15,7 +15,7 @@ import os
 import queue
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import partial
 
 from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
@@ -40,9 +40,8 @@ _PHOTOS_EVERY = 2.0
 _SIDECARS_AFTER_MS = 3000
 # How soon after the thumbnails were pruned a job's end prunes them again, in seconds
 _PRUNE_EVERY = 600.0
-# The time left is told once this many photos, and this many seconds, tell the rate
+# The time left is told once this many photos tell the rate
 _ETA_AFTER_PHOTOS = 100
-_ETA_AFTER_SECONDS = 5.0
 
 
 def _write_sidecars(path, mounts, quitting):
@@ -199,6 +198,9 @@ class LibraryService(QObject):
             changed=self.job_changed.emit,
             ended=self._scan_ended,
             progress=self._scan_progress,
+            # The walk's end is not known; the details are read in batches
+            timed={dbm.DETAILS},
+            eta_after=_ETA_AFTER_PHOTOS,
             # Unplugged as it started: the mounts tell it, and it waits for the drive
             waits=lambda _job, _error: self._unplugged(),
             ready=lambda job: (
@@ -228,8 +230,6 @@ class LibraryService(QObject):
         # Whether a large scan rests between batches and reads at a low priority; the
         # application sets it from the settings
         self.gentle_scans = True
-        # (job, phase, when it began, how many were done then): for the time left
-        self._phase_began = None
         # Whether XMP sidecars are written and read; the application sets it from the
         # settings (`set_sidecars`)
         self.sidecars = False
@@ -977,9 +977,7 @@ class LibraryService(QObject):
         return partial(_scan, job.folder_id, self._exiftool, self.gentle_scans, self.sidecars, only)
 
     def _scan_progress(self, job, status, changed):
-        self.job_changed.emit(
-            replace(status, eta=self._time_left(job.id, status.phase, status.done, status.total))
-        )
+        self.job_changed.emit(status)
         now = time.monotonic()
         if changed and now - self._photos_told >= _PHOTOS_EVERY:
             self._photos_told = now
@@ -1008,21 +1006,6 @@ class LibraryService(QObject):
         self.job_ended.emit(status)
         if self._pruned_at is None or time.monotonic() - self._pruned_at >= _PRUNE_EVERY:
             self.prune_thumbnails()
-
-    def _time_left(self, job_id, phase, done, total):
-        """Seconds until the details are all read at the rate so far, or None: not told
-        before enough has been read to say, and not for the walk, whose end is unknown."""
-        now = time.monotonic()
-        if self._phase_began is None or self._phase_began[:2] != (job_id, phase):
-            self._phase_began = (job_id, phase, now, done)
-            return None
-        _job, _phase, began, first = self._phase_began
-        read = done - first
-        if phase != dbm.DETAILS or not total or read < _ETA_AFTER_PHOTOS:
-            return None
-        if now - began < _ETA_AFTER_SECONDS:
-            return None
-        return (total - done) * (now - began) / read
 
     def _folder_name(self, folder_id):
         info = next((f for f in self.folders() if f.id == folder_id), None)
