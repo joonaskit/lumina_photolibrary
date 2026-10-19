@@ -21,6 +21,7 @@ This is the source of truth for design, current decisions and what comes next. U
 | Layer rules | `ui/` shares a small domain model with `core/` and imports it directly: the edit (`core/edit/params.py`), the library's records and constants (`core/dbtypes.py`), keyword paths, smart collections' queries, export options and the errors the UI tells of. Those modules are plain data, importing only the standard library and each other; the rest of `core/` is reached through `qt_models/`. Decided over translating to view types in `qt_models/`, which would duplicate the edit for no gain (#109). |
 | PySide6 source | PyPI `PySide6-Essentials` in a plain venv (Widgets without WebEngine). Tested on Python 3.14 with PySide6 6.12, rawpy 0.27.1 (LibRaw 0.22.1). |
 | Theme | Same as filehouse: `integration/theme.py` reads Quickshell Island's `theme.json` over the same built-in defaults, `integration/style.py` maps it to the palette, font and a shapes-only stylesheet, `integration/theme_watcher.py` follows changes live. The two apps look alike with the shell running or not. The scheme, accent and corners can be chosen by hand instead (`integration/appearance.py`; [docs/history.md](docs/history.md), *Appearance chosen by hand*). |
+| Jobs outside the window | Shown in the Quickshell Island while they run, with Cancel, through its activities API (`integration/island.py`, a port of filehouse's client to QtDBus), and a desktop notification when one fails or a long one ends while Lumina is not the active app (`integration/notifications.py`, sent with `gdbus call`: PySide6 cannot send `Notify`'s unsigned arguments). `ui/job_reports.py` decides what each job's status looks like there and when it is worth telling; a job reaches the island after 3 s, so the watcher's rescans stay in the status bar. Each can be turned off in the settings (General, Desktop), at once. Chosen over the taskbar's `com.canonical.Unity.LauncherEntry` progress, which the shell's dock does not show; that can still be added for plain Plasma (#86). The status bar tells every job as before, with the time left for scans, indexing, imports and exports (`jobs.Estimate`). |
 | File dialogs | The desktop's, through the file chooser portal (`QT_QPA_PLATFORMTHEME=xdgdesktopportal`, set at start unless the user chose a theme): PyPI's Qt cannot load Plasma's dialogs and would draw its own. Whatever serves the portal (Plasma, or filehouse) gives the dialog, with its places and devices. |
 | Worker processes | `concurrent.futures.ProcessPoolExecutor` with the `forkserver` context (not `fork`: Qt's threads). The forkserver re-imports the main module, so every entry point has an `if __name__ == "__main__"` guard. |
 | Scheduling | One scheduler (`qt_models/workers.py`) runs all work on lanes, declared in one place: a lane is a pool of processes or threads for one kind of work (decoding, the Develop process, the embed and query processes, merges, the window's short reads, searches, a thread per kind of job and per chore). A lane takes requests by priority (`NOW` the photo looked at, `SOON` what is in view, `LATER` exports and profile fitting), then in order, and a request still waiting can be cancelled. When a worker dies, the requests in flight with it run again one at a time before anything else, so only the one to blame fails. Work is stopped with one `Token` type (a job's has the app's quitting as its parent), and work that runs once at a time and again if asked meanwhile uses `Coalescing`. Scans, indexing, imports, merges and exports are run by one `JobRunner` (`qt_models/jobs.py`) from the `jobs` table, reporting one `JobStatus`; each service only describes its jobs (#110). |
@@ -35,7 +36,7 @@ This is the source of truth for design, current decisions and what comes next. U
 
 ```
 ui/  →  qt_models/  →  core/
-          integration/ (theme, desktop hand-off)
+          integration/ (theme, desktop hand-off, island, notifications)
 ```
 
 - `core/` imports no Qt. Plain Python, numpy, rawpy, sqlite3, onnxruntime. Reports through callbacks.
@@ -105,7 +106,7 @@ Built, in the order it was built (details in [docs/history.md](docs/history.md))
 | Develop | Exposure, white balance, Basic tone, colour, HSL, grading, curves, matte, presence, sharpening, noise reduction, vignette, grain, lens corrections, camera profiles (DCP, fitted, colour checker), perspective, crop, zoom, copy and paste, presets, export (JPEG, PNG, TIFF). |
 | Merges | HDR (#27) and panoramas (#28), untested on many real shots. |
 | Camera | Tethered folder, USB tethering, live view with focus (#57 to #59). |
-| App | Settings, density, appearance, shortcut overlay and command palette (#76, #77). |
+| App | Settings, density, appearance, shortcut overlay and command palette (#76, #77), jobs in the island and notifications (#86). |
 
 ## Next
 

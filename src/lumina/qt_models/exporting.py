@@ -44,6 +44,7 @@ class ExportService(QObject):
             changed=self.job_changed.emit,
             ended=lambda job, status: self.ended.emit(job.id, status),
             failed=lambda _job, error: f"Could not export: {error}",
+            timed={dbm.EXPORTING},
         )
         library.mounts_changed.connect(self.jobs.wake)
         # The path of the photo open in the Develop process, or None: read on the export

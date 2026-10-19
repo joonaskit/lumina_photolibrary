@@ -2,9 +2,10 @@
 
 import pytest
 
-from lumina.core.dbtypes import DETAILS, FINDING, RUNNING
+from lumina.core.dbtypes import COPYING, DETAILS, EXPORTING, FAILED_JOB, FINDING, RUNNING
 from lumina.qt_models.jobs import JobStatus
 from lumina.ui import job_status
+from lumina.ui.search import describe_indexing
 
 
 def status(**fields):
@@ -53,3 +54,18 @@ def test_the_walk_has_no_time_left_to_tell():
     text = job_status.describe(status(phase=FINDING, eta=100))
 
     assert text == "Scanning Photos: 500 photos found"
+
+
+def test_imports_exports_and_indexing_tell_the_time_left_too():
+    eta = 25 * 60
+
+    assert job_status.describe_import(status(phase=COPYING, done=5, total=40, eta=eta)) == (
+        "Importing into Photos: 5 of 40  ·  about 25 minutes left"
+    )
+    assert job_status.describe_export(status(phase=EXPORTING, done=5, total=40, eta=eta)) == (
+        "Exporting to Photos: 5 of 40  ·  about 25 minutes left"
+    )
+    assert describe_indexing(status(phase="encoding", done=1500, total=12000, eta=eta)) == (
+        "Indexing for search: 1 500 of 12 000  ·  about 25 minutes left"
+    )
+    assert describe_indexing(status(state=FAILED_JOB)) == "Could not index for search"

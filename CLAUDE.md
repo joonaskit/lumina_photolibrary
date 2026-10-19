@@ -38,7 +38,7 @@ Do not mix a PyPI PySide6 with the Fedora `python3-pyside6` in one environment.
 
 ```
 ui/  →  qt_models/  →  core/
-          integration/ (theme, desktop hand-off)
+          integration/ (theme, desktop hand-off, island, notifications)
 ```
 
 - `core/` imports **no Qt**. Plain Python, numpy, OpenCV, rawpy, sqlite3, onnxruntime. It reports through callbacks.

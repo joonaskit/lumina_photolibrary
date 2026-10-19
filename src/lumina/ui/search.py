@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from lumina.core.dbtypes import CANCELLED, FAILED_JOB, QUEUED, RUNNING
 from lumina.integration import style
+from lumina.ui.job_status import left
 
 # How long after the last key a search starts
 _TYPING_MS = 350
@@ -213,10 +214,13 @@ def describe_indexing(status):
         if status.total is None:
             # Starting: not counted yet
             return "Indexing for search"
-        return f"Indexing for search: {status.done:,} of {status.total:,}".replace(",", " ")
+        counted = f"{status.done:,} of {status.total:,}".replace(",", " ")
+        return f"Indexing for search: {counted}{left(status)}"
     if status.state == CANCELLED:
         return "Stopped indexing for search"
     if status.state == FAILED_JOB:
+        if not status.message:
+            return "Could not index for search"
         return f"Could not index for search: {status.message}"
     return status.message or "Indexed for search"
 

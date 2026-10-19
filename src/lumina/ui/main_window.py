@@ -199,6 +199,7 @@ class MainWindow(QMainWindow):
         tether=None,
         camera=None,
         exporter=None,
+        reports=None,
     ):
         """`search` is the SearchService; without one there is no search. `merge` is the
         MergeService; without one there are no merges. `importer` is the ImportService;
@@ -207,6 +208,8 @@ class MainWindow(QMainWindow):
         folder can be tethered. `camera` is the CameraService (which takes its photos in
         through `tether`); without one there is no shooting with a camera. `exporter` is the
         ExportService; without one the photos chosen in the grid can't be exported.
+        `reports` are the JobReports (the jobs in the island and notifications), which
+        the settings turn on and off.
 
         The window builds the widgets and the actions; what they do is the controllers'
         (ui/controllers/), which it makes and connects them to."""
@@ -219,6 +222,7 @@ class MainWindow(QMainWindow):
         self.merge = merge
         self.importer = importer
         self.exporter = exporter
+        self.reports = reports
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(style.app_icon())
         self.resize(style.px(1280), style.px(820))
@@ -1023,7 +1027,9 @@ class MainWindow(QMainWindow):
         self.search_field.draw_icons()
 
     def open_settings(self):
-        dialog = SettingsDialog(self.search, self.service, self, backups=self.backups)
+        dialog = SettingsDialog(
+            self.search, self.service, self, backups=self.backups, reports=self.reports
+        )
         dialog.exec()
         dialog.deleteLater()
         self.develop.arrange()

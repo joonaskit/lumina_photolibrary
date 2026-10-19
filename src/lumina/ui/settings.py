@@ -146,6 +146,26 @@ def set_sidecars(on):
     _settings().setValue("library/sidecars", bool(on))
 
 
+def island_jobs():
+    """Whether the jobs that run on are shown in Quickshell Island, with Cancel. On at
+    first; without the island nothing is shown whatever this says."""
+    return _settings().value("desktop/island_jobs", True) in (True, "true")
+
+
+def set_island_jobs(on):
+    _settings().setValue("desktop/island_jobs", bool(on))
+
+
+def notify_jobs():
+    """Whether a desktop notification tells of a job that failed, or a long one that
+    ended, while Lumina was not the active app. On at first."""
+    return _settings().value("desktop/notify_jobs", True) in (True, "true")
+
+
+def set_notify_jobs(on):
+    _settings().setValue("desktop/notify_jobs", bool(on))
+
+
 def density():
     """How much room the interface takes: "comfortable" or "compact"."""
     value = _settings().value("view/density")

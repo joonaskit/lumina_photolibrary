@@ -15,13 +15,20 @@ The service describes its jobs; the runner does the rest:
 - `name(job)`: what the job is about, for the status bar
 - `ended(job, status)`, on the main thread, after the status is told: what the job's
   end means for the service (a rescan, the grid told)
+
+The phases named `timed` are given a time left (`JobStatus.eta`) from the rate so far.
 """
 
+import time
 from dataclasses import dataclass, replace
 
 from lumina.core import db as dbm
 from lumina.core.errors import NotConnected
 from lumina.qt_models import workers
+
+# A time left is told once a phase has run this long and done this many
+_ETA_AFTER_SECONDS = 5.0
+_ETA_AFTER_ITEMS = 3
 
 
 @dataclass(frozen=True)
@@ -39,11 +46,34 @@ class JobStatus:
     kind: str | None = None
     # Seconds left, as far as the rate so far tells; None when not known
     eta: float | None = None
+    # The job's id in the `jobs` table
+    job: int | None = None
 
 
 def waiting_for(error):
     """The words for a job waiting for what `error` (NotConnected) names."""
     return f"Waiting for {error} to be connected"
+
+
+class Estimate:
+    """Seconds until a phase is done at the rate so far, or None: not before it has run
+    `after_seconds` and done `after_items`, and not for a phase whose total is unknown."""
+
+    def __init__(self, after_items=_ETA_AFTER_ITEMS, after_seconds=_ETA_AFTER_SECONDS):
+        self.after_items = after_items
+        self.after_seconds = after_seconds
+        # (job id, phase, when it was first told, how many were done then)
+        self._began = None
+
+    def __call__(self, job_id, phase, done, total, now):
+        if self._began is None or self._began[:2] != (job_id, phase):
+            self._began = (job_id, phase, now, done)
+            return None
+        _job, _phase, began, first = self._began
+        made = done - first
+        if not total or made < self.after_items or now - began < self.after_seconds:
+            return None
+        return max(0, total - done) * (now - began) / made
 
 
 class JobRunner:
@@ -62,6 +92,9 @@ class JobRunner:
         waits=None,
         failed=None,
         ready=None,
+        timed=(),
+        eta_after=_ETA_AFTER_ITEMS,
+        clock=time.monotonic,
     ):
         """Run the jobs of `kinds` on `lane`, for the QObject `owner` (nothing is told
         once it is gone). `library` is the LibraryService: its database, path and drives.
@@ -71,7 +104,8 @@ class JobRunner:
         (`changed` is whether it wrote something the grid shows); `waits(job, error)`
         when its drive is not connected, giving the words to tell or None; `failed(job,
         error)` the message stored for a job that raised; `ready(job)` whether a job
-        queued can start now."""
+        queued can start now; `timed`, the phases given a time left once `eta_after`
+        are done in them; `clock`, for the tests."""
         self.owner = owner
         self.library = library
         self.kinds = frozenset(kinds)
@@ -84,6 +118,9 @@ class JobRunner:
         self._waits = waits
         self._failed = failed or (lambda _job, error: f"{type(error).__name__}: {error}")
         self._ready = ready or (lambda _job: True)
+        self._timed = frozenset(timed)
+        self._estimate = Estimate(eta_after)
+        self._clock = clock
         self.quitting = workers.Token()
         # The job running now, and the token that stops it
         self.running = None
@@ -167,6 +204,7 @@ class JobRunner:
             failures,
             queued,
             job.kind,
+            job=job.id,
         )
 
     def _run(self, job, tell):
@@ -198,7 +236,12 @@ class JobRunner:
             return
         # The phase the job reported, not the one the database has by the time this is
         # delivered: a quick phase would otherwise never be told
-        status = replace(self.status(job), state=dbm.RUNNING, phase=phase, done=done, total=total)
+        eta = None
+        if phase in self._timed:
+            eta = self._estimate(job.id, phase, done, total, self._clock())
+        status = replace(
+            self.status(job), state=dbm.RUNNING, phase=phase, done=done, total=total, eta=eta
+        )
         if self._progress is not None:
             self._progress(job, status, changed)
         else:
@@ -225,9 +268,8 @@ class JobRunner:
             self._waiting.add(job.id)
             words = self._waits(job, error) if self._waits is not None else waiting_for(error)
             if words is not None and not self.quitting.cancelled():
-                self._changed(
-                    JobStatus(self._name(job), dbm.QUEUED, None, 0, None, words, (), 0, job.kind)
-                )
+                status = JobStatus(self._name(job), dbm.QUEUED, None, 0, None, words, (), 0)
+                self._changed(replace(status, kind=job.kind, job=job.id))
             self.next()
             return
         if not self.quitting.cancelled():
