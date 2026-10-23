@@ -492,6 +492,55 @@ class DevelopSession(QObject):
         self._set_making(False)
         self.failed.emit(getattr(error, "message", None) or str(error))
 
+    # Auto
+
+    def auto_tone(self):
+        """Set the exposure and the Basic controls from the photo, as one step to undo."""
+        self._ask_auto(_session.auto_tone, self._apply_tone)
+
+    def auto_white_balance(self):
+        """Set the temperature and tint that make the photo grey on average, as one step."""
+        self._ask_auto(_session.auto_white_balance, self._apply_white_balance)
+
+    def pick_white_balance(self, point):
+        """Set the temperature and tint that make the photo grey at `point`, fractions of
+        the photo as shown, as one step."""
+        self._ask_auto(
+            _session.white_balance_at,
+            self._apply_white_balance,
+            tuple(map(float, point)),
+        )
+
+    def _ask_auto(self, call, apply, *extra):
+        if not self.is_open():
+            return
+        token = self._token
+        workers.submit(
+            call,
+            self.path,
+            self.params.to_json(),
+            *extra,
+            on_done=lambda found: token == self._token and apply(found),
+            on_error=lambda error: self._on_making_failed_auto(token, error),
+            owner=self,
+            lane=workers.DEVELOP,
+        )
+
+    def _on_making_failed_auto(self, token, error):
+        if token == self._token:
+            self.failed.emit(getattr(error, "message", None) or str(error))
+
+    def _apply_tone(self, found):
+        exposure, basic = found
+        self.commit(self.params.with_changes(exposure=exposure, basic=basic))
+
+    def _apply_white_balance(self, found):
+        if found is None:
+            self.failed.emit("There is no light there to make grey")
+            return
+        temperature, tint = found
+        self.commit(self.params.with_changes(temperature=temperature, tint=tint))
+
     # The lens
 
     def lens_name(self):

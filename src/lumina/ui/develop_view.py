@@ -581,6 +581,13 @@ class DevelopView(QWidget):
         root.addWidget(self.before_button)
 
         layout = self._begin(root, "light", "LIGHT")
+        self.auto_tone = QPushButton("Auto")
+        self.auto_tone.setToolTip(
+            "Set the exposure, contrast, highlights, shadows, whites and blacks from the "
+            "photo: one step to undo, and yours to adjust from there"
+        )
+        self.auto_tone.clicked.connect(lambda: self.session.auto_tone())
+        layout.addWidget(self.auto_tone)
         self.exposure = self._slider(layout, "Exposure", *EXPOSURE, unit=" EV", field="exposure")
         # Contrast, Highlights, Shadows, Whites, Blacks
         self.basic = {
@@ -654,6 +661,20 @@ class DevelopView(QWidget):
             layout, "Temperature", *WARMTH, step=1, decimals=0, field="temperature"
         )
         self.tint = self._slider(layout, "Tint", *WARMTH, step=1, decimals=0, field="tint")
+        row = QHBoxLayout()
+        self.as_shot = QPushButton("As Shot")
+        self.as_shot.setToolTip("The white balance the camera chose")
+        self.as_shot.clicked.connect(self._white_balance_as_shot)
+        self.auto_white_balance = QPushButton("Auto")
+        self.auto_white_balance.setToolTip("Make the photo grey on average")
+        self.auto_white_balance.clicked.connect(lambda: self.session.auto_white_balance())
+        self.pick_white_balance = QPushButton("Pick…")
+        self.pick_white_balance.setCheckable(True)
+        self.pick_white_balance.setToolTip("Click something that should be neutral grey or white")
+        self.pick_white_balance.toggled.connect(self._on_pick_white_balance)
+        for button in (self.as_shot, self.auto_white_balance, self.pick_white_balance):
+            row.addWidget(button, 1)
+        layout.addLayout(row)
 
         layout = self._begin(root, "colour", "COLOUR")
         # Vibrance, Saturation
@@ -1161,11 +1182,23 @@ class DevelopView(QWidget):
         if path:
             self.session.choose_profile(path)
 
+    def _white_balance_as_shot(self):
+        self.session.commit(self.session.params.with_changes(temperature=0.0, tint=0.0))
+
+    def _on_pick_white_balance(self, on):
+        if on:
+            self.checker_button.setChecked(False)
+            self.set_cropping(False)
+            self.image.start_picking(1)
+        else:
+            self.image.stop_picking()
+
     def _on_checker_toggled(self, on):
         self.checker_make.setVisible(on)
         self.checker_linear.setVisible(on)
         self.checker_make.setEnabled(False)
         if on:
+            self.pick_white_balance.setChecked(False)
             self.set_cropping(False)
             self.image.start_picking(4)
         else:
@@ -1173,6 +1206,11 @@ class DevelopView(QWidget):
         self._show_profile()
 
     def _on_picked(self, count):
+        if self.pick_white_balance.isChecked():
+            point = self.image.points[0]
+            self.pick_white_balance.setChecked(False)
+            self.session.pick_white_balance(point)
+            return
         self.checker_make.setEnabled(count == 4)
         self._show_profile()
 
@@ -1186,10 +1224,11 @@ class DevelopView(QWidget):
         self.session.request_profiles()
 
     def is_picking(self):
-        return self.checker_button.isChecked()
+        return self.checker_button.isChecked() or self.pick_white_balance.isChecked()
 
     def cancel_picking(self):
         self.checker_button.setChecked(False)
+        self.pick_white_balance.setChecked(False)
 
     def _show_lens(self, params=None):
         """The lens section: on or off, which lens, and the amounts."""
