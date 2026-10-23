@@ -34,6 +34,13 @@ Real camera files go in the git-ignored `tests/samples/` (or `$LUMINA_SAMPLES`):
 
 Do not mix a PyPI PySide6 with the Fedora `python3-pyside6` in one environment.
 
+## Branches
+
+- **`dev`** is where development happens: commit and push to it directly. Every push runs the checks (see above).
+- **`canary`** is only for large changes and refactors, work that would leave `dev` broken or half-done for a while. It is merged into `dev` by pull request (`canary` → `dev`), and `dev` is brought up to date with it before starting.
+- **`main`** is protected: changes reach it by pull request from `dev` only, once the checks pass. Never push to it.
+- The user reviews and tests, and merges (or asks for a merge) themselves. Open a pull request only when asked. After a merge, fast-forward the local branches from their remotes before the next piece.
+
 ## Layer rules
 
 ```
