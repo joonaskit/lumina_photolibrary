@@ -78,3 +78,17 @@ These are requirements, not guidelines. Any change touching files, the DB or exp
 - Photos are stored by path relative to a library root plus a volume id, so moved drives do not break the index.
 - Tests run against `tmp_path` and small generated sample files; never touch the real home directory or a real photo library. Real CR3 samples stay out of git (see above).
 - No network calls except the optional first-run model download.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (joonaskit/lumina_photolibrary), through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
