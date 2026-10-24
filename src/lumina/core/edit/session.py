@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from lumina.core import colour_checker, dcp, lensdb, profile_fit, raw
-from lumina.core.edit import colour_profile, pipeline
+from lumina.core.edit import auto, colour_profile, pipeline
 from lumina.core.edit import export as _export
 from lumina.core.edit import params as edit_params
 from lumina.core.edit.source import EditSource, fitted
@@ -175,6 +175,32 @@ def checker_profile(path, params_json, corners, model, linear=False):
     dcp.forget_scans()
     ident, profile = dcp.store(written)
     return Made(ident, profile.name, str(written), fitted.mean_error, fitted.max_error)
+
+
+def auto_tone(path, params_json):
+    """The exposure and the `params.Basic` that Auto finds for the open photo, as the edit
+    shows it."""
+    source = _source(path)
+    edit = edit_params.from_json(params_json)
+    linear = auto.analysis(source.proxy, edit, source.size(), source.camera)
+    return auto.auto_tone(linear)
+
+
+def auto_white_balance(path, params_json):
+    """(temperature, tint) that make the open photo grey on average, or None."""
+    source = _source(path)
+    edit = edit_params.from_json(params_json)
+    linear = auto.analysis(source.proxy, edit, source.size(), source.camera, white_balance=False)
+    return auto.auto_white_balance(linear)
+
+
+def white_balance_at(path, params_json, point):
+    """(temperature, tint) that make the open photo grey at `point`, fractions of the photo
+    as the edit shows it, or None where it is black."""
+    source = _source(path)
+    edit = edit_params.from_json(params_json)
+    linear = auto.analysis(source.proxy, edit, source.size(), source.camera, white_balance=False)
+    return auto.white_balance_at(linear, *point)
 
 
 def lens_names(shot):

@@ -34,6 +34,13 @@ Real camera files go in the git-ignored `tests/samples/` (or `$LUMINA_SAMPLES`):
 
 Do not mix a PyPI PySide6 with the Fedora `python3-pyside6` in one environment.
 
+## Branches
+
+- **`dev`** is where development happens: commit and push to it directly. Every push runs the checks (see above).
+- **`canary`** is only for large changes and refactors, work that would leave `dev` broken or half-done for a while. It is merged into `dev` by pull request (`canary` → `dev`), and `dev` is brought up to date with it before starting.
+- **`main`** is protected: changes reach it by pull request from `dev` only, once the checks pass. Never push to it.
+- The user reviews and tests, and merges (or asks for a merge) themselves. Open a pull request only when asked. After a merge, fast-forward the local branches from their remotes before the next piece.
+
 ## Layer rules
 
 ```
@@ -71,3 +78,17 @@ These are requirements, not guidelines. Any change touching files, the DB or exp
 - Photos are stored by path relative to a library root plus a volume id, so moved drives do not break the index.
 - Tests run against `tmp_path` and small generated sample files; never touch the real home directory or a real photo library. Real CR3 samples stay out of git (see above).
 - No network calls except the optional first-run model download.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (joonaskit/lumina_photolibrary), through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
