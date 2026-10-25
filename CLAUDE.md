@@ -23,7 +23,7 @@ pip install -e '.[dev]'
 lumina [PATH...]           # run the app; without a path it opens the last folder
 ./install.sh                # lumina on PATH, launcher entry and icon
 ruff check . && ruff format --check .
-pytest                      # tests/ui runs offscreen
+pytest                      # about 5.5 minutes: run it in the background; while working, the touched tests and tests/test_layers.py
 ```
 
 Every push runs the checks in `.github/workflows/tests.yml`, where a test that needs exiftool or lensfun fails instead of skipping. They must pass before a pull request can be merged into `main`.
