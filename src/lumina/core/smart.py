@@ -28,6 +28,8 @@ class SmartQuery:
     keyword: str | None = None
     # A search text: the photos that match it, best first
     text: str | None = None
+    # "blurry": the photos much less sharp than the best of their stack
+    sharpness: str | None = None
 
     def to_json(self):
         data = {key: value for key, value in asdict(self).items() if value is not None}
@@ -49,7 +51,7 @@ class SmartQuery:
     def passes(self, photo, keyword_paths):
         """Whether `photo` (a PhotoRow) is picked by the part that is not the database's:
         flag, stars, edit and keyword. `keyword_paths` is {keyword id: path}. The search
-        text is not tested here: it ranks."""
+        text is not tested here: it ranks, and sharpness needs the photo's stack."""
         if self.flag is not None and photo.flag != self.flag:
             return False
         if self.rating is not None:

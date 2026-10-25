@@ -55,6 +55,9 @@ DEVELOP = Lane("develop", True, 1)
 # One process for indexing for search, keeping the model loaded between batches
 # (core/embed.py); it never holds up thumbnails or a render
 EMBED = Lane("embed", True, 1)
+# One process for scoring photos' sharpness (core/sharpness.py), at low priority: it never
+# holds up thumbnails or a render
+SCORING = Lane("scoring", True, 1)
 # One process for the text half of the model, which a search's words are encoded by,
 # kept loaded between searches (core/embed.py)
 QUERY = Lane("query", True, 1)
@@ -68,6 +71,7 @@ SEARCH = Lane("search", False, 1)
 # indexing thread fetches and removes the model too, in turn with the indexing
 SCAN = Lane("scan", False, 1)
 INDEXING = Lane("indexing", False, 1)
+SHARPNESS = Lane("sharpness", False, 1)
 IMPORT = Lane("import", False, 1)
 MERGE = Lane("merge", False, 1)
 EXPORT = Lane("export", False, 1)

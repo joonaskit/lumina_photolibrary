@@ -61,6 +61,17 @@ def _pending_embeddings(model, volume_keys):
     )
 
 
+def _pending_sharpness(volume_keys):
+    keys = list(volume_keys)
+    marks = ", ".join("?" * len(keys))
+    return (
+        "FROM photos p JOIN volumes v ON v.id = p.volume_id "
+        f"WHERE p.available = 1 AND p.content_id IS NOT NULL AND v.key IN ({marks}) "
+        "AND NOT EXISTS (SELECT 1 FROM sharpness h WHERE h.content_id = p.content_id)",
+        keys,
+    )
+
+
 def _metadata_columns(data):
     captured = offset = None
     if data.captured is not None:

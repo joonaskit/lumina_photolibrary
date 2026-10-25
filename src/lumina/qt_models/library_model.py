@@ -26,6 +26,7 @@ from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, Qt, QTime
 
 from lumina.core import db as dbm
 from lumina.core import keywords as keywordm
+from lumina.core import sharpness
 from lumina.qt_models import workers
 from lumina.qt_models.thumbnails import Thumbnails
 
@@ -70,6 +71,7 @@ STARS = (1, 2, 3, 4, 5)
 # The edit filter: only photos with an edit (of their own, not a virtual copy's), or
 # only those without
 EDITED, UNEDITED = "edited", "unedited"
+BLURRY = "blurry"
 
 TEXT, SIMILAR = "text", "similar"
 
@@ -103,6 +105,9 @@ class LibraryModel(QAbstractListModel):
         self.flag_filter = None
         # EDITED or UNEDITED to show only those, or None for any
         self.edit_filter = None
+        # BLURRY to show only the photos much less sharp than the best of their stack, or
+        # None for any
+        self.sharpness_filter = None
         # NOT_RATED for photos without stars, or a number of stars for those with that
         # many or more, or None for any
         self.rating_filter = None
@@ -299,7 +304,9 @@ class LibraryModel(QAbstractListModel):
             base = self._all
         else:
             base = [self._all[self._positions[i]] for i in self._ranked if i in self._positions]
-        return self._open_copies(self._fold([photo for photo in base if self._passes(photo)]))
+        shown = [photo for photo in base if self._passes(photo)]
+        # Blurry photos are asked for one by one, whatever the top of their stack is
+        return self._open_copies(shown if self.sharpness_filter else self._fold(shown))
 
     def _open_copies(self, shown):
         """`shown` with a cell for each virtual copy of the photos that are open, after the
@@ -348,6 +355,15 @@ class LibraryModel(QAbstractListModel):
             return True
         return (photo.edited is not None) == (self.edit_filter == EDITED)
 
+    def _sharpness_passes(self, photo):
+        if self.sharpness_filter is None:
+            return True
+        members = self._stacks.get(photo.stack)
+        if members is None:
+            return False
+        scores = [m.sharpness for m in members if m.sharpness is not None]
+        return sharpness.is_blurry(photo.sharpness, max(scores, default=None))
+
     def _rating_passes(self, photo):
         if self.rating_filter is None:
             return True
@@ -367,7 +383,10 @@ class LibraryModel(QAbstractListModel):
 
     def _kept_passes(self, photo):
         return (
-            self._edit_passes(photo) and self._rating_passes(photo) and self._keyword_passes(photo)
+            self._edit_passes(photo)
+            and self._rating_passes(photo)
+            and self._keyword_passes(photo)
+            and self._sharpness_passes(photo)
         )
 
     def _passes(self, photo):
@@ -448,6 +467,13 @@ class LibraryModel(QAbstractListModel):
         """Show only photos with an edit (EDITED) or without one (UNEDITED), or any (None)."""
         if which != self.edit_filter:
             self.edit_filter = which
+            self._kept.clear()
+            self._show(self._compose(), reset=False)
+
+    def set_sharpness_filter(self, which):
+        """Show only the blurry photos of stacks (BLURRY), or any (None)."""
+        if which != self.sharpness_filter:
+            self.sharpness_filter = which
             self._kept.clear()
             self._show(self._compose(), reset=False)
 

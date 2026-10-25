@@ -16,9 +16,9 @@ from lumina.ui.window_common import _GRID
 class Stacking(QObject):
     def __init__(self, nav, model, service, exporter, browser, actions, messages, parent=None):
         """`exporter` is the ExportService, or None; `browser` the Browser; `actions` has
-        the window's stack, unstack, stack_bursts, leave_stack, toggle_stack, stack_top and
-        export_selected actions; `messages` is the window's status bar. The parent is the
-        window, which the dialogs are over."""
+        the window's stack, unstack, stack_bursts, pick_best, reject_rest, leave_stack,
+        toggle_stack, stack_top and export_selected actions; `messages` is the window's
+        status bar. The parent is the window, which the dialogs are over."""
         super().__init__(parent)
         self.nav = nav
         self.model = model
@@ -60,6 +60,11 @@ class Stacking(QObject):
             self.nav.page() == _GRID and self.model.rowCount() > 1,
             "In the grid, with more than one photo",
         )
+        everywhere = self.nav.page() == _GRID and any(
+            p.stack is not None for p in self.model.photo_rows()
+        )
+        for action in (actions.pick_best, actions.reject_rest):
+            shortcuts.enable(action, everywhere, "In the grid, with stacks")
         for action in (actions.unstack, actions.leave_stack, actions.toggle_stack):
             shortcuts.enable(action, bool(stacked), "No photo in a stack chosen")
         shortcuts.enable(
@@ -119,6 +124,66 @@ class Stacking(QObject):
             done,
             lambda error: self.messages.showMessage(f"Could not stack bursts: {error}", 8000),
         )
+
+    def _stacks_asked(self):
+        """The ids of the stacks of the photos chosen, or of every stack the grid has when
+        none of them is in one."""
+        chosen = [self.model.stack(row) for row in self._rows()]
+        stacks = [stack for stack in chosen if stack is not None]
+        if not stacks:
+            stacks = [p.stack for p in self.model.photo_rows() if p.stack is not None]
+        return list(dict.fromkeys(stacks))
+
+    def pick_best(self):
+        """Put the sharpest photo on top of each stack chosen, or of every stack shown."""
+        stacks = self._stacks_asked()
+        if not stacks:
+            return
+
+        def done(picked, skipped):
+            text = (
+                f"Put the sharpest on top of {len(picked)} stack{'s' if len(picked) != 1 else ''}"
+            )
+            if skipped:
+                text += f", {skipped} left as they were (photos not scored yet)"
+            self.messages.showMessage(text, 6000)
+
+        self.service.pick_best(stacks, done)
+
+    def reject_rest(self):
+        """Give a thumbs down to all but the top photo of each stack chosen, or of every stack
+        shown, once the user has seen how many that is. The undo of flags puts them back."""
+        stacks = set(self._stacks_asked())
+        if not stacks:
+            return
+        members = {}
+        for photo in self.model.photo_rows():
+            if photo.stack in stacks:
+                members.setdefault(photo.stack, []).append(photo)
+        rest = [
+            photo.id
+            for photos in members.values()
+            for photo in sorted(photos, key=lambda p: (p.stack_position, p.id))[1:]
+            if photo.flag != REJECTED
+        ]
+        if not rest:
+            self.messages.showMessage(
+                "Nothing to reject: the others already have a thumbs down", 4000
+            )
+            return
+        words = f"{len(rest)} photo{'s' if len(rest) != 1 else ''}"
+        answer = QMessageBox.question(
+            self.parent(),
+            "Reject the Rest",
+            f"Give {words} a thumbs down, all but the top photo of {len(stacks)} "
+            f"stack{'s' if len(stacks) != 1 else ''}?\n\nThe photos stay where they are, and "
+            "Undo puts the flags back.",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            count = self.model.flag_photos(rest, REJECTED)
+            self.messages.showMessage(
+                f"Gave {count} photo{'s' if count != 1 else ''} a thumbs down", 4000
+            )
 
     def find_duplicates(self):
         """Open the list of photos across the library that look alike or are copies."""

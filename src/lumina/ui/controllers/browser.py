@@ -156,6 +156,11 @@ class Browser(QObject):
         self.model.set_edit_filter(which)
         self.nav.status_changed.emit()
 
+    def set_sharpness_filter(self, which):
+        """Show only the blurry photos of stacks, or all."""
+        self.model.set_sharpness_filter(which)
+        self.nav.status_changed.emit()
+
     def shows_everything(self):
         """Whether the grid shows every photo, so there is no narrower place to look."""
         return (
