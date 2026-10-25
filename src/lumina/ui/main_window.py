@@ -3,7 +3,7 @@ and the grid, one photo, or, with no folders yet, a way to add one."""
 
 from types import SimpleNamespace
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFrame,
@@ -106,6 +106,15 @@ class _CellDelegate(QStyledItemDelegate):
     def photo_rect(self, option, index):
         """Where the photo is in the cell: the icon keeps the photo's shape within its
         square."""
+        return self._rects(option, index)[0]
+
+    def badge_rect(self, option, index):
+        """The rectangle the badges sit in the corners of: the photo's, or the cell's
+        picture square when the photo is too thin for them."""
+        photo, area = self._rects(option, index)
+        return badges.anchor_rect(QRectF(photo), QRectF(area))
+
+    def _rects(self, option, index):
         item = QStyleOptionViewItem(option)
         self.initStyleOption(item, index)
         widget = option.widget
@@ -114,7 +123,7 @@ class _CellDelegate(QStyledItemDelegate):
         )
         photo = QRect(QPoint(0, 0), item.icon.actualSize(item.decorationSize))
         photo.moveCenter(area.center())
-        return photo
+        return photo, area
 
     def stack_badge_at(self, grid, index, point):
         """Whether `point` (in the grid's viewport) is on the stack badge of the cell."""
@@ -125,7 +134,7 @@ class _CellDelegate(QStyledItemDelegate):
         grid.initViewItemOption(option)
         option.rect = grid.visualRect(index)
         option.widget = grid
-        card = badges.pill_rect(self.photo_rect(option, index), badges.stack_text(stacked))
+        card = badges.pill_rect(self.badge_rect(option, index), badges.stack_text(stacked))
         if card is None:
             return False
         if stacked[2]:
@@ -142,7 +151,7 @@ class _CellDelegate(QStyledItemDelegate):
         grid.initViewItemOption(option)
         option.rect = grid.visualRect(index)
         option.widget = grid
-        photo = self.photo_rect(option, index)
+        photo = self.badge_rect(option, index)
         stacked = index.data(STACK_ROLE)
         left = 0.0
         if stacked:
@@ -164,6 +173,7 @@ class _CellDelegate(QStyledItemDelegate):
         # A virtual copy's cell has its own number on the badge, the photo's the count
         number = index.data(COPY_ROLE) or virtual
         photo = self.photo_rect(option, index)
+        corners = self.badge_rect(option, index)
         painter.save()
         if index.data(DIMMED_ROLE):
             painter.setOpacity(DIMMED_OPACITY)
@@ -174,18 +184,18 @@ class _CellDelegate(QStyledItemDelegate):
         if flag not in flags.COLOURS and not rating and not damaged and not virtual and not stacked:
             return
         if flag in flags.COLOURS:
-            flags.paint_badge(painter, photo, flag)
-        stars.paint_stars(painter, photo, rating or 0)
+            flags.paint_badge(painter, corners, flag)
+        stars.paint_stars(painter, corners, rating or 0)
         if damaged:
-            damage.paint_badge(painter, photo)
+            damage.paint_badge(painter, corners)
         # Top left, side by side: the stack, then the virtual copies
         left = 0.0
         if stacked:
             left = badges.paint_pill(
-                painter, photo, badges.stack_text(stacked), left, stacked=stacked[2]
+                painter, corners, badges.stack_text(stacked), left, stacked=stacked[2]
             )
         if virtual:
-            badges.paint_diamond(painter, photo, str(number), left)
+            badges.paint_diamond(painter, corners, str(number), left)
 
 
 class MainWindow(QMainWindow):

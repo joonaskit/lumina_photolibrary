@@ -313,3 +313,43 @@ def test_a_wide_photo_on_top_of_a_stack_has_its_badge():
     # Nor one too short for a badge to fit inside it
     strip = QRect(0, 0, side, style.px(20))
     assert badges.pill_rect(strip, "20") is None
+
+
+def test_a_panoramas_badges_sit_in_the_cell_when_its_strip_is_too_thin():
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QImage, QPainter
+
+    from lumina.integration import style
+    from lumina.ui import damage, flags, stars
+
+    side = style.px(150)
+    cell = QRectF(0, 0, side, side)
+    # A 6:1 panorama's strip in a square cell: too short for a badge inside it
+    strip = QRectF(0, (side - side / 6) / 2, side, side / 6)
+    assert badges.anchor_rect(strip, cell) == cell
+    # An ordinary photo keeps its own corners
+    photo = QRectF(0, side / 8, side, side * 3 / 4)
+    assert badges.anchor_rect(photo, cell) == photo
+    # A small grid's cell has no room either, so nothing moves
+    small = QRectF(0, 0, style.px(20), style.px(20))
+    assert badges.anchor_rect(QRectF(0, 5, 20, 3), small) == QRectF(0, 5, 20, 3)
+
+    blank = QImage(int(side), int(side), QImage.Format.Format_ARGB32)
+    blank.fill(0)
+
+    def paints(draw):
+        image = QImage(blank)
+        painter = QPainter(image)
+        draw(painter, badges.anchor_rect(strip, cell))
+        painter.end()
+        return image != blank
+
+    assert paints(lambda p, r: flags.paint_badge(p, r, 1))
+    assert paints(lambda p, r: stars.paint_stars(p, r, 3))
+    assert paints(damage.paint_badge)
+    # Painted on the strip itself, as before the fix, they would not show
+    image = QImage(blank)
+    painter = QPainter(image)
+    flags.paint_badge(painter, strip, 1)
+    painter.end()
+    assert image == blank

@@ -25,6 +25,18 @@ def _room(photo_rect):
     return longer >= 3 * height and shorter >= height + 2 * style.px(4)
 
 
+def anchor_rect(photo_rect, cell_rect):
+    """The rectangle whose corners the badges sit in: the photo's, or the cell's when the
+    photo is too thin for a badge on its shorter side (a panorama's strip in a square
+    cell) but the cell has room. A cell too small for badges stays the photo's, so they
+    are left out as before."""
+    need = style.px(22) + 2 * style.px(4)
+    thin = min(photo_rect.width(), photo_rect.height()) < need
+    if thin and min(cell_rect.width(), cell_rect.height()) >= need:
+        return cell_rect
+    return photo_rect
+
+
 def pill_rect(photo_rect, text, left=0.0):
     """Where the badge with `text` is on a photo (`left` pixels in from its top left
     corner), or None when the thumbnail is too small for one."""
