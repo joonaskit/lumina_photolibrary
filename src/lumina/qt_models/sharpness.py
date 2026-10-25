@@ -9,7 +9,7 @@ reads the scores again when the job ends.
 
 from functools import partial
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Signal
 
 from lumina.core import focus, sharpness
 from lumina.qt_models import workers
@@ -17,6 +17,9 @@ from lumina.qt_models.jobs import JobRunner
 
 
 class SharpnessService(QObject):
+    # A JobStatus, as the job starts, runs and ends
+    job_changed = Signal(object)
+
     def __init__(self, library, score=None, parent=None):
         """`library` is the LibraryService. For the tests: `score(paths)` replaces the
         worker process."""
@@ -30,7 +33,8 @@ class SharpnessService(QObject):
             workers.SHARPNESS,
             prepare=lambda _job: partial(_run, self._score),
             name=lambda _job: "",
-            changed=lambda _status: None,
+            changed=self.job_changed.emit,
+            timed={focus.SCORING},
             ended=lambda _job, _status: library.photos_changed.emit(),
         )
         library.job_ended.connect(lambda _status: self.score())
@@ -47,6 +51,10 @@ class SharpnessService(QObject):
         """Give every photo without a score one. Run again when it ends if it is running
         now: what a scan added since it started is not in its count."""
         self.jobs.add(focus.SHARPNESS)
+
+    def cancel(self):
+        """Stop it until the next start or scan."""
+        self.jobs.cancel()
 
     def is_scoring(self):
         return self.jobs.is_busy()

@@ -127,7 +127,7 @@ def run(paths=(), restore=None):
         island=settings.island_jobs(),
         notify=settings.notify_jobs(),
     )
-    watch_services(reports, service, search, merge, importer, exporter)
+    watch_services(reports, service, search, scoring, merge, importer, exporter)
     # Before the jobs stop: the island is told they will carry on at the next start
     app.aboutToQuit.connect(reports.close)
     # A scan, indexing or a merge in progress stops and is queued for the next start

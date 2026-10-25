@@ -144,3 +144,21 @@ def test_the_blurry_choice_is_in_the_filters_and_cleared_with_them(qtbot, servic
     filters.clear()
     assert filters.sharpness_value() is None
     assert window.model.sharpness_filter is None
+
+
+def test_the_scoring_job_tells_its_progress_and_its_end(qtbot, service, scoring, drive):
+    from lumina.core.dbtypes import DONE, RUNNING
+    from lumina.ui.job_reports import describe_scoring
+
+    told = []
+    scoring.job_changed.connect(told.append)
+    open_window(qtbot, service, drive / "Photos")
+
+    scoring.score()
+    qtbot.waitUntil(lambda: any(s.state == DONE for s in told), timeout=TIMEOUT)
+
+    assert any(s.state == RUNNING and s.total == 3 for s in told)
+    finished = next(s for s in told if s.state == DONE and s.message.startswith("3 "))
+    assert describe_scoring(finished) == "3 photos scored for sharpness"
+    running = next(s for s in told if s.state == RUNNING and s.total == 3)
+    assert describe_scoring(running).startswith("Scoring sharpness: ")

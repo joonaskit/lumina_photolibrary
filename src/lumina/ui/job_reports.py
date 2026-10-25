@@ -1,7 +1,8 @@
 """Lumina's jobs outside its window (#86): in the Quickshell Island while they run, with
 Cancel, and a desktop notification when a long one ends, or one fails, while Lumina is
-not the active app. The status bar still tells every job; this is a second view of the
-same JobStatus, and Lumina works the same without an island or a notification service.
+not the active app. The status bar still tells most jobs (not the scoring for sharpness,
+which only shows here); this is a second view of the same JobStatus, and Lumina works
+the same without an island or a notification service.
 
 A job reaches the island only once it has run a few seconds, so the rescans the watcher
 starts all the time stay in the status bar.
@@ -14,7 +15,8 @@ from typing import Callable
 from PySide6.QtCore import QObject, QTimer
 
 from lumina import APP_ID
-from lumina.core.dbtypes import CANCELLED, DONE, FAILED_JOB, QUEUED, UNFINISHED
+from lumina.core.dbtypes import CANCELLED, DONE, FAILED_JOB, QUEUED, RUNNING, UNFINISHED
+from lumina.ui.job_list import JobList
 from lumina.ui.job_status import (
     describe,
     describe_export,
@@ -58,6 +60,9 @@ class Source:
     words: Callable
     cancel: Callable
     detail: Callable = counted
+    # Nothing else in the window shows this service's jobs (the status bar has no widget
+    # of its own for them), so the jobs button says so while one runs
+    alone: bool = False
 
 
 @dataclass
@@ -97,6 +102,8 @@ class JobReports(QObject):
         self.notify = notify
         # Activity id -> the job, while it runs
         self._jobs = {}
+        # Every job that runs, waits or failed, for the status bar's jobs button
+        self.jobs = JobList(self)
         activities.action_invoked.connect(self._on_action)
 
     def set_island(self, on):
@@ -130,6 +137,7 @@ class JobReports(QObject):
 
     def tell(self, source, status):
         key = f"{status.kind or 'job'}-{status.job}"
+        self.jobs.update(key, source, status)
         job = self._jobs.get(key)
         if status.state in UNFINISHED:
             self._running(key, job, source, status)
@@ -224,8 +232,26 @@ class JobReports(QObject):
             job.source.cancel()
 
 
-def watch_services(reports, library, search, merge, importer, exporter):
-    """Report the jobs of each service: the scans, indexing, merges, imports, exports."""
+def describe_scoring(status):
+    if status.state in (QUEUED, RUNNING):
+        if status.total is None:
+            return "Scoring sharpness"
+        counted = f"{status.done:,} of {status.total:,}".replace(",", " ")
+        return f"Scoring sharpness: {counted}{left(status)}"
+    if status.state == CANCELLED:
+        return "Stopped scoring sharpness"
+    if status.state == FAILED_JOB:
+        return (
+            f"Could not score sharpness: {status.message}"
+            if status.message
+            else ("Could not score sharpness")
+        )
+    return status.message or "Scored for sharpness"
+
+
+def watch_services(reports, library, search, scoring, merge, importer, exporter):
+    """Report the jobs of each service: the scans, indexing, scoring, merges, imports,
+    exports."""
     reports.watch(
         library.job_changed,
         Source(lambda status: f"Scanning {status.name}", describe, library.cancel),
@@ -233,6 +259,10 @@ def watch_services(reports, library, search, merge, importer, exporter):
     reports.watch(
         search.indexing_changed,
         Source(lambda _status: "Indexing for search", describe_indexing, search.cancel_indexing),
+    )
+    reports.watch(
+        scoring.job_changed,
+        Source(lambda _status: "Scoring sharpness", describe_scoring, scoring.cancel, alone=True),
     )
     # A merge's done and total are of its phase, which its words tell
     reports.watch(
