@@ -40,6 +40,13 @@ def _where(shown):
             "AND i.volume_id = p.volume_id AND i.path = p.path)"
         )
         args.extend([shown.import_job, COPIED])
+    if shown.time_ranges:
+        taken = "COALESCE(p.captured, p.file_time)"
+        clauses.append(
+            "(" + " OR ".join(f"({taken} >= ? AND {taken} < ?)" for _ in shown.time_ranges) + ")"
+        )
+        for low, high in shown.time_ranges:
+            args.extend([low, high])
     return ("WHERE " + " AND ".join(clauses)) if clauses else "", args
 
 

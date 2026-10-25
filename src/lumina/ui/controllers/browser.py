@@ -107,6 +107,17 @@ class Browser(QObject):
         if self.nav.page() == _VIEWER:
             self.nav.show_grid()
 
+    def on_time_selected(self, _name):
+        self.leave_folders()
+        self.apply_filter()
+        if self.nav.page() == _VIEWER:
+            self.nav.show_grid()
+
+    def on_events_changed(self, events, day_ranges):
+        self.sidebar.set_events(events, day_ranges)
+        if self.sidebar.current_time_ranges():
+            self.apply_filter()
+
     def leave_folders(self):
         """A collection or an import is chosen in the sidebar, not a folder."""
         settings.set_selected_folder(None)
@@ -136,6 +147,7 @@ class Browser(QObject):
             lens,
             collection[0] if collection is not None and not collection[1] else None,
             self.sidebar.current_import(),
+            self.sidebar.current_time_ranges(),
         )
         if shown != self.model.filter or self.model.rowCount() == 0:
             self.model.set_filter(shown)
@@ -167,6 +179,7 @@ class Browser(QObject):
             self.sidebar.current_folder() is None
             and self.sidebar.current_collection() is None
             and self.sidebar.current_import() is None
+            and not self.sidebar.current_time_ranges()
             and self.model.filter == self.model.filter.__class__()
         )
 
@@ -179,7 +192,10 @@ class Browser(QObject):
         info = next((f for f in self.service.folders() if f.id == folder), None)
         name = info.name if info is not None else "All Photos"
         collection = self.sidebar.current_collection()
-        if self.sidebar.current_import() is not None:
+        time = self.sidebar.current_time()
+        if time is not None:
+            name = time[2]
+        elif self.sidebar.current_import() is not None:
             name = "Last Import"
         elif collection is not None:
             found = next((c for c in self.service.collections() if c.id == collection[0]), None)

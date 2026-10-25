@@ -1,6 +1,7 @@
 """The library's folders, in a card on the left: all photos, then each folder."""
 
 import json
+from datetime import date
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QAction
@@ -12,6 +13,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QSizePolicy,
     QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
 )
 
@@ -23,6 +26,9 @@ FOLDER_ROLE = Qt.ItemDataRole.UserRole + 1
 KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 COLLECTION_ROLE = Qt.ItemDataRole.UserRole + 3
 PATH_ROLE = Qt.ItemDataRole.UserRole + 4
+# An event's or On This Day's [(low, high)] ranges of time, and an event's start
+RANGES_ROLE = Qt.ItemDataRole.UserRole + 5
+START_ROLE = Qt.ItemDataRole.UserRole + 6
 WIDTH = 240
 
 
@@ -88,6 +94,8 @@ class Sidebar(QFrame):
     photos_dropped = Signal(int, object)
     # A keyword path chosen to filter by, or None to stop
     keyword_chosen = Signal(object)
+    # An event, or On This Day, was chosen: its name
+    time_selected = Signal(str)
     rename_keyword_requested = Signal(str)
     delete_keyword_requested = Signal(str)
 
@@ -109,6 +117,23 @@ class Sidebar(QFrame):
         self.list.customContextMenuRequested.connect(self._menu)
         self.list.currentItemChanged.connect(self._on_current)
         layout.addWidget(self.list, 3)
+        self.events_heading = QLabel("EVENTS")
+        self.events_heading.setObjectName("heading")
+        layout.addWidget(self.events_heading)
+        self.event_tree = QTreeWidget()
+        self.event_tree.setHeaderHidden(True)
+        # The years open and close with an arrow of their own, and the events under them
+        # are indented as the keywords are: the style paints a branch in the highlight
+        # colour behind a chosen row
+        self.event_tree.setRootIsDecorated(False)
+        self.event_tree.setIndentation(0)
+        self.event_tree.itemClicked.connect(self._on_event_clicked)
+        self.event_tree.itemExpanded.connect(self._mark_year)
+        self.event_tree.itemCollapsed.connect(self._mark_year)
+        self.event_tree.setIconSize(QSize(style.px(18), style.px(18)))
+        self.event_tree.currentItemChanged.connect(self._on_event_current)
+        layout.addWidget(self.event_tree, 2)
+        self._events_shown(False)
         self.keywords_heading = QLabel("KEYWORDS")
         self.keywords_heading.setObjectName("heading")
         layout.addWidget(self.keywords_heading)
@@ -258,6 +283,101 @@ class Sidebar(QFrame):
             return item.data(COLLECTION_ROLE), item.data(KIND_ROLE) == "smart"
         return None
 
+    def set_events(self, events, day_ranges):
+        """Show On This Day (when `day_ranges` has any) and, by year, the `events`
+        (core/events.py), newest first; the one chosen stays chosen. Signals nothing, but All
+        Photos is chosen when the one chosen is gone."""
+        chosen = self.current_time()
+        opened = {
+            self.event_tree.topLevelItem(n).data(0, PATH_ROLE)
+            for n in range(self.event_tree.topLevelItemCount())
+            if self.event_tree.topLevelItem(n).isExpanded()
+        }
+        this_year = str(date.today().year)
+        self.event_tree.blockSignals(True)
+        self.event_tree.clear()
+        found = None
+        if day_ranges:
+            today = QTreeWidgetItem(["On This Day"])
+            today.setData(0, KIND_ROLE, "day")
+            today.setData(0, RANGES_ROLE, list(day_ranges))
+            today.setToolTip(0, "Photos taken on this date in earlier years")
+            self.event_tree.addTopLevelItem(today)
+            if chosen is not None and chosen[0] == "day":
+                found = today
+        years = {}
+        for event in reversed(list(events)):
+            year = str(event.start.year)
+            if year not in years:
+                node = QTreeWidgetItem([year])
+                node.setData(0, PATH_ROLE, year)
+                node.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                self.event_tree.addTopLevelItem(node)
+                node.setExpanded(year in opened or (not opened and year == this_year))
+                self._mark_year(node)
+                years[year] = node
+            item = QTreeWidgetItem([f"\u2003{event.name()}  ({event.count})"])
+            item.setData(0, KIND_ROLE, "event")
+            item.setData(0, RANGES_ROLE, [event.time_range()])
+            item.setData(0, START_ROLE, event.start.isoformat())
+            years[year].addChild(item)
+            if chosen is not None and chosen[0] == event.start.isoformat():
+                found = item
+                years[year].setExpanded(True)
+                self._mark_year(years[year])
+        if found is not None:
+            self.event_tree.setCurrentItem(found)
+        self.event_tree.blockSignals(False)
+        self._events_shown(self.event_tree.topLevelItemCount() > 0)
+        self._draw_icons()
+        if chosen is not None and found is None:
+            self.list.setCurrentRow(0)
+
+    def current_time(self):
+        """(what identifies it, its [(low, high)] ranges, its name) of the event or On
+        This Day chosen, else None."""
+        item = self.event_tree.currentItem()
+        kind = item.data(0, KIND_ROLE) if item is not None else None
+        if kind not in ("event", "day"):
+            return None
+        key = item.data(0, START_ROLE) if kind == "event" else "day"
+        name = item.text(0).strip("\u2003").rsplit("  (", 1)[0]
+        return key, item.data(0, RANGES_ROLE), name
+
+    def current_time_ranges(self):
+        """The (low, high) ranges of the event or On This Day chosen; empty when none."""
+        chosen = self.current_time()
+        return tuple(chosen[1]) if chosen is not None else ()
+
+    def _events_shown(self, shown):
+        self.events_heading.setVisible(shown)
+        self.event_tree.setVisible(shown)
+
+    def _mark_year(self, node):
+        """Show whether a year is open, as the text of its row."""
+        year = node.data(0, PATH_ROLE)
+        if year is not None:
+            node.setText(0, f"{'▾' if node.isExpanded() else '▸'} {year}")
+
+    def _on_event_clicked(self, item, _column):
+        if item.data(0, PATH_ROLE) is not None:
+            item.setExpanded(not item.isExpanded())
+
+    def _on_event_current(self, item, _previous):
+        if item is None or item.data(0, KIND_ROLE) not in ("event", "day"):
+            return
+        self.list.blockSignals(True)
+        self.list.setCurrentItem(None)
+        self.list.clearSelection()
+        self.list.blockSignals(False)
+        self.time_selected.emit(self.current_time()[2])
+
+    def _clear_events(self):
+        self.event_tree.blockSignals(True)
+        self.event_tree.setCurrentItem(None)
+        self.event_tree.clearSelection()
+        self.event_tree.blockSignals(False)
+
     def select_collection(self, collection_id):
         for number in range(self.list.count()):
             item = self.list.item(number)
@@ -345,6 +465,7 @@ class Sidebar(QFrame):
     def _on_current(self, item, _previous):
         if item is None:
             return
+        self._clear_events()
         kind = item.data(KIND_ROLE)
         if kind in ("collection", "smart"):
             self.collection_selected.emit(item.data(COLLECTION_ROLE), kind == "smart")
@@ -410,6 +531,15 @@ class Sidebar(QFrame):
                 item.setIcon(style.icon("folder", "folder-pictures"))
             else:
                 item.setIcon(style.icon("drive-removable-media", "folder", colour="textSecondary"))
+        for number in range(self.event_tree.topLevelItemCount()):
+            top = self.event_tree.topLevelItem(number)
+            if top.data(0, KIND_ROLE) == "day":
+                top.setIcon(0, style.icon("view-calendar", "x-office-calendar", "appointment-new"))
+            else:
+                for child in range(top.childCount()):
+                    top.child(child).setIcon(
+                        0, style.icon("view-calendar", "x-office-calendar", "appointment-new")
+                    )
         for number in range(self.keyword_list.count()):
             self.keyword_list.item(number).setIcon(
                 style.icon("tag", "bookmark-new", "emblem-documents")

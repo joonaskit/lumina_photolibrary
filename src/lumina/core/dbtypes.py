@@ -46,6 +46,9 @@ class Filter:
     collection_id: int | None = None
     # The import job whose copied photos to show (`Library.last_import`)
     import_job: int | None = None
+    # Only photos taken within one of these (low, high) ranges of text, `low` up to but
+    # not including `high`: an event, or the days of On This Day. Empty means any time
+    time_ranges: tuple = ()
 
 
 @dataclass(frozen=True)

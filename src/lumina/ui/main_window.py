@@ -362,6 +362,7 @@ class MainWindow(QMainWindow):
         self.browser.refresh_folders(select=settings.selected_folder())
         self.sidebar.set_collections(service.collections())
         self.sidebar.set_last_import(service.last_import())
+        service.refresh_events()
 
     # Building
 
@@ -509,6 +510,7 @@ class MainWindow(QMainWindow):
         sidebar.camera_requested.connect(lambda: self.tethering.tether_camera())
         sidebar.collection_selected.connect(self.collecting.on_collection_selected)
         sidebar.import_selected.connect(browser.on_import_selected)
+        sidebar.time_selected.connect(browser.on_time_selected)
         sidebar.new_collection_requested.connect(lambda: self.collecting.new_collection())
         sidebar.rename_collection_requested.connect(self.collecting.rename_collection)
         sidebar.delete_collection_requested.connect(self.collecting.delete_collection)
@@ -539,6 +541,7 @@ class MainWindow(QMainWindow):
         )
 
         service.folders_changed.connect(browser.refresh_folders)
+        service.events_changed.connect(browser.on_events_changed)
         service.failed.connect(lambda message: self.statusBar().showMessage(message, 10000))
         service.sidecars_written.connect(browser.on_sidecars_written)
         service.job_changed.connect(self.job_status.show_status)
