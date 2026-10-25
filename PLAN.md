@@ -44,7 +44,7 @@ ui/  →  qt_models/  →  core/
 - `ui/` never touches the DB, rawpy or exiftool directly. From `core/` it imports only the domain model: `edit/params.py`, `dbtypes.py`, `keywords.py`, `smart.py`, `edit/export_options.py` and `errors.py`.
 - `tests/test_layers.py` enforces the import rules, and that the domain model imports only the standard library and itself.
 
-A new grid filter follows the edit-state filter through every layer: its combo in `ui/filters.py`, the signal wired in `ui/main_window.py`, `set_edit_filter` in `ui/controllers/browser.py` and `qt_models/library_model.py`, and the smart collection's `edit` in `core/smart.py` and `ui/controllers/collecting.py` (where a query is made and where it is saved). Undo (`LibraryModel.undo_flags`) covers flags, ratings and keywords only; stack operations are not undoable.
+A new grid filter follows the edit-state filter through every layer: its combo in `ui/filters.py`, the signal wired in `ui/main_window.py`, `set_edit_filter` in `ui/controllers/browser.py` and `qt_models/library_model.py`, and the smart collection's `edit` in `core/smart.py` and `ui/controllers/collecting.py` (where the filters make a query and where a saved query sets the filters). Undo (`LibraryModel.undo_flags`) covers flags, ratings and keywords only; stack operations are not undoable.
 
 `core/` modules (the main ones):
 
