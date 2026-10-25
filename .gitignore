@@ -10,3 +10,6 @@ build/
 dist/
 tests/samples/
 poc_streamlit_upload/
+
+# Claude Code settings are per machine
+.claude/
