@@ -145,6 +145,7 @@ class Collecting(QObject):
             flag=self.filters.flag_value(),
             rating=self.filters.rating_value(),
             edit=self.filters.edit_value(),
+            sharpness=self.filters.sharpness_value(),
             keyword=self.filters.keyword_value(),
             text=search.query if search is not None and search.kind == TEXT else None,
         )
@@ -184,6 +185,7 @@ class Collecting(QObject):
                 "flag": query.flag,
                 "rating": query.rating,
                 "edit": query.edit,
+                "sharpness": query.sharpness,
                 "keyword": query.keyword,
             }
         )

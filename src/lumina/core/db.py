@@ -30,6 +30,7 @@ from lumina.core.stores.jobs import JobsStore
 from lumina.core.stores.keywords import KeywordsStore
 from lumina.core.stores.marks import MarksStore
 from lumina.core.stores.photos import PhotosStore
+from lumina.core.stores.sharpness import SharpnessStore
 from lumina.core.stores.sidecars import SidecarsStore
 from lumina.core.stores.stacks import StacksStore
 from lumina.core.stores.tether import TetherStore
@@ -459,6 +460,23 @@ def _migrate_14(db):
     )
 
 
+def _migrate_15(db):
+    _script(
+        db,
+        """
+        -- How sharp a photo is (core/sharpness.py), by content id as the vectors are: a
+        -- moved, renamed or copied photo has the same score. A score of NULL is a photo
+        -- that could not be read, with the reason in `error`; a photo with no row is not
+        -- scored yet
+        CREATE TABLE sharpness (
+            content_id TEXT PRIMARY KEY,
+            score REAL,
+            error TEXT
+        );
+        """,
+    )
+
+
 # Index i is the migration to version i + 1. Append only: never change one released
 _MIGRATIONS = [
     _migrate_1,
@@ -475,6 +493,7 @@ _MIGRATIONS = [
     _migrate_12,
     _migrate_13,
     _migrate_14,
+    _migrate_15,
 ]
 SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -489,6 +508,7 @@ class Library(
     StacksStore,
     EditsStore,
     EmbeddingsStore,
+    SharpnessStore,
     JobsStore,
     ImportsStore,
     ExportsStore,

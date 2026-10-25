@@ -389,6 +389,8 @@ class MainWindow(QMainWindow):
                 stack=self.stack_action,
                 unstack=self.unstack_action,
                 stack_bursts=self.stack_bursts_action,
+                pick_best=self.pick_best_action,
+                reject_rest=self.reject_rest_action,
                 leave_stack=self.leave_stack_action,
                 toggle_stack=self.toggle_stack_action,
                 stack_top=self.stack_top_action,
@@ -460,6 +462,7 @@ class MainWindow(QMainWindow):
         self.filters.flag_changed.connect(browser.set_flag_filter)
         self.filters.rating_changed.connect(browser.set_rating_filter)
         self.filters.edit_changed.connect(browser.set_edit_filter)
+        self.filters.sharpness_changed.connect(browser.set_sharpness_filter)
         self.flag_options.rejected_changed.connect(self.grid_page.set_rejected)
         self.flag_options.rejected_changed.connect(nav.status_changed)
         self.grid_page.stack_badge_clicked.connect(self.stacking.toggle_stack_of)
@@ -632,6 +635,16 @@ class MainWindow(QMainWindow):
             "Stack shots taken a moment apart that look alike, the best on top"
         )
         self.stack_bursts_action.triggered.connect(lambda: self.stacking.stack_bursts())
+        self.pick_best_action = QAction("Pick Sharpest of Each Stack", self)
+        self.pick_best_action.setToolTip(
+            "Put the sharpest photo on top of each stack chosen, or of every stack shown"
+        )
+        self.pick_best_action.triggered.connect(lambda: self.stacking.pick_best())
+        self.reject_rest_action = QAction("Reject the Rest of Each Stack…", self)
+        self.reject_rest_action.setToolTip(
+            "Give a thumbs down to all but the top photo of each stack chosen, or shown"
+        )
+        self.reject_rest_action.triggered.connect(lambda: self.stacking.reject_rest())
         self.find_duplicates_action = QAction("Find Duplicates…", self)
         self.find_duplicates_action.setToolTip(
             "Look through the library for photos that look alike or are copies of one file"
@@ -649,6 +662,8 @@ class MainWindow(QMainWindow):
             self.stack_action,
             self.unstack_action,
             self.stack_bursts_action,
+            self.pick_best_action,
+            self.reject_rest_action,
             self.leave_stack_action,
             self.toggle_stack_action,
             self.stack_top_action,

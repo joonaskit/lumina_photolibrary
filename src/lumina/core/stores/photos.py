@@ -122,9 +122,10 @@ class PhotosStore:
             "p.damage_warning, "
             "(SELECT GROUP_CONCAT(k.keyword_id) FROM photo_keywords k WHERE k.photo_id = p.id), "
             "(SELECT COUNT(*) FROM edits c WHERE c.photo_id = p.id AND c.copy > 0), "
-            "p.stack_id, p.stack_position, COALESCE(s.collapsed, 1) "
+            "p.stack_id, p.stack_position, COALESCE(s.collapsed, 1), h.score "
             f"FROM photos p JOIN volumes v ON v.id = p.volume_id "
             "LEFT JOIN stacks s ON s.id = p.stack_id "
+            "LEFT JOIN sharpness h ON h.content_id = p.content_id "
             "LEFT JOIN edits e ON e.photo_id = p.id AND e.copy = 0 "
             f"{where} ORDER BY taken, p.path",
             args,
@@ -146,6 +147,7 @@ class PhotosStore:
                 r[12],
                 r[13],
                 bool(r[14]),
+                sharpness=r[15],
             )
             for r in rows
         ]

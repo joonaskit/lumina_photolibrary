@@ -24,6 +24,7 @@ from lumina.qt_models.importing import ImportService
 from lumina.qt_models.library import LibraryService, NewerDatabase, NoBackup
 from lumina.qt_models.merge import MergeService
 from lumina.qt_models.search import SearchService
+from lumina.qt_models.sharpness import SharpnessService
 from lumina.qt_models.tether import CameraService
 from lumina.ui import settings
 from lumina.ui.job_reports import JobReports, watch_services
@@ -108,6 +109,7 @@ def run(paths=(), restore=None):
     service.sidecars = settings.sidecars()
     # Nothing is fetched until the user asks: without the model, no indexing
     search = SearchService(service, parent=app)
+    scoring = SharpnessService(service, parent=app)
     merge = MergeService(service, parent=app)
     importer = ImportService(service, parent=app)
     exporter = ExportService(service, parent=app)
@@ -130,6 +132,7 @@ def run(paths=(), restore=None):
     app.aboutToQuit.connect(reports.close)
     # A scan, indexing or a merge in progress stops and is queued for the next start
     app.aboutToQuit.connect(search.close)
+    app.aboutToQuit.connect(scoring.close)
     app.aboutToQuit.connect(merge.close)
     app.aboutToQuit.connect(importer.close)
     app.aboutToQuit.connect(exporter.close)
@@ -157,6 +160,7 @@ def run(paths=(), restore=None):
     notifier.start()
     service.start()
     search.start()
+    scoring.start()
     merge.start()
     importer.start()
     exporter.start()

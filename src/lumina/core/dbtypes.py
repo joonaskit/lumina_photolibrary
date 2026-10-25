@@ -85,6 +85,8 @@ class PhotoRow:
     stack_collapsed: bool = True
     # A grid cell of a virtual copy of the photo (its number), shown open; 0 for the photo
     copy: int = 0
+    # How sharp it is (core/sharpness.py), or None while it is not scored or could not be
+    sharpness: float | None = None
 
 
 @dataclass(frozen=True)

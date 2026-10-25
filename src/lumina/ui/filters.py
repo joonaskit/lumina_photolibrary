@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QPushButton, QSize
 from lumina.core import keywords as keywordm
 from lumina.core.dbtypes import PICKED, REJECTED, UNFLAGGED
 from lumina.integration import style
-from lumina.qt_models.library_model import EDITED, NOT_RATED, UNEDITED
+from lumina.qt_models.library_model import BLURRY, EDITED, NOT_RATED, UNEDITED
 
 FLAG_CHOICES = (
     ("All flags", None),
@@ -32,6 +32,12 @@ EDIT_CHOICES = (
     ("Unedited", UNEDITED),
 )
 
+# Blurry is measured against the best photo of the photo's stack, so only stacks have any
+SHARPNESS_CHOICES = (
+    ("Sharp and blurry", None),
+    ("Blurry in stacks", BLURRY),
+)
+
 
 class FilterBar(QWidget):
     # Something was chosen: read `values()`
@@ -42,6 +48,8 @@ class FilterBar(QWidget):
     rating_changed = Signal(object)
     # EDITED or UNEDITED to show only those, or None for all
     edit_changed = Signal(object)
+    # BLURRY to show only the blurry photos of stacks, or None for all
+    sharpness_changed = Signal(object)
     # A keyword path to show only the photos given it or one below it, or None for all
     keyword_changed = Signal(object)
     # Save the filters as a smart collection
@@ -58,6 +66,10 @@ class FilterBar(QWidget):
         self.flag = self._fixed_combo(FLAG_CHOICES, self.flag_changed)
         self.rating = self._fixed_combo(RATING_CHOICES, self.rating_changed)
         self.edit = self._fixed_combo(EDIT_CHOICES, self.edit_changed)
+        self.sharpness = self._fixed_combo(SHARPNESS_CHOICES, self.sharpness_changed)
+        self.sharpness.setToolTip(
+            "Photos much less sharp than the sharpest of their stack, to reject or review"
+        )
         self.keyword = self._fixed_combo((("Any keyword", None),), self.keyword_changed)
         self.keyword.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.keyword.setMaximumWidth(style.px(240))
@@ -68,7 +80,7 @@ class FilterBar(QWidget):
         divider.setObjectName("divider")
         divider.setFixedWidth(1)
         layout.addWidget(divider)
-        for combo in (self.flag, self.rating, self.edit, self.keyword):
+        for combo in (self.flag, self.rating, self.edit, self.sharpness, self.keyword):
             layout.addWidget(combo)
             combo.currentIndexChanged.connect(self._update_clear)
         for combo in (self.year, self.camera, self.lens):
@@ -105,6 +117,7 @@ class FilterBar(QWidget):
             self.flag,
             self.rating,
             self.edit,
+            self.sharpness,
             self.keyword,
         )
 
@@ -123,7 +136,7 @@ class FilterBar(QWidget):
         before = self.values()
         changed = [
             combo
-            for combo in (self.flag, self.rating, self.edit, self.keyword)
+            for combo in (self.flag, self.rating, self.edit, self.sharpness, self.keyword)
             if combo.currentIndex()
         ]
         for combo in self._combos():
@@ -137,6 +150,7 @@ class FilterBar(QWidget):
             self.flag: self.flag_changed,
             self.rating: self.rating_changed,
             self.edit: self.edit_changed,
+            self.sharpness: self.sharpness_changed,
             self.keyword: self.keyword_changed,
         }
         for combo in changed:
@@ -190,7 +204,7 @@ class FilterBar(QWidget):
             combo.blockSignals(True)
             combo.setCurrentIndex(max(combo.findData(values.get(name)), 0))
             combo.blockSignals(False)
-        for name in ("flag", "rating", "edit", "keyword"):
+        for name in ("flag", "rating", "edit", "sharpness", "keyword"):
             combo = getattr(self, name)
             combo.setCurrentIndex(max(combo.findData(values.get(name)), 0))
         self._update_clear()
@@ -200,6 +214,10 @@ class FilterBar(QWidget):
     def edit_value(self):
         """EDITED or UNEDITED to show only those, or None for all."""
         return self.edit.currentData()
+
+    def sharpness_value(self):
+        """BLURRY to show only the blurry photos of stacks, or None for all."""
+        return self.sharpness.currentData()
 
     def rating_value(self):
         """NOT_RATED, a number of stars, or None for all."""

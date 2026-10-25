@@ -107,6 +107,7 @@ Built, in the order it was built (details in [docs/history.md](docs/history.md))
 | Merges | HDR (#27) and panoramas (#28), untested on many real shots. |
 | Camera | Tethered folder, USB tethering, live view with focus (#57 to #59). |
 | Auto | Auto tone (Light section) and auto white balance (As Shot, Auto, Pick…) from the photo, #96: `core/edit/auto.py` measures a view of the photo without the controls it sets (`auto.analysis`, linear, two stops past white kept) and gives the values; each is one undoable step, done on the Develop worker. Tone: the median goes part of the way to middle grey, highlights bring back light past white, shadows and blacks set the ends, contrast opens a flat photo. White balance: grey world over unclipped pixels, narrowed to the nearest neutral, or the median around a click. A sunset is cooled by Auto, as with any grey world: As Shot undoes it. |
+| Culling help | Sharpness (#89): a score per photo, "Pick Sharpest of Each Stack", "Reject the Rest…" and a Blurry filter. Eyes closed, the AF point and the sort by sharpness are left (below). |
 | App | Settings, density, appearance, shortcut overlay and command palette (#76, #77), jobs in the island and notifications (#86). |
 
 ## Next
@@ -121,6 +122,8 @@ A code review (#113 and the issues it points to) found that the app grew in brea
 5. **The backlog** (#76 to #98, #60, #62, #49), chosen by what the author needs while using the app. Cheap and visible first: #79 sort, #80 counts, #95 colour labels, #81 clipping warnings, #82 type a value and reset; #96 auto tone and white balance is done (below).
 
 New features that touch the database, jobs or export wait for step 4 where they can.
+
+**Sharpness (#89), what was decided.** `core/sharpness.py` scores a photo as the variance of the Laplacian of its indexing preview, scaled to 1024 px on the long side and lightly blurred against grain, in the most detailed tile of a 4 x 4 grid (so a sharp subject against a soft background scores as sharp as it is). The score says nothing across scenes, so it is only compared within a stack. Stored by content id in the `sharpness` table (schema 15; no row = not scored, NULL score = could not be read, with the reason). `core/focus.py` is the resumable job (the same shape as indexing for search), run by `SharpnessService` after the start, every scan and when a drive comes, on its own thread and in its own low-priority process lane; the grid reads the scores again when it ends. Pick Sharpest puts the sharpest on top (`Library.pick_best`, via `set_stack_top`); within 5 % of the best a thumbs up, then stars, then the first taken decide; a stack with a photo not scored is left as it is and counted. Reject the Rest asks first and sets only the thumbs-down flag (undoable like any flag), never deleting or moving a file (#88). The Blurry filter shows photos under half the best score of their stack and lists them flat, whatever the stack's top is; photos outside a stack never match. Left for later: eyes closed (a face model, to be shared with #94), the AF point from the maker notes, a sort by sharpness (a key for #79) and showing the score (#78). Picking the top is not an undo step, as setting a stack's top by hand is not.
 
 ## Risks
 

@@ -121,6 +121,9 @@ def test_the_grid_exports_the_photos_chosen(qtbot, service, drive, tmp_path, mon
 
     window.stacking.export_selected()
 
-    qtbot.waitUntil(lambda: out.exists() and len(os.listdir(out)) == 2, timeout=TIMEOUT)
+    # The files themselves: one being written is a hidden .part beside them until it is renamed
+    qtbot.waitUntil(
+        lambda: out.exists() and {"a.png", "c.png"} <= set(os.listdir(out)), timeout=TIMEOUT
+    )
     assert sorted(os.listdir(out)) == ["a.png", "c.png"]
     exporter.close()

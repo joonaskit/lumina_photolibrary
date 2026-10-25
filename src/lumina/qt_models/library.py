@@ -749,6 +749,20 @@ class LibraryService(QObject):
     def set_stack_top(self, photo_id):
         self._write(lambda db: db.set_stack_top(photo_id), lambda _: self._stacks_changed())
 
+    def pick_best(self, stack_ids, on_done):
+        """Put the sharpest photo on top of each of these stacks (core/sharpness.py), then
+        `on_done({stack id: the photo now on top}, how many stacks were left as they were
+        for a photo not scored yet)`."""
+        stack_ids = list(stack_ids)
+
+        def done(result):
+            picked, skipped = result
+            if picked:
+                self._stacks_changed()
+            on_done(picked, skipped)
+
+        self._write(lambda db: db.pick_best(stack_ids), done)
+
     def set_stacks_collapsed(self, stack_ids, collapsed):
         stack_ids = list(stack_ids)
         self._write(
