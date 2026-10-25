@@ -122,7 +122,10 @@ class PhotosStore:
             "p.damage_warning, "
             "(SELECT GROUP_CONCAT(k.keyword_id) FROM photo_keywords k WHERE k.photo_id = p.id), "
             "(SELECT COUNT(*) FROM edits c WHERE c.photo_id = p.id AND c.copy > 0), "
-            "p.stack_id, p.stack_position, COALESCE(s.collapsed, 1), h.score "
+            "p.stack_id, p.stack_position, COALESCE(s.collapsed, 1), h.score, "
+            # The newest, should a name have been made twice (as `derived_at` has it)
+            "(SELECT d.kind FROM derived d WHERE d.volume_id = p.volume_id AND d.path = p.path "
+            "ORDER BY d.id DESC LIMIT 1) "
             f"FROM photos p JOIN volumes v ON v.id = p.volume_id "
             "LEFT JOIN stacks s ON s.id = p.stack_id "
             "LEFT JOIN sharpness h ON h.content_id = p.content_id "
@@ -148,6 +151,7 @@ class PhotosStore:
                 r[13],
                 bool(r[14]),
                 sharpness=r[15],
+                derived=r[16],
             )
             for r in rows
         ]

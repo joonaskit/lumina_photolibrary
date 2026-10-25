@@ -48,6 +48,8 @@ STACK_ROLE = Qt.ItemDataRole.UserRole + 9
 # The number of the virtual copy the cell is (the photo shown as that edit makes it), or
 # 0 for the photo itself
 COPY_ROLE = Qt.ItemDataRole.UserRole + 10
+# The kind of merge (dbm.HDR or dbm.PANORAMA) that made the photo, or None
+DERIVED_ROLE = Qt.ItemDataRole.UserRole + 11
 
 # What a drag of photos from the grid carries: the photo ids as JSON
 PHOTOS_MIME = "application/x-lumina-photos"
@@ -530,6 +532,10 @@ class LibraryModel(QAbstractListModel):
         """How many virtual copies `row`'s photo has."""
         return self._rows[row].copies
 
+    def derived(self, row):
+        """The kind of merge (HDR or PANORAMA) that made `row`'s photo, or None."""
+        return self._rows[row].derived
+
     def stack(self, row):
         """The id of the stack of two or more `row`'s photo is in, or None."""
         photo = self._rows[row]
@@ -770,6 +776,8 @@ class LibraryModel(QAbstractListModel):
             return photo.copies
         if role == COPY_ROLE:
             return photo.copy
+        if role == DERIVED_ROLE:
+            return photo.derived
         if role == STACK_ROLE:
             if photo.copy:
                 return None

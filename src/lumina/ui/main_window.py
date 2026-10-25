@@ -3,8 +3,8 @@ and the grid, one photo, or, with no folders yet, a way to add one."""
 
 from types import SimpleNamespace
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -30,6 +30,7 @@ from lumina.qt_models.library_model import (
     COPIES_ROLE,
     COPY_ROLE,
     DAMAGE_ROLE,
+    DERIVED_ROLE,
     DIMMED_ROLE,
     FLAG_ROLE,
     RATING_ROLE,
@@ -87,6 +88,9 @@ from lumina.ui.window_common import (  # noqa: F401 (the tests and the app read 
     describe_photo,
 )
 
+# How many photos on their squares the grid's delegate keeps
+_SQUARES_KEPT = 600
+
 
 class _CellDelegate(QStyledItemDelegate):
     """Every cell is the same size, whatever its icon. The default size comes from the
@@ -96,6 +100,8 @@ class _CellDelegate(QStyledItemDelegate):
     def __init__(self, size, parent=None):
         super().__init__(parent)
         self._size = size
+        # The photos on their squares, by the photo's cache key, size and pixel ratio
+        self._squares = {}
 
     def set_size(self, size):
         self._size = size
@@ -103,18 +109,61 @@ class _CellDelegate(QStyledItemDelegate):
     def sizeHint(self, _option, _index):
         return self._size
 
+    def initStyleOption(self, option, index):
+        # The style sizes the decoration to the icon, which puts the name right under the
+        # photo and the badges at its corners. The photo goes in as the icon of a
+        # transparent square, the size of the grid's icons, with the photo centred in it:
+        # the name and the badges are the same place in every cell
+        # (the base sizes the option's decoration to the photo, so take the square's first)
+        side = QSize(option.decorationSize)
+        super().initStyleOption(option, index)
+        photo = index.data(Qt.ItemDataRole.DecorationRole)
+        if not isinstance(photo, QIcon) or photo.isNull():
+            return
+        ratio = option.widget.devicePixelRatioF()
+        option.decorationSize = side
+        key = (photo.cacheKey(), side.width(), side.height(), ratio)
+        icon = self._squares.get(key)
+        if icon is None:
+            if len(self._squares) > _SQUARES_KEPT:
+                self._squares.clear()
+            icon = self._squares[key] = QIcon(self._square(photo, side, ratio))
+        option.icon = icon
+
+    @staticmethod
+    def _square(photo, side, ratio):
+        """`photo` centred on a transparent square of `side`."""
+        square = QPixmap((QSizeF(side) * ratio).toSize())
+        square.setDevicePixelRatio(ratio)
+        square.fill(Qt.GlobalColor.transparent)
+        picture = photo.pixmap(side, ratio)
+        shown = picture.deviceIndependentSize()
+        painter = QPainter(square)
+        painter.drawPixmap(
+            QPointF((side.width() - shown.width()) / 2, (side.height() - shown.height()) / 2),
+            picture,
+        )
+        painter.end()
+        return square
+
     def photo_rect(self, option, index):
-        """Where the photo is in the cell: the icon keeps the photo's shape within its
-        square."""
+        """Where the photo is in the cell: the icon keeps the photo's shape, centred in
+        its square."""
+        photo = index.data(Qt.ItemDataRole.DecorationRole)
+        square = self.badge_rect(option, index)
+        size = photo.actualSize(option.decorationSize) if isinstance(photo, QIcon) else QSize()
+        rect = QRect(QPoint(0, 0), size)
+        rect.moveCenter(square.toRect().center())
+        return rect
+
+    def badge_rect(self, option, index):
+        """The picture square of the cell, whose corners the badges sit in."""
         item = QStyleOptionViewItem(option)
         self.initStyleOption(item, index)
         widget = option.widget
-        area = widget.style().subElementRect(
-            QStyle.SubElement.SE_ItemViewItemDecoration, item, widget
+        return QRectF(
+            widget.style().subElementRect(QStyle.SubElement.SE_ItemViewItemDecoration, item, widget)
         )
-        photo = QRect(QPoint(0, 0), item.icon.actualSize(item.decorationSize))
-        photo.moveCenter(area.center())
-        return photo
 
     def stack_badge_at(self, grid, index, point):
         """Whether `point` (in the grid's viewport) is on the stack badge of the cell."""
@@ -125,7 +174,7 @@ class _CellDelegate(QStyledItemDelegate):
         grid.initViewItemOption(option)
         option.rect = grid.visualRect(index)
         option.widget = grid
-        card = badges.pill_rect(self.photo_rect(option, index), badges.stack_text(stacked))
+        card = badges.pill_rect(self.badge_rect(option, index), badges.stack_text(stacked))
         if card is None:
             return False
         if stacked[2]:
@@ -142,7 +191,7 @@ class _CellDelegate(QStyledItemDelegate):
         grid.initViewItemOption(option)
         option.rect = grid.visualRect(index)
         option.widget = grid
-        photo = self.photo_rect(option, index)
+        photo = self.badge_rect(option, index)
         stacked = index.data(STACK_ROLE)
         left = 0.0
         if stacked:
@@ -164,6 +213,7 @@ class _CellDelegate(QStyledItemDelegate):
         # A virtual copy's cell has its own number on the badge, the photo's the count
         number = index.data(COPY_ROLE) or virtual
         photo = self.photo_rect(option, index)
+        corners = self.badge_rect(option, index)
         painter.save()
         if index.data(DIMMED_ROLE):
             painter.setOpacity(DIMMED_OPACITY)
@@ -171,21 +221,31 @@ class _CellDelegate(QStyledItemDelegate):
             badges.paint_stack_cue(painter, photo)
         super().paint(painter, option, index)
         painter.restore()
-        if flag not in flags.COLOURS and not rating and not damaged and not virtual and not stacked:
+        merged = index.data(DERIVED_ROLE)
+        if (
+            flag not in flags.COLOURS
+            and not rating
+            and not damaged
+            and not virtual
+            and not stacked
+            and not merged
+        ):
             return
         if flag in flags.COLOURS:
-            flags.paint_badge(painter, photo, flag)
-        stars.paint_stars(painter, photo, rating or 0)
+            flags.paint_badge(painter, corners, flag)
+        stars.paint_stars(painter, corners, rating or 0)
         if damaged:
-            damage.paint_badge(painter, photo)
-        # Top left, side by side: the stack, then the virtual copies
+            damage.paint_badge(painter, corners)
+        # Top left, side by side: the stack, the virtual copies, then the merge's
         left = 0.0
         if stacked:
             left = badges.paint_pill(
-                painter, photo, badges.stack_text(stacked), left, stacked=stacked[2]
+                painter, corners, badges.stack_text(stacked), left, stacked=stacked[2]
             )
         if virtual:
-            badges.paint_diamond(painter, photo, str(number), left)
+            left = badges.paint_diamond(painter, corners, str(number), left)
+        if merged:
+            badges.paint_pill(painter, corners, badges.derived_text(merged), left)
 
 
 class MainWindow(QMainWindow):

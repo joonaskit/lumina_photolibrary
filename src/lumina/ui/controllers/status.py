@@ -3,6 +3,7 @@ at, where it is in the grid, its flag, stars, keywords, zoom and how it was take
 
 from PySide6.QtCore import QObject
 
+from lumina.core.dbtypes import HDR
 from lumina.qt_models.library_model import SIMILAR
 from lumina.ui import stars
 from lumina.ui.window_common import _DEVELOP, _VIEWER, FLAG_NAMES, describe_photo
@@ -63,9 +64,16 @@ class StatusLine(QObject):
             if len(numbers) > 1:
                 place = numbers.index(nav.viewed_copy) + 1 if nav.viewed_copy in numbers else 1
                 versions = f"Edit {place} of {len(numbers)}"
+            merged = None
+            made = self.service.derived_of(nav.viewed_id) if model.derived(row) else None
+            if made is not None:
+                kind, sources = made
+                what = "HDR merge" if kind == HDR else "Panorama"
+                merged = f"{what} of {sources} photo" + ("" if sources == 1 else "s")
             parts = (
                 f"{row + 1} of {count}",
                 versions,
+                merged,
                 zoom,
                 flag,
                 rated,

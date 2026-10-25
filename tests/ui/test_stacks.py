@@ -8,9 +8,10 @@ from PySide6.QtWidgets import QStyleOptionViewItem
 from test_flags import choose, names, open_window
 
 from lumina.core.dbtypes import PICKED
+from lumina.integration import style
 from lumina.qt_models.library_model import STACK_ROLE
 from lumina.ui import badges
-from lumina.ui.main_window import _VIEWER
+from lumina.ui.main_window import _VIEWER, MainWindow
 
 
 def wait_for_rows(qtbot, window, count):
@@ -217,7 +218,7 @@ def test_a_click_on_the_badge_opens_and_closes_a_stack(qtbot, service, drive):
         window.grid.initViewItemOption(option)
         option.rect = window.grid.visualRect(index)
         option.widget = window.grid
-        photo = window._delegate.photo_rect(option, index)
+        photo = window._delegate.badge_rect(option, index)
         card = badges.pill_rect(photo, badges.stack_text(index.data(STACK_ROLE)))
         return card.center().toPoint()
 
@@ -313,3 +314,149 @@ def test_a_wide_photo_on_top_of_a_stack_has_its_badge():
     # Nor one too short for a badge to fit inside it
     strip = QRect(0, 0, side, style.px(20))
     assert badges.pill_rect(strip, "20") is None
+
+
+def test_a_merged_photo_has_its_badge_in_the_grid_and_its_kind_in_the_status_line(
+    qtbot, service, drive
+):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter
+
+    from lumina.core import db as dbm
+    from lumina.qt_models.library_model import DERIVED_ROLE
+
+    window = open_window(qtbot, service, drive / "Photos")
+    for row in range(3):
+        window.model.data(window.model.index(row), Qt.ItemDataRole.DecorationRole)
+    qtbot.waitUntil(
+        lambda: all(window.model.thumbnail_pixmap(row) is not None for row in range(3)),
+        timeout=TIMEOUT,
+    )
+    window.grid.clearSelection()
+
+    def cell(row):
+        rect = window.grid.visualRect(window.model.index(row))
+        image = QImage(rect.size(), QImage.Format.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        painter.translate(-rect.topLeft())
+        option = QStyleOptionViewItem()
+        window.grid.initViewItemOption(option)
+        option.rect = rect
+        window.grid.itemDelegate().paint(painter, option, window.model.index(row))
+        painter.end()
+        return image
+
+    before = [cell(row) for row in range(3)]
+    service.settle()
+    with dbm.Library(service.path) as library:
+        target, *others = library.photos()
+        sources = [dbm.Source(p.volume_key, p.path) for p in others]
+        job = library.add_derived_job(dbm.PANORAMA, "{}", sources, library.folders()[0].id)
+        library.set_derived_result(library.job(job).derived_id, target.volume_key, target.path)
+
+    def kinds():
+        return [
+            window.model.data(window.model.index(r), DERIVED_ROLE)
+            for r in range(window.model.rowCount())
+        ]
+
+    window.model.refresh()
+    qtbot.waitUntil(lambda: dbm.PANORAMA in kinds(), timeout=TIMEOUT)
+    window.grid.clearSelection()
+
+    assert kinds().count(dbm.PANORAMA) == 1 and kinds().count(None) == 2
+    row = kinds().index(dbm.PANORAMA)
+    # Only the merged photo's cell changed, and it stays so when the rows are read again
+    after = [cell(r) for r in range(3)]
+    assert [a != b for a, b in zip(after, before, strict=True)] == [r == row for r in range(3)]
+    window.model.refresh()
+    qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
+    assert kinds().index(dbm.PANORAMA) == row
+
+    window.nav.show_photo(row)
+    assert "Panorama of 2 photos" in window.status.text()
+    assert badges.derived_text(dbm.PANORAMA) == "PANO"
+    assert badges.derived_text(dbm.HDR) == "HDR"
+
+
+def test_badges_and_photo_sit_the_same_in_cells_of_every_shape(qtbot, service, tmp_path):
+    from photos import make_jpeg
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QImage, QPainter
+
+    from lumina.core import db as dbm
+    from lumina.qt_models.library_model import DERIVED_ROLE
+
+    folder = tmp_path / "Shapes"
+    folder.mkdir()
+    make_jpeg(folder / "a-pano.jpg", size=(600, 100), colour=(60, 120, 200))
+    make_jpeg(folder / "b-portrait.jpg", size=(100, 300), colour=(60, 200, 120))
+    make_jpeg(folder / "c-landscape.jpg", size=(300, 200), colour=(200, 120, 60))
+    window = MainWindow(service)
+    qtbot.addWidget(window)
+    window.show()
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        window.browser.add_folder(folder)
+    qtbot.waitUntil(lambda: window.model.rowCount() == 3, timeout=TIMEOUT)
+    for row in range(3):
+        window.model.data(window.model.index(row), Qt.ItemDataRole.DecorationRole)
+    qtbot.waitUntil(
+        lambda: all(window.model.thumbnail_pixmap(row) is not None for row in range(3)),
+        timeout=TIMEOUT,
+    )
+    choose(window, 0, 1, 2)
+    window.pick_action.trigger()
+    window.grid.clearSelection()
+    service.settle()
+    qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
+    with dbm.Library(service.path) as library:
+        photo = next(p for p in library.photos() if p.path.endswith("a-pano.jpg"))
+        job = library.add_derived_job(
+            dbm.PANORAMA, "{}", [dbm.Source(photo.volume_key, "x.jpg")], library.folders()[0].id
+        )
+        library.set_derived_result(library.job(job).derived_id, photo.volume_key, photo.path)
+    window.model.refresh()
+    qtbot.waitUntil(lambda: window.model.data(window.model.index(0), DERIVED_ROLE), timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
+    assert window.model.data(window.model.index(0), DERIVED_ROLE) == dbm.PANORAMA
+
+    delegate = window.grid.itemDelegate()
+
+    def option_of(row):
+        option = QStyleOptionViewItem()
+        window.grid.initViewItemOption(option)
+        option.rect = window.grid.visualRect(window.model.index(row))
+        option.widget = window.grid
+        return option
+
+    squares = []
+    for row in range(3):
+        option, index = option_of(row), window.model.index(row)
+        square, photo_rect = delegate.badge_rect(option, index), delegate.photo_rect(option, index)
+        # The same place in every cell, whatever the photo, which is centred in it
+        squares.append((square.left() - option.rect.left(), square.top() - option.rect.top()))
+        assert square.width() == square.height() == option.decorationSize.width()
+        assert abs(photo_rect.center().x() - square.center().x()) <= 1
+        assert abs(photo_rect.center().y() - square.center().y()) <= 1
+    assert len(set(squares)) == 1
+
+    # The pano's strip is short: its badges are painted where the strip is not
+    option, index = option_of(0), window.model.index(0)
+    square, strip = delegate.badge_rect(option, index), delegate.photo_rect(option, index)
+    image = QImage(option.rect.size(), QImage.Format.Format_ARGB32)
+    image.fill(0)
+    painter = QPainter(image)
+    painter.translate(-option.rect.topLeft())
+    delegate.paint(painter, option, index)
+    painter.end()
+    side, inset = style.px(22), style.px(4)
+    flag_at = QPoint(
+        round(square.right() - inset - side / 2), round(square.bottom() - inset - side / 2)
+    )
+    pill_at = QPoint(
+        round(square.left() + inset + style.px(10)), round(square.top() + inset + style.px(10))
+    )
+    for at in (flag_at, pill_at):
+        assert not strip.contains(at)
+        assert image.pixelColor(at - option.rect.topLeft()).alpha() > 0
