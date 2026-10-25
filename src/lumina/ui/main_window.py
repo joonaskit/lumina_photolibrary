@@ -109,11 +109,12 @@ class _CellDelegate(QStyledItemDelegate):
         square."""
         return self._rects(option, index)[0]
 
-    def badge_rect(self, option, index):
+    def badge_rect(self, option, index, bottom=False):
         """The rectangle the badges sit in the corners of: the photo's, or the cell's
-        picture square when the photo is too thin for them."""
+        picture square when the photo is too thin for them. `bottom` for the flag and
+        the stars, which need more room."""
         photo, square = self._rects(option, index)
-        return badges.anchor_rect(QRectF(photo), QRectF(square))
+        return badges.anchor_rect(QRectF(photo), QRectF(square), bottom)
 
     def _rects(self, option, index):
         item = QStyleOptionViewItem(option)
@@ -180,6 +181,7 @@ class _CellDelegate(QStyledItemDelegate):
         number = index.data(COPY_ROLE) or virtual
         photo = self.photo_rect(option, index)
         corners = self.badge_rect(option, index)
+        below = self.badge_rect(option, index, bottom=True)
         painter.save()
         if index.data(DIMMED_ROLE):
             painter.setOpacity(DIMMED_OPACITY)
@@ -198,8 +200,8 @@ class _CellDelegate(QStyledItemDelegate):
         ):
             return
         if flag in flags.COLOURS:
-            flags.paint_badge(painter, corners, flag)
-        stars.paint_stars(painter, corners, rating or 0)
+            flags.paint_badge(painter, below, flag)
+        stars.paint_stars(painter, below, rating or 0)
         if damaged:
             damage.paint_badge(painter, corners)
         # Top left, side by side: the stack, the virtual copies, then the merge's

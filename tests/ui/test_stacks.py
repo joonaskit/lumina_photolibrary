@@ -331,6 +331,21 @@ def test_a_panoramas_badges_sit_in_the_cell_when_its_strip_is_too_thin():
     # An ordinary photo keeps its own corners
     photo = QRectF(0, side / 8, side, side * 3 / 4)
     assert badges.anchor_rect(photo, cell) == photo
+    # A portrait photo is too narrow for five stars beside the flag, but its top badges
+    # stay on it
+    portrait = QRectF(side * 0.2, 0, side * 0.5, side)
+    assert badges.anchor_rect(portrait, cell) == portrait
+    assert badges.anchor_rect(portrait, cell, bottom=True) == cell
+
+    def stars_painted(rect):
+        image = QImage(int(side), int(side), QImage.Format.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        stars.paint_stars(painter, rect, 5)
+        painter.end()
+        return image
+
+    assert stars_painted(badges.anchor_rect(portrait, cell, bottom=True)) != stars_painted(QRectF())
     # A small grid's cell has no room either, so nothing moves
     small = QRectF(0, 0, style.px(20), style.px(20))
     assert badges.anchor_rect(QRectF(0, 5, 20, 3), small) == QRectF(0, 5, 20, 3)
@@ -341,7 +356,7 @@ def test_a_panoramas_badges_sit_in_the_cell_when_its_strip_is_too_thin():
     def paints(draw):
         image = QImage(blank)
         painter = QPainter(image)
-        draw(painter, badges.anchor_rect(strip, cell))
+        draw(painter, badges.anchor_rect(strip, cell, bottom=True))
         painter.end()
         return image != blank
 
@@ -463,6 +478,7 @@ def test_a_wide_photos_flag_stars_and_merge_badges_show_in_its_cell(qtbot, servi
     option.widget = window.grid
     delegate = window.grid.itemDelegate()
     photo_rect, corners = delegate.photo_rect(option, index), delegate.badge_rect(option, index)
+    below = delegate.badge_rect(option, index, bottom=True)
     # The strip is too short for the badges, so they are placed in the cell around it
     assert corners.height() > photo_rect.height() * 2
     image = QImage(rect.size(), QImage.Format.Format_ARGB32)
@@ -473,7 +489,7 @@ def test_a_wide_photos_flag_stars_and_merge_badges_show_in_its_cell(qtbot, servi
     painter.end()
     side, inset = style.px(22), style.px(4)
     flag_at = QPoint(
-        round(corners.right() - inset - side / 2), round(corners.bottom() - inset - side / 2)
+        round(below.right() - inset - side / 2), round(below.bottom() - inset - side / 2)
     )
     # The pill hangs below the strip's top edge: a point of it the strip does not cover
     pill_at = QPoint(

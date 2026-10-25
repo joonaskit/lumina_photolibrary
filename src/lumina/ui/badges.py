@@ -7,6 +7,7 @@ from PySide6.QtGui import QPainter, QPolygonF
 
 from lumina.core.dbtypes import HDR, PANORAMA
 from lumina.integration import style
+from lumina.ui import stars
 
 
 def stack_text(stacked):
@@ -26,14 +27,17 @@ def _room(photo_rect):
     return longer >= 3 * height and shorter >= height + 2 * style.px(4)
 
 
-def anchor_rect(photo_rect, cell_rect):
-    """The rectangle whose corners the badges sit in: the photo's, or the cell's when the
-    photo is too short for a row of badges at the top and another at the bottom (a
-    panorama's strip in a square cell) but the cell has room. A cell too small for badges
-    stays the photo's, so they are left out as before."""
+def anchor_rect(photo_rect, cell_rect, bottom=False):
+    """The rectangle whose corners the badges sit in: the photo's, or the cell's picture
+    square when the photo is too short for a row of badges at the top and another at the
+    bottom (a panorama's strip in a square cell) but the cell has room. The `bottom` row
+    (the flag and the stars) also needs the photo to be wide enough for five stars beside
+    the flag, which a portrait photo is not. A cell too small for badges stays the photo's,
+    so they are left out as before."""
     need = style.px(20) + style.px(22) + 3 * style.px(4)
-    thin = min(photo_rect.width(), photo_rect.height()) < need
-    if thin and min(cell_rect.width(), cell_rect.height()) >= need:
+    wide = stars.room_width() if bottom else 0
+    thin = photo_rect.height() < need or photo_rect.width() < wide
+    if thin and cell_rect.height() >= need and cell_rect.width() >= max(need, wide):
         return cell_rect
     return photo_rect
 
