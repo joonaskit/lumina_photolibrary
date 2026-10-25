@@ -59,6 +59,7 @@ from lumina.ui.develop_view import DevelopView
 from lumina.ui.filters import FilterBar
 from lumina.ui.grid_size import GridSizeSwitch
 from lumina.ui.image_view import ImageView
+from lumina.ui.job_list import JobsButton
 from lumina.ui.job_status import JobStatus, export_status, import_status, merge_status
 from lumina.ui.live_view import LivePanel
 from lumina.ui.search import SearchField, SearchStatus
@@ -504,6 +505,9 @@ class MainWindow(QMainWindow):
     def _make_status_bar(self):
         self.status = QLabel()
         self.statusBar().addWidget(self.status, 1)
+        if self.reports is not None:
+            self.jobs_button = JobsButton(self.reports.jobs)
+            self.statusBar().addPermanentWidget(self.jobs_button)
         self.job_status = JobStatus()
         self.job_status.cancel_requested.connect(self.service.cancel)
         self.statusBar().addPermanentWidget(self.job_status)

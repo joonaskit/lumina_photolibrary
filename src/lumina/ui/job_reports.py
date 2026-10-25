@@ -16,6 +16,7 @@ from PySide6.QtCore import QObject, QTimer
 
 from lumina import APP_ID
 from lumina.core.dbtypes import CANCELLED, DONE, FAILED_JOB, QUEUED, RUNNING, UNFINISHED
+from lumina.ui.job_list import JobList
 from lumina.ui.job_status import (
     describe,
     describe_export,
@@ -59,6 +60,9 @@ class Source:
     words: Callable
     cancel: Callable
     detail: Callable = counted
+    # Nothing else in the window shows this service's jobs (the status bar has no widget
+    # of its own for them), so the jobs button says so while one runs
+    alone: bool = False
 
 
 @dataclass
@@ -98,6 +102,8 @@ class JobReports(QObject):
         self.notify = notify
         # Activity id -> the job, while it runs
         self._jobs = {}
+        # Every job that runs, waits or failed, for the status bar's jobs button
+        self.jobs = JobList(self)
         activities.action_invoked.connect(self._on_action)
 
     def set_island(self, on):
@@ -131,6 +137,7 @@ class JobReports(QObject):
 
     def tell(self, source, status):
         key = f"{status.kind or 'job'}-{status.job}"
+        self.jobs.update(key, source, status)
         job = self._jobs.get(key)
         if status.state in UNFINISHED:
             self._running(key, job, source, status)
@@ -255,7 +262,7 @@ def watch_services(reports, library, search, scoring, merge, importer, exporter)
     )
     reports.watch(
         scoring.job_changed,
-        Source(lambda _status: "Scoring sharpness", describe_scoring, scoring.cancel),
+        Source(lambda _status: "Scoring sharpness", describe_scoring, scoring.cancel, alone=True),
     )
     # A merge's done and total are of its phase, which its words tell
     reports.watch(
