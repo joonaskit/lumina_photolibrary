@@ -13,12 +13,6 @@ from lumina.integration import style
 _INNER = 0.42
 
 
-def room_width():
-    """How wide a thumbnail must be for five stars and the flag's badge side by side along
-    its bottom."""
-    return 5 * style.px(11) + 4 * style.px(1) + 2 * style.px(5) + style.px(22) + 3 * style.px(4)
-
-
 def text(rating):
     """ "★★★" for three stars; nothing for none."""
     return "★" * rating

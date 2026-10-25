@@ -300,7 +300,7 @@ def test_a_click_on_the_badge_opens_the_copies(qtbot, library, photo):
         window.grid.initViewItemOption(option)
         option.rect = window.grid.visualRect(index)
         option.widget = window.grid
-        return badges.diamond_rect(window._delegate.photo_rect(option, index), "1")
+        return badges.diamond_rect(window._delegate.badge_rect(option, index), "1")
 
     # Once the thumbnail is made, there is a photo to put the badge on
     qtbot.waitUntil(lambda: badge() is not None, timeout=TIMEOUT)

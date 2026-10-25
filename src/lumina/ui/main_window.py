@@ -3,8 +3,8 @@ and the grid, one photo, or, with no folders yet, a way to add one."""
 
 from types import SimpleNamespace
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -88,6 +88,9 @@ from lumina.ui.window_common import (  # noqa: F401 (the tests and the app read 
     describe_photo,
 )
 
+# How many photos on their squares the grid's delegate keeps
+_SQUARES_KEPT = 600
+
 
 class _CellDelegate(QStyledItemDelegate):
     """Every cell is the same size, whatever its icon. The default size comes from the
@@ -97,6 +100,8 @@ class _CellDelegate(QStyledItemDelegate):
     def __init__(self, size, parent=None):
         super().__init__(parent)
         self._size = size
+        # The photos on their squares, by the photo's cache key, size and pixel ratio
+        self._squares = {}
 
     def set_size(self, size):
         self._size = size
@@ -104,33 +109,61 @@ class _CellDelegate(QStyledItemDelegate):
     def sizeHint(self, _option, _index):
         return self._size
 
+    def initStyleOption(self, option, index):
+        # The style sizes the decoration to the icon, which puts the name right under the
+        # photo and the badges at its corners. The photo goes in as the icon of a
+        # transparent square, the size of the grid's icons, with the photo centred in it:
+        # the name and the badges are the same place in every cell
+        # (the base sizes the option's decoration to the photo, so take the square's first)
+        side = QSize(option.decorationSize)
+        super().initStyleOption(option, index)
+        photo = index.data(Qt.ItemDataRole.DecorationRole)
+        if not isinstance(photo, QIcon) or photo.isNull():
+            return
+        ratio = option.widget.devicePixelRatioF()
+        option.decorationSize = side
+        key = (photo.cacheKey(), side.width(), side.height(), ratio)
+        icon = self._squares.get(key)
+        if icon is None:
+            if len(self._squares) > _SQUARES_KEPT:
+                self._squares.clear()
+            icon = self._squares[key] = QIcon(self._square(photo, side, ratio))
+        option.icon = icon
+
+    @staticmethod
+    def _square(photo, side, ratio):
+        """`photo` centred on a transparent square of `side`."""
+        square = QPixmap((QSizeF(side) * ratio).toSize())
+        square.setDevicePixelRatio(ratio)
+        square.fill(Qt.GlobalColor.transparent)
+        picture = photo.pixmap(side, ratio)
+        shown = picture.deviceIndependentSize()
+        painter = QPainter(square)
+        painter.drawPixmap(
+            QPointF((side.width() - shown.width()) / 2, (side.height() - shown.height()) / 2),
+            picture,
+        )
+        painter.end()
+        return square
+
     def photo_rect(self, option, index):
-        """Where the photo is in the cell: the icon keeps the photo's shape within its
-        square."""
-        return self._rects(option, index)[0]
+        """Where the photo is in the cell: the icon keeps the photo's shape, centred in
+        its square."""
+        photo = index.data(Qt.ItemDataRole.DecorationRole)
+        square = self.badge_rect(option, index)
+        size = photo.actualSize(option.decorationSize) if isinstance(photo, QIcon) else QSize()
+        rect = QRect(QPoint(0, 0), size)
+        rect.moveCenter(square.toRect().center())
+        return rect
 
-    def badge_rect(self, option, index, bottom=False):
-        """The rectangle the badges sit in the corners of: the photo's, or the cell's
-        picture square when the photo is too thin for them. `bottom` for the flag and
-        the stars, which need more room."""
-        photo, square = self._rects(option, index)
-        return badges.anchor_rect(QRectF(photo), QRectF(square), bottom)
-
-    def _rects(self, option, index):
+    def badge_rect(self, option, index):
+        """The picture square of the cell, whose corners the badges sit in."""
         item = QStyleOptionViewItem(option)
         self.initStyleOption(item, index)
         widget = option.widget
-        area = widget.style().subElementRect(
-            QStyle.SubElement.SE_ItemViewItemDecoration, item, widget
+        return QRectF(
+            widget.style().subElementRect(QStyle.SubElement.SE_ItemViewItemDecoration, item, widget)
         )
-        photo = QRect(QPoint(0, 0), item.icon.actualSize(item.decorationSize))
-        photo.moveCenter(area.center())
-        # initStyleOption sizes the decoration to the photo (and the cell keeps it at the
-        # top), so the picture square is the grid's icon size, as the option the view
-        # gave, hanging from there
-        square = QRect(QPoint(0, 0), option.decorationSize)
-        square.moveTopLeft(QPoint(area.center().x() - square.width() // 2, area.top()))
-        return photo, square
 
     def stack_badge_at(self, grid, index, point):
         """Whether `point` (in the grid's viewport) is on the stack badge of the cell."""
@@ -181,7 +214,6 @@ class _CellDelegate(QStyledItemDelegate):
         number = index.data(COPY_ROLE) or virtual
         photo = self.photo_rect(option, index)
         corners = self.badge_rect(option, index)
-        below = self.badge_rect(option, index, bottom=True)
         painter.save()
         if index.data(DIMMED_ROLE):
             painter.setOpacity(DIMMED_OPACITY)
@@ -200,8 +232,8 @@ class _CellDelegate(QStyledItemDelegate):
         ):
             return
         if flag in flags.COLOURS:
-            flags.paint_badge(painter, below, flag)
-        stars.paint_stars(painter, below, rating or 0)
+            flags.paint_badge(painter, corners, flag)
+        stars.paint_stars(painter, corners, rating or 0)
         if damaged:
             damage.paint_badge(painter, corners)
         # Top left, side by side: the stack, the virtual copies, then the merge's

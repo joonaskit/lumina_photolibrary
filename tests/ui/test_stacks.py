@@ -218,7 +218,7 @@ def test_a_click_on_the_badge_opens_and_closes_a_stack(qtbot, service, drive):
         window.grid.initViewItemOption(option)
         option.rect = window.grid.visualRect(index)
         option.widget = window.grid
-        photo = window._delegate.photo_rect(option, index)
+        photo = window._delegate.badge_rect(option, index)
         card = badges.pill_rect(photo, badges.stack_text(index.data(STACK_ROLE)))
         return card.center().toPoint()
 
@@ -316,61 +316,6 @@ def test_a_wide_photo_on_top_of_a_stack_has_its_badge():
     assert badges.pill_rect(strip, "20") is None
 
 
-def test_a_panoramas_badges_sit_in_the_cell_when_its_strip_is_too_thin():
-    from PySide6.QtCore import QRectF
-    from PySide6.QtGui import QImage, QPainter
-
-    from lumina.integration import style
-    from lumina.ui import damage, flags, stars
-
-    side = style.px(150)
-    cell = QRectF(0, 0, side, side)
-    # A 6:1 panorama's strip in a square cell: too short for a badge inside it
-    strip = QRectF(0, (side - side / 6) / 2, side, side / 6)
-    assert badges.anchor_rect(strip, cell) == cell
-    # An ordinary photo keeps its own corners
-    photo = QRectF(0, side / 8, side, side * 3 / 4)
-    assert badges.anchor_rect(photo, cell) == photo
-    # A portrait photo is too narrow for five stars beside the flag, but its top badges
-    # stay on it
-    portrait = QRectF(side * 0.2, 0, side * 0.5, side)
-    assert badges.anchor_rect(portrait, cell) == portrait
-    assert badges.anchor_rect(portrait, cell, bottom=True) == cell
-
-    def stars_painted(rect):
-        image = QImage(int(side), int(side), QImage.Format.Format_ARGB32)
-        image.fill(0)
-        painter = QPainter(image)
-        stars.paint_stars(painter, rect, 5)
-        painter.end()
-        return image
-
-    assert stars_painted(badges.anchor_rect(portrait, cell, bottom=True)) != stars_painted(QRectF())
-    # A small grid's cell has no room either, so nothing moves
-    small = QRectF(0, 0, style.px(20), style.px(20))
-    assert badges.anchor_rect(QRectF(0, 5, 20, 3), small) == QRectF(0, 5, 20, 3)
-
-    blank = QImage(int(side), int(side), QImage.Format.Format_ARGB32)
-    blank.fill(0)
-
-    def paints(draw):
-        image = QImage(blank)
-        painter = QPainter(image)
-        draw(painter, badges.anchor_rect(strip, cell, bottom=True))
-        painter.end()
-        return image != blank
-
-    assert paints(lambda p, r: flags.paint_badge(p, r, 1))
-    assert paints(lambda p, r: stars.paint_stars(p, r, 3))
-    assert paints(damage.paint_badge)
-    # Painted on the strip itself, as before the fix, they would not show
-    image = QImage(blank)
-    painter = QPainter(image)
-    flags.paint_badge(painter, strip, 1)
-    painter.end()
-    assert image == blank
-
-
 def test_a_merged_photo_has_its_badge_in_the_grid_and_its_kind_in_the_status_line(
     qtbot, service, drive
 ):
@@ -435,32 +380,38 @@ def test_a_merged_photo_has_its_badge_in_the_grid_and_its_kind_in_the_status_lin
     assert badges.derived_text(dbm.HDR) == "HDR"
 
 
-def test_a_wide_photos_flag_stars_and_merge_badges_show_in_its_cell(qtbot, service, tmp_path):
+def test_badges_and_photo_sit_the_same_in_cells_of_every_shape(qtbot, service, tmp_path):
     from photos import make_jpeg
-    from PySide6.QtCore import QPoint, QRectF, Qt
+    from PySide6.QtCore import QPoint, Qt
     from PySide6.QtGui import QImage, QPainter
 
     from lumina.core import db as dbm
     from lumina.qt_models.library_model import DERIVED_ROLE
 
-    folder = tmp_path / "Wide"
+    folder = tmp_path / "Shapes"
     folder.mkdir()
-    make_jpeg(folder / "pano.jpg", size=(600, 100), colour=(60, 120, 200))
+    make_jpeg(folder / "a-pano.jpg", size=(600, 100), colour=(60, 120, 200))
+    make_jpeg(folder / "b-portrait.jpg", size=(100, 300), colour=(60, 200, 120))
+    make_jpeg(folder / "c-landscape.jpg", size=(300, 200), colour=(200, 120, 60))
     window = MainWindow(service)
     qtbot.addWidget(window)
     window.show()
     with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
         window.browser.add_folder(folder)
-    qtbot.waitUntil(lambda: window.model.rowCount() == 1, timeout=TIMEOUT)
-    window.model.data(window.model.index(0), Qt.ItemDataRole.DecorationRole)
-    qtbot.waitUntil(lambda: window.model.thumbnail_pixmap(0) is not None, timeout=TIMEOUT)
-    choose(window, 0)
+    qtbot.waitUntil(lambda: window.model.rowCount() == 3, timeout=TIMEOUT)
+    for row in range(3):
+        window.model.data(window.model.index(row), Qt.ItemDataRole.DecorationRole)
+    qtbot.waitUntil(
+        lambda: all(window.model.thumbnail_pixmap(row) is not None for row in range(3)),
+        timeout=TIMEOUT,
+    )
+    choose(window, 0, 1, 2)
     window.pick_action.trigger()
     window.grid.clearSelection()
     service.settle()
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     with dbm.Library(service.path) as library:
-        (photo,) = library.photos()
+        photo = next(p for p in library.photos() if p.path.endswith("a-pano.jpg"))
         job = library.add_derived_job(
             dbm.PANORAMA, "{}", [dbm.Source(photo.volume_key, "x.jpg")], library.folders()[0].id
         )
@@ -470,33 +421,42 @@ def test_a_wide_photos_flag_stars_and_merge_badges_show_in_its_cell(qtbot, servi
     qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
     assert window.model.data(window.model.index(0), DERIVED_ROLE) == dbm.PANORAMA
 
-    index = window.model.index(0)
-    rect = window.grid.visualRect(index)
-    option = QStyleOptionViewItem()
-    window.grid.initViewItemOption(option)
-    option.rect = rect
-    option.widget = window.grid
     delegate = window.grid.itemDelegate()
-    photo_rect, corners = delegate.photo_rect(option, index), delegate.badge_rect(option, index)
-    below = delegate.badge_rect(option, index, bottom=True)
-    # The strip is too short for the badges, so they are placed in the cell around it
-    assert corners.height() > photo_rect.height() * 2
-    image = QImage(rect.size(), QImage.Format.Format_ARGB32)
+
+    def option_of(row):
+        option = QStyleOptionViewItem()
+        window.grid.initViewItemOption(option)
+        option.rect = window.grid.visualRect(window.model.index(row))
+        option.widget = window.grid
+        return option
+
+    squares = []
+    for row in range(3):
+        option, index = option_of(row), window.model.index(row)
+        square, photo_rect = delegate.badge_rect(option, index), delegate.photo_rect(option, index)
+        # The same place in every cell, whatever the photo, which is centred in it
+        squares.append((square.left() - option.rect.left(), square.top() - option.rect.top()))
+        assert square.width() == square.height() == option.decorationSize.width()
+        assert abs(photo_rect.center().x() - square.center().x()) <= 1
+        assert abs(photo_rect.center().y() - square.center().y()) <= 1
+    assert len(set(squares)) == 1
+
+    # The pano's strip is short: its badges are painted where the strip is not
+    option, index = option_of(0), window.model.index(0)
+    square, strip = delegate.badge_rect(option, index), delegate.photo_rect(option, index)
+    image = QImage(option.rect.size(), QImage.Format.Format_ARGB32)
     image.fill(0)
     painter = QPainter(image)
-    painter.translate(-rect.topLeft())
+    painter.translate(-option.rect.topLeft())
     delegate.paint(painter, option, index)
     painter.end()
     side, inset = style.px(22), style.px(4)
     flag_at = QPoint(
-        round(below.right() - inset - side / 2), round(below.bottom() - inset - side / 2)
+        round(square.right() - inset - side / 2), round(square.bottom() - inset - side / 2)
     )
-    # The pill hangs below the strip's top edge: a point of it the strip does not cover
     pill_at = QPoint(
-        round(corners.left() + inset + style.px(10)), round(corners.top() + inset + style.px(18))
+        round(square.left() + inset + style.px(10)), round(square.top() + inset + style.px(10))
     )
-    # Where the strip is, the photo's own pixels would show whatever the badges did
     for at in (flag_at, pill_at):
-        assert not photo_rect.contains(at)
-        assert image.pixelColor(at - rect.topLeft()).alpha() > 0
-    assert corners.contains(QRectF(photo_rect))
+        assert not strip.contains(at)
+        assert image.pixelColor(at - option.rect.topLeft()).alpha() > 0
