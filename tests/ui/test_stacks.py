@@ -8,9 +8,10 @@ from PySide6.QtWidgets import QStyleOptionViewItem
 from test_flags import choose, names, open_window
 
 from lumina.core.dbtypes import PICKED
+from lumina.integration import style
 from lumina.qt_models.library_model import STACK_ROLE
 from lumina.ui import badges
-from lumina.ui.main_window import _VIEWER
+from lumina.ui.main_window import _VIEWER, MainWindow
 
 
 def wait_for_rows(qtbot, window, count):
@@ -417,3 +418,69 @@ def test_a_merged_photo_has_its_badge_in_the_grid_and_its_kind_in_the_status_lin
     assert "Panorama of 2 photos" in window.status.text()
     assert badges.derived_text(dbm.PANORAMA) == "PANO"
     assert badges.derived_text(dbm.HDR) == "HDR"
+
+
+def test_a_wide_photos_flag_stars_and_merge_badges_show_in_its_cell(qtbot, service, tmp_path):
+    from photos import make_jpeg
+    from PySide6.QtCore import QPoint, QRectF, Qt
+    from PySide6.QtGui import QImage, QPainter
+
+    from lumina.core import db as dbm
+    from lumina.qt_models.library_model import DERIVED_ROLE
+
+    folder = tmp_path / "Wide"
+    folder.mkdir()
+    make_jpeg(folder / "pano.jpg", size=(600, 100), colour=(60, 120, 200))
+    window = MainWindow(service)
+    qtbot.addWidget(window)
+    window.show()
+    with qtbot.waitSignal(service.job_ended, timeout=TIMEOUT):
+        window.browser.add_folder(folder)
+    qtbot.waitUntil(lambda: window.model.rowCount() == 1, timeout=TIMEOUT)
+    window.model.data(window.model.index(0), Qt.ItemDataRole.DecorationRole)
+    qtbot.waitUntil(lambda: window.model.thumbnail_pixmap(0) is not None, timeout=TIMEOUT)
+    choose(window, 0)
+    window.pick_action.trigger()
+    window.grid.clearSelection()
+    service.settle()
+    qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
+    with dbm.Library(service.path) as library:
+        (photo,) = library.photos()
+        job = library.add_derived_job(
+            dbm.PANORAMA, "{}", [dbm.Source(photo.volume_key, "x.jpg")], library.folders()[0].id
+        )
+        library.set_derived_result(library.job(job).derived_id, photo.volume_key, photo.path)
+    window.model.refresh()
+    qtbot.waitUntil(lambda: window.model.data(window.model.index(0), DERIVED_ROLE), timeout=TIMEOUT)
+    qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
+    assert window.model.data(window.model.index(0), DERIVED_ROLE) == dbm.PANORAMA
+
+    index = window.model.index(0)
+    rect = window.grid.visualRect(index)
+    option = QStyleOptionViewItem()
+    window.grid.initViewItemOption(option)
+    option.rect = rect
+    option.widget = window.grid
+    delegate = window.grid.itemDelegate()
+    photo_rect, corners = delegate.photo_rect(option, index), delegate.badge_rect(option, index)
+    # The strip is too short for the badges, so they are placed in the cell around it
+    assert corners.height() > photo_rect.height() * 2
+    image = QImage(rect.size(), QImage.Format.Format_ARGB32)
+    image.fill(0)
+    painter = QPainter(image)
+    painter.translate(-rect.topLeft())
+    delegate.paint(painter, option, index)
+    painter.end()
+    side, inset = style.px(22), style.px(4)
+    flag_at = QPoint(
+        round(corners.right() - inset - side / 2), round(corners.bottom() - inset - side / 2)
+    )
+    # The pill hangs below the strip's top edge: a point of it the strip does not cover
+    pill_at = QPoint(
+        round(corners.left() + inset + style.px(10)), round(corners.top() + inset + style.px(18))
+    )
+    # Where the strip is, the photo's own pixels would show whatever the badges did
+    for at in (flag_at, pill_at):
+        assert not photo_rect.contains(at)
+        assert image.pixelColor(at - rect.topLeft()).alpha() > 0
+    assert corners.contains(QRectF(photo_rect))

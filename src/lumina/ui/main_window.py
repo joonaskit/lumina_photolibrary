@@ -112,8 +112,8 @@ class _CellDelegate(QStyledItemDelegate):
     def badge_rect(self, option, index):
         """The rectangle the badges sit in the corners of: the photo's, or the cell's
         picture square when the photo is too thin for them."""
-        photo, area = self._rects(option, index)
-        return badges.anchor_rect(QRectF(photo), QRectF(area))
+        photo, square = self._rects(option, index)
+        return badges.anchor_rect(QRectF(photo), QRectF(square))
 
     def _rects(self, option, index):
         item = QStyleOptionViewItem(option)
@@ -124,7 +124,12 @@ class _CellDelegate(QStyledItemDelegate):
         )
         photo = QRect(QPoint(0, 0), item.icon.actualSize(item.decorationSize))
         photo.moveCenter(area.center())
-        return photo, area
+        # initStyleOption sizes the decoration to the photo (and the cell keeps it at the
+        # top), so the picture square is the grid's icon size, as the option the view
+        # gave, hanging from there
+        square = QRect(QPoint(0, 0), option.decorationSize)
+        square.moveTopLeft(QPoint(area.center().x() - square.width() // 2, area.top()))
+        return photo, square
 
     def stack_badge_at(self, grid, index, point):
         """Whether `point` (in the grid's viewport) is on the stack badge of the cell."""
