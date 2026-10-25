@@ -30,6 +30,7 @@ from lumina.qt_models.library_model import (
     COPIES_ROLE,
     COPY_ROLE,
     DAMAGE_ROLE,
+    DERIVED_ROLE,
     DIMMED_ROLE,
     FLAG_ROLE,
     RATING_ROLE,
@@ -181,21 +182,31 @@ class _CellDelegate(QStyledItemDelegate):
             badges.paint_stack_cue(painter, photo)
         super().paint(painter, option, index)
         painter.restore()
-        if flag not in flags.COLOURS and not rating and not damaged and not virtual and not stacked:
+        merged = index.data(DERIVED_ROLE)
+        if (
+            flag not in flags.COLOURS
+            and not rating
+            and not damaged
+            and not virtual
+            and not stacked
+            and not merged
+        ):
             return
         if flag in flags.COLOURS:
             flags.paint_badge(painter, corners, flag)
         stars.paint_stars(painter, corners, rating or 0)
         if damaged:
             damage.paint_badge(painter, corners)
-        # Top left, side by side: the stack, then the virtual copies
+        # Top left, side by side: the stack, the virtual copies, then the merge's
         left = 0.0
         if stacked:
             left = badges.paint_pill(
                 painter, corners, badges.stack_text(stacked), left, stacked=stacked[2]
             )
         if virtual:
-            badges.paint_diamond(painter, corners, str(number), left)
+            left = badges.paint_diamond(painter, corners, str(number), left)
+        if merged:
+            badges.paint_pill(painter, corners, badges.derived_text(merged), left)
 
 
 class MainWindow(QMainWindow):

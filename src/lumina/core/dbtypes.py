@@ -87,6 +87,8 @@ class PhotoRow:
     copy: int = 0
     # How sharp it is (core/sharpness.py), or None while it is not scored or could not be
     sharpness: float | None = None
+    # The kind of merge (HDR or PANORAMA) that made the photo, or None for any other
+    derived: str | None = None
 
 
 @dataclass(frozen=True)

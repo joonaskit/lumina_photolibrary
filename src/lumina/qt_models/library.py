@@ -445,6 +445,12 @@ class LibraryService(QObject):
         self.settle()
         return self.db.photo(photo_id)
 
+    def derived_of(self, photo_id):
+        """(kind, how many photos it was made from) of a photo an HDR merge or a panorama
+        made, or None."""
+        self.settle()
+        return self.db.derived_of(photo_id)
+
     # Flags and ratings
 
     def set_flags(self, flags):

@@ -353,3 +353,67 @@ def test_a_panoramas_badges_sit_in_the_cell_when_its_strip_is_too_thin():
     flags.paint_badge(painter, strip, 1)
     painter.end()
     assert image == blank
+
+
+def test_a_merged_photo_has_its_badge_in_the_grid_and_its_kind_in_the_status_line(
+    qtbot, service, drive
+):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter
+
+    from lumina.core import db as dbm
+    from lumina.qt_models.library_model import DERIVED_ROLE
+
+    window = open_window(qtbot, service, drive / "Photos")
+    for row in range(3):
+        window.model.data(window.model.index(row), Qt.ItemDataRole.DecorationRole)
+    qtbot.waitUntil(
+        lambda: all(window.model.thumbnail_pixmap(row) is not None for row in range(3)),
+        timeout=TIMEOUT,
+    )
+    window.grid.clearSelection()
+
+    def cell(row):
+        rect = window.grid.visualRect(window.model.index(row))
+        image = QImage(rect.size(), QImage.Format.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        painter.translate(-rect.topLeft())
+        option = QStyleOptionViewItem()
+        window.grid.initViewItemOption(option)
+        option.rect = rect
+        window.grid.itemDelegate().paint(painter, option, window.model.index(row))
+        painter.end()
+        return image
+
+    before = [cell(row) for row in range(3)]
+    service.settle()
+    with dbm.Library(service.path) as library:
+        target, *others = library.photos()
+        sources = [dbm.Source(p.volume_key, p.path) for p in others]
+        job = library.add_derived_job(dbm.PANORAMA, "{}", sources, library.folders()[0].id)
+        library.set_derived_result(library.job(job).derived_id, target.volume_key, target.path)
+
+    def kinds():
+        return [
+            window.model.data(window.model.index(r), DERIVED_ROLE)
+            for r in range(window.model.rowCount())
+        ]
+
+    window.model.refresh()
+    qtbot.waitUntil(lambda: dbm.PANORAMA in kinds(), timeout=TIMEOUT)
+    window.grid.clearSelection()
+
+    assert kinds().count(dbm.PANORAMA) == 1 and kinds().count(None) == 2
+    row = kinds().index(dbm.PANORAMA)
+    # Only the merged photo's cell changed, and it stays so when the rows are read again
+    after = [cell(r) for r in range(3)]
+    assert [a != b for a, b in zip(after, before, strict=True)] == [r == row for r in range(3)]
+    window.model.refresh()
+    qtbot.waitUntil(lambda: not window.model.is_loading(), timeout=TIMEOUT)
+    assert kinds().index(dbm.PANORAMA) == row
+
+    window.nav.show_photo(row)
+    assert "Panorama of 2 photos" in window.status.text()
+    assert badges.derived_text(dbm.PANORAMA) == "PANO"
+    assert badges.derived_text(dbm.HDR) == "HDR"

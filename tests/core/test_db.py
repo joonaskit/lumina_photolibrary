@@ -350,6 +350,21 @@ def test_a_merge_made_outlives_its_sources_leaving_the_library(library):
     )
 
 
+def test_a_photo_a_merge_made_has_its_kind_in_its_row_and_the_count_of_its_sources(library):
+    volume = library.volume_id("uuid:A")
+    folder = library.add_folder("uuid:A", "p")
+    ids = add_photos(library, folder, volume, ["p/a.cr3", "p/b.cr3", "p/c.cr3", "p/a-HDR.tif"])
+    sources = [dbm.Source("uuid:A", f"p/{n}.cr3", n) for n in "abc"]
+    job = library.add_derived_job("hdr", "{}", sources, folder)
+    library.set_derived_result(library.job(job).derived_id, "uuid:A", "p/a-HDR.tif")
+
+    kinds = {row.path: row.derived for row in library.photos()}
+
+    assert kinds == {"p/a.cr3": None, "p/b.cr3": None, "p/c.cr3": None, "p/a-HDR.tif": "hdr"}
+    assert library.derived_of(ids["p/a-HDR.tif"]) == ("hdr", 3)
+    assert library.derived_of(ids["p/a.cr3"]) is None
+
+
 def test_a_merge_never_made_goes_with_its_folder(library):
     folder = library.add_folder("uuid:A", "p")
     job = library.add_derived_job("hdr", "{}", [dbm.Source("uuid:A", "p/a.cr3")], folder)

@@ -5,6 +5,7 @@ the stars and the flag are not."""
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QPainter, QPolygonF
 
+from lumina.core.dbtypes import HDR, PANORAMA
 from lumina.integration import style
 
 
@@ -125,6 +126,11 @@ def paint_diamond(painter, photo_rect, text, left=0.0):
     painter.drawText(inner, Qt.AlignmentFlag.AlignCenter, text)
     painter.restore()
     return left + card.width() + style.px(4)
+
+
+def derived_text(kind):
+    """What the badge of a merged photo says: "HDR" or "PANO"."""
+    return {HDR: "HDR", PANORAMA: "PANO"}[kind]
 
 
 def paint_stack_cue(painter, photo_rect):

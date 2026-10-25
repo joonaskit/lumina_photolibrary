@@ -67,6 +67,21 @@ class DerivedStore:
         ).fetchone()
         return self.derived(row[0]) if row is not None else None
 
+    def derived_of(self, photo_id):
+        """(kind, how many photos it was made from) of a photo a merge made, or None."""
+        row = self.db.execute(
+            "SELECT d.id, d.kind FROM derived d JOIN photos p "
+            "ON p.volume_id = d.volume_id AND p.path = d.path WHERE p.id = ? "
+            "ORDER BY d.id DESC",
+            (photo_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        count = self.db.execute(
+            "SELECT COUNT(*) FROM derived_sources WHERE derived_id = ?", (row[0],)
+        ).fetchone()[0]
+        return row[1], count
+
     def photos_near(self, folder_id, taken, seconds):
         """Photos of the folder taken within `seconds` of `taken` (ISO text), as Photo,
         in time order: where a bracket is looked for."""
