@@ -5,6 +5,7 @@ import stat
 import pytest
 from fakes import FakeExifTool
 from photos import make_jpeg
+from schemas import rewind
 
 from lumina.core import db as dbm
 from lumina.core import library as scanning
@@ -532,8 +533,6 @@ def test_a_sidecar_read_in_marks_nothing_as_the_librarys_own_change_to_rewrite(l
 
 
 def test_a_schema_9_library_notes_what_was_marked_before(tmp_path):
-    import sqlite3
-
     path = tmp_path / "library.sqlite3"
     with Library(path) as library:
         volume = library.volume_id("uuid:A")
@@ -544,19 +543,7 @@ def test_a_schema_9_library_notes_what_was_marked_before(tmp_path):
         a, b, _c = (library.photo_at("uuid:A", f"p/{n}.jpg") for n in "abc")
         library.set_flags({a: 1})
         library.save_edit(b, "{}")
-    raw = sqlite3.connect(path)
-    raw.executescript(
-        "UPDATE photos SET changed_at = NULL;"
-        "ALTER TABLE photos DROP COLUMN changed_at; ALTER TABLE photos DROP COLUMN sidecar_at; "
-        "ALTER TABLE photos DROP COLUMN sidecar_mtime_ns; "
-        "DROP INDEX photos_stack; DROP INDEX photos_folder_time; "
-        "ALTER TABLE photos DROP COLUMN stack_id; "
-        "ALTER TABLE photos DROP COLUMN stack_position; DROP TABLE stacks; "
-        "DROP TABLE tether_items; DROP TABLE tether_sessions; "
-        "DROP TABLE export_items; DROP TABLE export_jobs; DROP TABLE sharpness; "
-        "PRAGMA user_version = 9;"
-    )
-    raw.close()
+    rewind(path, 9)
 
     with Library(path) as library:
         assert [row[0] for row in library.sidecar_pending()] == [a, b]

@@ -86,3 +86,16 @@ def test_the_window_parts_do_not_import_the_window():
     for path in files:
         for module in imported_modules(path):
             assert module != "lumina.ui.main_window", f"{path.relative_to(PACKAGE)} imports it"
+
+
+def test_no_two_test_modules_share_a_name():
+    """The test folders are not packages, so pytest imports each module by its name: two of
+    the same name are a collection error, seen only when both are collected (the full run).
+    The helpers beside them (photos.py, fakes.py) are imported by name too."""
+    tests = Path(__file__).parent
+    by_name = {}
+    for path in sorted(tests.rglob("*.py")):
+        if path.name != "conftest.py" and "samples" not in path.relative_to(tests).parts:
+            by_name.setdefault(path.name, []).append(str(path.relative_to(tests)))
+    shared = {name: paths for name, paths in by_name.items() if len(paths) > 1}
+    assert not shared, f"modules of the same name in tests/: {shared}"

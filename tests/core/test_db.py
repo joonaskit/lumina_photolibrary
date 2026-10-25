@@ -3,6 +3,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from schemas import rewind
 
 from lumina.core import db as dbm
 from lumina.core.db import Filter, Library, NewerDatabase
@@ -243,6 +244,23 @@ def test_two_connections_adding_the_same_folder_make_one_folder(tmp_path, monkey
     with Library(path) as library:
         assert len(library.folders()) == 1
     assert len(set(ids)) == 1 and len(ids) == 2
+
+
+@pytest.mark.parametrize("version", range(1, dbm.SCHEMA_VERSION))
+def test_a_library_rewound_to_any_older_schema_is_brought_up_to_date(tmp_path, version):
+    # Also that tests/schemas.py can make every older schema: a migration that does more
+    # than add tables, columns and indexes needs it taught how to undo that
+    path = tmp_path / "library.sqlite3"
+    with Library(path) as library:
+        folder = library.add_folder("uuid:A", "p")
+        library.write_scan(folder, library.volume_id("uuid:A"), new=[("p/a.jpg", 1, 1, "2020")])
+    rewind(path, version)
+
+    with Library(path) as library:
+        assert [p.path for p in library.photos()] == ["p/a.jpg"]
+    assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == (
+        dbm.SCHEMA_VERSION
+    )
 
 
 def test_a_library_from_schema_1_is_brought_up_to_date_with_its_data(tmp_path, monkeypatch):
