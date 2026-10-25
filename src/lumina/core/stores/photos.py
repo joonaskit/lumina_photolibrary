@@ -2,6 +2,7 @@
 
 import time
 
+from lumina.core import events
 from lumina.core.dbtypes import Choices, Filter, PhotoRow, _photo
 from lumina.core.dbutil import _inside, _metadata_columns, _where
 
@@ -190,6 +191,36 @@ class PhotosStore:
             if folder.volume_key == key and (folder.path == path or _inside(path, folder.path))
         ]
         return max(found, key=lambda folder: len(folder.path)).id if found else None
+
+    def event_times(self):
+        """When the photos were taken, in time order, a stack counting once (at its top
+        photo's time): what the events are made of. Photos with no time are not here."""
+        rows = self.db.execute(
+            "SELECT COALESCE(p.captured, p.file_time) AS taken FROM photos p "
+            "WHERE taken IS NOT NULL AND (p.stack_id IS NULL OR NOT EXISTS ("
+            "SELECT 1 FROM photos q WHERE q.stack_id = p.stack_id "
+            "AND (q.stack_position, q.id) < (p.stack_position, p.id))) ORDER BY taken"
+        )
+        return [row[0] for row in rows]
+
+    def on_this_day(self, today):
+        """The (low, high) ranges of today's month and day in the earlier years that have
+        photos on it, newest year first: empty when there are none."""
+        years = [
+            row[0]
+            for row in self.db.execute(
+                "SELECT DISTINCT substr(COALESCE(captured, file_time), 1, 4) FROM photos"
+            )
+        ]
+        found = []
+        for low, high in events.day_ranges(years, today):
+            if self.db.execute(
+                "SELECT 1 FROM photos WHERE COALESCE(captured, file_time) >= ? "
+                "AND COALESCE(captured, file_time) < ? LIMIT 1",
+                (low, high),
+            ).fetchone():
+                found.append((low, high))
+        return found
 
     def choices(self, folder_id=None):
         """The Choices there are, to filter by: within a folder, or all."""

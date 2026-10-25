@@ -11,6 +11,7 @@ again, and every connected folder is scanned for what changed while the app was
 not running. A quit in the middle of a job leaves it queued for the next start.
 """
 
+import datetime
 import os
 import queue
 import threading
@@ -20,7 +21,18 @@ from functools import partial
 
 from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
 
-from lumina.core import bursts, embed, images, lensdb, metadata, raw, similar, thumbs, volumes
+from lumina.core import (
+    bursts,
+    embed,
+    events,
+    images,
+    lensdb,
+    metadata,
+    raw,
+    similar,
+    thumbs,
+    volumes,
+)
 from lumina.core import db as dbm
 from lumina.core import library as scanning
 from lumina.core import sidecars as sidecarsm
@@ -156,6 +168,8 @@ class LibraryService(QObject):
     sidecars_written = Signal(object)
     # The keywords (their names, or the photos' counts) changed
     keywords_changed = Signal()
+    # The events (core/events.py) and the ranges of On This Day, worked out again
+    events_changed = Signal(object, object)
     # A collection was made, renamed, deleted or had photos put in or taken out: its id
     collections_changed = Signal(object)
     # Settings were copied: `copied` has them
@@ -241,6 +255,8 @@ class LibraryService(QObject):
         # Off until the application turns it on (from the settings)
         self.watcher = FolderWatcher(self, parent=self)
         self._pruning = workers.Coalescing()
+        self._events = workers.Coalescing()
+        self.photos_changed.connect(self.refresh_events)
         self._pruned_at = None
         self.prune_future = None
         self._timer = QTimer(self)
@@ -979,6 +995,33 @@ class LibraryService(QObject):
             lane=workers.CACHE,
         )
 
+    # Events
+
+    def refresh_events(self):
+        """Work out the events and the days of On This Day again, on a thread (once at a
+        time; a request meanwhile makes one more run), then `events_changed` tells
+        (the events of enough photos to list, the ranges of today's date in earlier years)."""
+        if self._quitting.cancelled() or not self._events.begin():
+            return
+        workers.submit(
+            _events,
+            self.path,
+            datetime.date.today(),
+            on_done=self._on_events,
+            on_error=lambda _error: self._on_events(None),
+            owner=self,
+            lane=workers.IO,
+        )
+
+    def _on_events(self, result):
+        again = self._events.end()
+        if self._quitting.cancelled():
+            return
+        if result is not None:
+            self.events_changed.emit(*result)
+        if again:
+            self.refresh_events()
+
     # Jobs
 
     def is_busy(self):
@@ -1062,6 +1105,13 @@ def _stack_bursts(path, rows):
         for group in found:
             library.make_stack(group)
     return len(found)
+
+
+def _events(path, today):
+    """On a worker thread, with a connection of its own."""
+    with dbm.Library(path) as library:
+        listed = [e for e in events.group(library.event_times()) if e.count >= events.LISTED_FROM]
+        return listed, library.on_this_day(today)
 
 
 def _remove_folder(path, folder_id):

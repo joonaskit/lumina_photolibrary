@@ -597,12 +597,16 @@ def _stylesheet():
             padding: {gap(8)}px; background: {card}; border: 1px solid {card_border};
             border-radius: {large}px;
         }}
-        #sidebar QListWidget {{ border: none; outline: none; background: transparent; }}
-        #sidebar QListWidget::item {{
+        #sidebar QListWidget, #sidebar QTreeWidget {{
+            border: none; outline: none; background: transparent;
+        }}
+        #sidebar QListWidget::item, #sidebar QTreeWidget::item {{
             padding: {gap(6)}px {gap(8)}px; border-radius: {medium}px;
         }}
-        #sidebar QListWidget::item:hover {{ background: {hover}; }}
-        #sidebar QListWidget::item:selected {{
+        #sidebar QListWidget::item:hover, #sidebar QTreeWidget::item:hover {{
+            background: {hover};
+        }}
+        #sidebar QListWidget::item:selected, #sidebar QTreeWidget::item:selected {{
             background: {selected}; color: {colors["textPrimary"]};
         }}
         /* Add Folder, Import, Tether Camera: as round as the folders above them, and
