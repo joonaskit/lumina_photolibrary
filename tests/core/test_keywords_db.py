@@ -1,8 +1,8 @@
 import json
-import sqlite3
 
 import pytest
 from photos import make_jpeg
+from schemas import rewind
 
 from lumina.core import db as dbm
 from lumina.core import keywords
@@ -295,20 +295,7 @@ def test_a_schema_8_library_gets_keywords_and_collections_with_everything_kept(t
         library.write_scan(folder, volume, new=[("p/a.jpg", 1, 1, "2020-01-01 00:00:00.000000")])
         photo = library.photo_at("uuid:A", "p/a.jpg")
         library.set_flags({photo: 1})
-    raw = sqlite3.connect(path)
-    raw.executescript(
-        "DROP TABLE photo_keywords; DROP TABLE keywords; DROP TABLE collection_photos; "
-        "DROP TABLE collections; ALTER TABLE photos DROP COLUMN keywords_read; "
-        "ALTER TABLE photos DROP COLUMN changed_at; ALTER TABLE photos DROP COLUMN sidecar_at; "
-        "ALTER TABLE photos DROP COLUMN sidecar_mtime_ns; "
-        "DROP INDEX photos_stack; DROP INDEX photos_folder_time; "
-        "ALTER TABLE photos DROP COLUMN stack_id; "
-        "ALTER TABLE photos DROP COLUMN stack_position; DROP TABLE stacks; "
-        "DROP TABLE tether_items; DROP TABLE tether_sessions; "
-        "DROP TABLE export_items; DROP TABLE export_jobs; DROP TABLE sharpness; "
-        "PRAGMA user_version = 8;"
-    )
-    raw.close()
+    rewind(path, 8)
 
     with Library(path) as library:
         assert library.db.execute("PRAGMA user_version").fetchone()[0] == dbm.SCHEMA_VERSION
