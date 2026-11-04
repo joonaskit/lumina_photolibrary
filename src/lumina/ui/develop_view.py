@@ -71,12 +71,13 @@ from lumina.core.edit.params import (
 )
 from lumina.integration import style
 from lumina.qt_models import develop
-from lumina.ui import settings
+from lumina.ui import mask_frame, settings
 from lumina.ui.controls import ScrollStrip, ValueSlider, wheel_when_focused
 from lumina.ui.crop_frame import dragged, dragged_to_ratio, reshaped
 from lumina.ui.curve_editor import CurveEditor
 from lumina.ui.image_view import ImageView
 from lumina.ui.lens_dialog import LensDialog
+from lumina.ui.masks_panel import MasksPanel
 from lumina.ui.preset_dialog import PresetDialog
 from lumina.ui.ratio_dialog import RatioDialog
 
@@ -122,6 +123,7 @@ SECTIONS = (
     ("grading", "COLOUR GRADING"),
     ("matte", "MATTE"),
     ("effects", "EFFECTS"),
+    ("masks", "LOCAL ADJUSTMENTS"),
     ("lens", "LENS"),
     ("crop", "CROP & ROTATE"),
     ("settings", "SETTINGS"),
@@ -220,6 +222,9 @@ class CropImageView(ImageView):
     crop_committed = Signal(object)
     # Points picked on the photo (fractions of it, x and y): how many there are now
     picked = Signal(int)
+    # The chosen mask's shape while it is dragged, and when let go
+    mask_moved = Signal(tuple)
+    mask_committed = Signal(tuple)
 
     def __init__(self, parent=None):
         super().__init__(parent, zoomable=True)
@@ -236,7 +241,18 @@ class CropImageView(ImageView):
         # While picking: how many points are wanted, and those picked so far
         self.picking = 0
         self.points = []
+        # The mask whose handles are shown, whether it is tinted, and the drag of a handle
+        self.mask = None
+        self.mask_overlay = True
+        self._mask_drag = None
         self.setMouseTracking(True)
+
+    def set_mask(self, mask, overlay):
+        """Show the handles of `mask` (None: none) on the photo, and with `overlay` the
+        tint of where it applies."""
+        if mask != self.mask or overlay != self.mask_overlay:
+            self.mask, self.mask_overlay = mask, overlay
+            self.update()
 
     def start_picking(self, count):
         """Pick `count` points on the photo with clicks (`picked` follows them)."""
@@ -330,6 +346,8 @@ class CropImageView(ImageView):
             self._paint_grid(painter, target)
         if self.cropping:
             self._paint_crop(painter, target)
+        elif self.mask is not None and not self.before:
+            mask_frame.paint(painter, self.mask, target, self.mask_overlay)
         if self.before:
             self._paint_label(painter, target, "Original")
 
@@ -418,7 +436,19 @@ class CropImageView(ImageView):
             return "move"
         return None
 
+    def _mask_part(self, position):
+        """The part of the chosen mask at `position`, when its handles are in use."""
+        target = self.image_rect()
+        if self.mask is None or self.cropping or self.picking or target is None:
+            return None
+        return mask_frame.hit(self.mask, position, target)
+
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            part = self._mask_part(event.position())
+            if part is not None:
+                self._mask_drag = (part, event.position(), self.mask)
+                return
         if self.picking and event.button() == Qt.MouseButton.LeftButton:
             target = self.image_rect()
             if target is not None and target.contains(event.position()):
@@ -440,7 +470,16 @@ class CropImageView(ImageView):
             self._drag = (part, event.position(), self.crop)
 
     def mouseMoveEvent(self, event):
+        if self._mask_drag is not None:
+            part, start, before = self._mask_drag
+            self.mask = mask_frame.dragged(before, part, start, event.position(), self.image_rect())
+            self.mask_moved.emit(self.mask.shape)
+            self.update()
+            return
         if not self.cropping:
+            if self._mask_part(event.position()) is not None:
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+                return
             return super().mouseMoveEvent(event)
         if self._drag is None:
             part = self._hit(event.position())
@@ -469,6 +508,10 @@ class CropImageView(ImageView):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        if self._mask_drag is not None:
+            self._mask_drag = None
+            self.mask_committed.emit(self.mask.shape)
+            return
         if self._drag is not None:
             self._drag = None
             self.crop_committed.emit(self.crop)
@@ -495,6 +538,12 @@ class DevelopView(QWidget):
         self.image.crop_committed.connect(
             lambda crop: session.commit(session.params.with_changes(crop=crop))
         )
+        self.image.mask_moved.connect(
+            lambda shape: session.preview(self.masks_panel.with_shape(shape))
+        )
+        self.image.mask_committed.connect(
+            lambda shape: session.commit(self.masks_panel.with_shape(shape))
+        )
         frame = QFrame()
         frame.setObjectName("pane")
         frame_layout = QVBoxLayout(frame)
@@ -518,7 +567,13 @@ class DevelopView(QWidget):
         )
         self.accept_action.triggered.connect(self.accept_crop)
         self.accept_action.setEnabled(False)
-        for action in (self.crop_action, self.accept_action):
+        # O tints the photo where the chosen mask applies
+        self.overlay_action = QAction("Show Mask", self)
+        self.overlay_action.setShortcut(QKeySequence(Qt.Key.Key_O))
+        self.overlay_action.triggered.connect(
+            lambda: self.masks_panel.set_overlay(not self.masks_panel.overlay)
+        )
+        for action in (self.crop_action, self.accept_action, self.overlay_action):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             action.setProperty("group", "Develop")
             self.addAction(action)
@@ -844,6 +899,12 @@ class DevelopView(QWidget):
         layout.addWidget(self.profile_note)
         self._profile_message = ""
 
+        layout = self._begin(root, "masks", "LOCAL ADJUSTMENTS")
+        self.masks_panel = MasksPanel(self.session)
+        self.masks_panel.selection_changed.connect(lambda _index: self._show_mask())
+        self.masks_panel.overlay_changed.connect(lambda _on: self._show_mask())
+        layout.addWidget(self.masks_panel)
+
         layout = self._begin(root, "lens", "LENS")
         self.lens_on = QCheckBox("Correct for the lens")
         self.lens_on.clicked.connect(self._on_lens_toggled)
@@ -1132,8 +1193,17 @@ class DevelopView(QWidget):
         for name, slider in self.perspective.items():
             slider.set_value(getattr(params.perspective, name))
         self._show_curve()
+        self.masks_panel.show_params(params)
+        self._show_mask()
         self.image.set_crop(params.crop)
         self._sync_constraint()
+
+    def _show_mask(self):
+        """The chosen mask's handles on the photo (not while the crop is being set: the
+        masks are in the cropped photo)."""
+        panel = self.masks_panel
+        mask = None if self.image.cropping else panel.mask()
+        self.image.set_mask(mask, panel.overlay)
 
     def _show_profile(self, params=None):
         """The profile section: which profile, and whether there can be one."""
@@ -1472,6 +1542,7 @@ class DevelopView(QWidget):
         self.session.set_crop_view(on)
         self.crop_button.setText("Done" if on else "Crop")
         self.accept_action.setEnabled(on)
+        self._show_mask()
 
     # Presets
 

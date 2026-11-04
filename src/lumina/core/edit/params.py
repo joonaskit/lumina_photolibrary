@@ -15,7 +15,7 @@ import json
 import math
 from dataclasses import dataclass, field, replace
 
-VERSION = 11
+VERSION = 12
 
 # Ranges, in the units the pipeline uses
 EXPOSURE = (-5.0, 5.0)  # stops
@@ -58,6 +58,34 @@ WHEEL_FIELDS = ("hue", "saturation", "luminance")
 _DISTORTION_TERMS = {"ptlens": 3, "poly3": 1, "poly5": 2}
 # A tone curve that changes nothing
 IDENTITY_CURVE = ((0.0, 0.0), (1.0, 1.0))
+# Local adjustments (masks): the kinds there are, how many an edit may have, and what the
+# numbers of a mask's shape are (see masks.py): a linear mask's line from where its
+# effect is full to where it is gone, a radial mask's centre, two radii and angle
+MASK_KINDS = ("linear", "radial")
+MAX_MASKS = 16
+LOCAL_FIELDS = (
+    "exposure",
+    "temperature",
+    "tint",
+    "contrast",
+    "highlights",
+    "shadows",
+    "whites",
+    "blacks",
+    "vibrance",
+    "saturation",
+)
+_LOCAL_RANGES = {
+    "exposure": EXPOSURE,
+    "temperature": WARMTH,
+    "tint": WARMTH,
+    **{name: BASIC for name in BASIC_FIELDS},
+    **{name: COLOUR for name in COLOUR_FIELDS},
+}
+POSITION = (-1.0, 2.0)  # a point of a mask, as a share of the photo: handles may lie outside it
+RADIUS = (0.001, 2.0)  # as a share of the photo's longer side
+ANGLE = (-180.0, 180.0)  # degrees, clockwise
+_SHAPE_SIZE = {"linear": 4, "radial": 5}
 
 
 def normalize_curve(points):
@@ -372,6 +400,87 @@ class Crop:
 
 
 @dataclass(frozen=True)
+class Local:
+    # What a mask changes where it applies: the global controls of the same names, in
+    # the same units
+    exposure: float = 0.0
+    temperature: float = 0.0
+    tint: float = 0.0
+    contrast: float = 0.0
+    highlights: float = 0.0
+    shadows: float = 0.0
+    whites: float = 0.0
+    blacks: float = 0.0
+    vibrance: float = 0.0
+    saturation: float = 0.0
+
+    def is_identity(self):
+        return self == Local()
+
+
+def default_shape(kind):
+    """The shape a new mask of `kind` starts with: a line across the middle of the photo,
+    or an ellipse at its centre."""
+    if kind == "linear":
+        return (0.5, 0.35, 0.5, 0.65)
+    return (0.5, 0.5, 0.25, 0.25, 0.0)
+
+
+@dataclass(frozen=True)
+class Mask:
+    """Where, in the cropped and straightened photo, an adjustment (`local`) applies.
+
+    `shape` is `kind`'s numbers, as shares of the photo (see masks.py): linear, (x0, y0,
+    x1, y1), the effect full at the first point and gone at the second; radial, (centre x,
+    centre y, radius x, radius y, angle), the radii as shares of the longer side. `feather`
+    is how softly a radial mask's edge meets the rest; `invert` applies the adjustment
+    everywhere but there."""
+
+    kind: str = "linear"
+    shape: tuple = ()
+    feather: float = DEFAULT_FEATHER
+    invert: bool = False
+    enabled: bool = True
+    name: str = ""
+    local: Local = field(default_factory=Local)
+
+    def __post_init__(self):
+        shape = self.shape if self.shape else default_shape(self.kind)
+        # As the same floats however they were given: equal masks, equal JSON
+        object.__setattr__(self, "shape", tuple(round(float(v), 6) for v in shape))
+
+    def is_identity(self):
+        # A mask that changes nothing, whether or not it is switched on
+        return self.local.is_identity()
+
+    def turned(self):
+        """This mask with the photo turned a quarter turn clockwise."""
+        if self.kind == "linear":
+            x0, y0, x1, y1 = self.shape
+            return replace(self, shape=(1 - y0, x0, 1 - y1, x1))
+        x, y, rx, ry, angle = self.shape
+        return replace(self, shape=(1 - y, x, rx, ry, _wrapped(angle + 90.0)))
+
+    def flipped(self, horizontal):
+        """This mask with the photo mirrored left to right (`horizontal`) or top to bottom."""
+        if self.kind == "linear":
+            x0, y0, x1, y1 = self.shape
+            if horizontal:
+                return replace(self, shape=(1 - x0, y0, 1 - x1, y1))
+            return replace(self, shape=(x0, 1 - y0, x1, 1 - y1))
+        x, y, rx, ry, angle = self.shape
+        if horizontal:
+            return replace(self, shape=(1 - x, y, rx, ry, _wrapped(-angle)))
+        return replace(self, shape=(x, 1 - y, rx, ry, _wrapped(-angle)))
+
+
+def _wrapped(angle):
+    """`angle` (degrees) within ANGLE."""
+    angle = (angle + 180.0) % 360.0 - 180.0
+    return 180.0 if angle == -180.0 else angle
+
+
+@dataclass(frozen=True)
 class Params:
     exposure: float = 0.0
     temperature: float = 0.0
@@ -398,6 +507,8 @@ class Params:
     perspective: Perspective = field(default_factory=Perspective)
     straighten: float = 0.0
     crop: Crop = field(default_factory=Crop)
+    # Local adjustments, in the order they are made, after everything above (see masks.py)
+    masks: tuple = ()
 
     def is_identity(self):
         return self == Params()
@@ -469,6 +580,18 @@ class Params:
                 "right": float(self.crop.right),
                 "bottom": float(self.crop.bottom),
             },
+            "masks": [
+                {
+                    "kind": mask.kind,
+                    "shape": [float(v) for v in mask.shape],
+                    "feather": float(mask.feather),
+                    "invert": mask.invert,
+                    "enabled": mask.enabled,
+                    "name": mask.name,
+                    "local": {name: float(getattr(mask.local, name)) for name in LOCAL_FIELDS},
+                }
+                for mask in self.masks
+            ],
         }
 
     def to_json(self):
@@ -498,6 +621,7 @@ class Params:
                 flip_vertical=params.flip_horizontal,
                 perspective=params.perspective.turned(),
                 crop=Crop(1 - c.bottom, c.left, 1 - c.top, c.right),
+                masks=tuple(mask.turned() for mask in params.masks),
             )
         return params
 
@@ -512,6 +636,7 @@ class Params:
                 straighten=-self.straighten,
                 perspective=self.perspective.flipped(True),
                 crop=Crop(1 - c.right, c.top, 1 - c.left, c.bottom),
+                masks=tuple(mask.flipped(True) for mask in self.masks),
             )
         return replace(
             self,
@@ -519,6 +644,7 @@ class Params:
             straighten=-self.straighten,
             perspective=self.perspective.flipped(False),
             crop=Crop(c.left, 1 - c.bottom, c.right, 1 - c.top),
+            masks=tuple(mask.flipped(False) for mask in self.masks),
         )
 
 
@@ -639,6 +765,48 @@ def from_dict(data):
         ),
         straighten=_number(data.get("straighten"), 0.0, STRAIGHTEN),
         crop=Crop(left, top, right, bottom),
+        masks=_masks(data.get("masks")),
+    )
+
+
+def _masks(value):
+    """The masks of a document's `masks`: those that are well formed, up to MAX_MASKS."""
+    if not isinstance(value, list):
+        return ()
+    masks = []
+    for item in value[:MAX_MASKS]:
+        mask = _mask(item)
+        if mask is not None:
+            masks.append(mask)
+    return tuple(masks)
+
+
+def _mask(item):
+    # A mask of a kind this Lumina does not know, or without its shape, is dropped: it
+    # cannot be drawn as meant, and the rest of the edit still renders
+    if not isinstance(item, dict) or item.get("kind") not in MASK_KINDS:
+        return None
+    kind = item["kind"]
+    shape = item.get("shape")
+    if (
+        not isinstance(shape, list)
+        or len(shape) != _SHAPE_SIZE[kind]
+        or not all(isinstance(v, int | float) and math.isfinite(v) for v in shape)
+    ):
+        return None
+    bounds = [POSITION] * 4 if kind == "linear" else [POSITION, POSITION, RADIUS, RADIUS, ANGLE]
+    local = _section(item, "local")
+    name = item.get("name")
+    return Mask(
+        kind=kind,
+        shape=tuple(_number(v, 0.0, b) for v, b in zip(shape, bounds, strict=True)),
+        feather=_number(item.get("feather"), DEFAULT_FEATHER, PERCENT),
+        invert=item.get("invert") is True,
+        enabled=item.get("enabled") is not False,
+        name=name[:100] if isinstance(name, str) else "",
+        local=Local(
+            **{name: _number(local.get(name), 0.0, _LOCAL_RANGES[name]) for name in LOCAL_FIELDS}
+        ),
     )
 
 
@@ -725,6 +893,11 @@ def _to_11(data):
     return {"perspective": {"vertical": 0.0, "horizontal": 0.0}, **data}
 
 
+def _to_12(data):
+    # Version 12 added local adjustments (masks): none, so it looks as it did
+    return {"masks": [], **data}
+
+
 _MIGRATIONS = {
     1: _to_2,
     2: _to_3,
@@ -736,6 +909,7 @@ _MIGRATIONS = {
     8: _to_9,
     9: _to_10,
     10: _to_11,
+    11: _to_12,
 }
 
 

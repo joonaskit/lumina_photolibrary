@@ -262,10 +262,13 @@ class DevelopSession(QObject):
 
     def _shown(self, params):
         # What is rendered: with the original wanted, no edit at all; in the crop view,
-        # the photo without its crop
+        # the photo without its crop, and without the masks, which are in the cropped
+        # photo's coordinates
         if self._before:
             return _params.Params()
-        return params.with_changes(crop=_params.Crop()) if self._crop_view else params
+        if self._crop_view:
+            return params.with_changes(crop=_params.Crop(), masks=())
+        return params
 
     def set_before(self, on):
         """Show the photo as it is without the edit (`on`), or the edit again. Only what
