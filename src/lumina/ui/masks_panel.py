@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -59,6 +60,37 @@ def label(masks, index):
     return f"{mask.kind.capitalize()} {number}"
 
 
+class _MaskList(QListWidget):
+    """The list of masks. A click on the row that is already chosen (not on its check
+    box) says so with `reclicked`, which the list itself does not: nothing changed."""
+
+    reclicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._press = None
+
+    def _on_check_box(self, item, position):
+        # Where the check box is, from the left of the row, with the row's own margin
+        box = self.style().pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, None, self)
+        return position.x() < self.visualItemRect(item).left() + box + 2 * style.px(6)
+
+    def mousePressEvent(self, event):
+        item = self.itemAt(event.position().toPoint())
+        self._press = None
+        if item is not None and item is self.currentItem() and item.isSelected():
+            if not self._on_check_box(item, event.position().toPoint()):
+                self._press = self.row(item)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        press, self._press = self._press, None
+        item = self.itemAt(event.position().toPoint())
+        super().mouseReleaseEvent(event)
+        if press is not None and item is not None and self.row(item) == press:
+            self.reclicked.emit()
+
+
 class MasksPanel(QWidget):
     """Add, choose, switch on and off, invert and delete masks; set the chosen one's
     adjustments."""
@@ -87,10 +119,11 @@ class MasksPanel(QWidget):
             row.addWidget(button)
         layout.addLayout(row)
 
-        self.list = QListWidget()
+        self.list = _MaskList()
         self.list.setObjectName("maskList")
         self.list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.list.currentRowChanged.connect(self._on_row)
+        self.list.reclicked.connect(lambda: self.select(None))
         self.list.itemChanged.connect(self._on_item_changed)
         style.follow_density(self, self._size_list)
         layout.addWidget(self.list)

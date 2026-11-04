@@ -2,7 +2,7 @@
 
 import pytest
 from conftest import TIMEOUT
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 
 from lumina.core.edit.params import Local, Mask, Params
 from lumina.ui import mask_frame
@@ -241,3 +241,27 @@ def test_dragging_the_parts_of_a_mask():
     assert taller.shape[3] == pytest.approx(0.2) and taller.shape[2] == 0.25
     centred = mask_frame.dragged(ellipse, "centre", QPointF(210, 120), QPointF(210 + 40, 120), RECT)
     assert centred.shape[0] == pytest.approx(0.6)
+
+
+def test_clicking_the_chosen_mask_again_chooses_none(qtbot, window):
+    open_editor(qtbot, window)
+    panel = panel_of(window)
+    panel.add_buttons["linear"].click()
+    panel.add_buttons["radial"].click()
+    view = window.develop.image
+    assert panel.selected == 1 and view.mask is not None
+    row = panel.list.visualItemRect(panel.list.item(1))
+    name = row.center() + QPoint(40, 0)  # on the name, not the check box
+
+    qtbot.mouseClick(panel.list.viewport(), Qt.MouseButton.LeftButton, pos=name)
+
+    assert panel.selected is None and view.mask is None
+    assert panel.list.currentRow() == -1 and not panel.sliders["exposure"].isEnabled()
+    assert window.session.params.masks[1].enabled  # nothing else changed
+
+    # Clicking a row chooses it; the check box switches it, and does not unchoose it
+    qtbot.mouseClick(panel.list.viewport(), Qt.MouseButton.LeftButton, pos=name)
+    assert panel.selected == 1 and view.mask is not None
+    box = row.topLeft() + QPoint(14, row.height() // 2)
+    qtbot.mouseClick(panel.list.viewport(), Qt.MouseButton.LeftButton, pos=box)
+    assert panel.selected == 1 and not window.session.params.masks[1].enabled
