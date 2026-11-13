@@ -10,7 +10,7 @@ from datetime import datetime
 from functools import partial
 
 import pytest
-from conftest import TIMEOUT
+from conftest import HALF_A_SCREEN, TIMEOUT
 from fakes import FakeCamera
 from photos import make_jpeg_with_exif
 from PySide6.QtCore import QPoint, Qt
@@ -456,15 +456,15 @@ def test_the_state_in_words():
     assert describe(Stood) == "Connect the camera by USB and turn it on"
 
 
-def test_the_bar_does_not_make_the_window_wider(qtbot, service):
+def test_the_bar_keeps_the_window_narrow(qtbot, service):
     """A window can't be narrower than its widest row: a bar wider than the screen kept
-    it from being maximized (the 90D's choices, and a long reason, made it 1869 px)."""
+    it from being maximized (the 90D's choices, and a long reason, made it 1869 px). With
+    the bar the window still fits half a screen (#143)."""
     from lumina.core.tether import CameraInfo, Setting
 
     window = MainWindow(service)
     qtbot.addWidget(window)
     window.show()
-    before = window.minimumSizeHint().width()
 
     class Stood:
         running, connected, ending, can_focus = True, True, False, True
@@ -485,11 +485,11 @@ def test_the_bar_does_not_make_the_window_wider(qtbot, service):
         }
 
     window.camera_bar.show_service(Stood)
-    assert window.minimumSizeHint().width() <= before
+    assert window.minimumSizeHint().width() < HALF_A_SCREEN
     Stood.message = "KDE has the camera open (a Dolphin window or the device notifier " * 3
     Stood.connected = False
     window.camera_bar.show_service(Stood)
-    assert window.minimumSizeHint().width() <= before
+    assert window.minimumSizeHint().width() < HALF_A_SCREEN
 
 
 def test_focus_and_capture_are_in_the_middle_of_the_bar(qtbot):

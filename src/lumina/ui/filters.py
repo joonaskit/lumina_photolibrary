@@ -1,13 +1,15 @@
 """Year, camera, lens, flag, rating, edit state and keyword, above the grid: what is shown, and
-nothing else. Clear at the right end shows everything again."""
+nothing else. Clear at the right end shows everything again. The row wraps when the window
+is narrow."""
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QPushButton, QSizePolicy, QWidget
+from PySide6.QtWidgets import QComboBox, QFrame, QPushButton, QSizePolicy, QWidget
 
 from lumina.core import keywords as keywordm
 from lumina.core.dbtypes import PICKED, REJECTED, UNFLAGGED
 from lumina.integration import style
 from lumina.qt_models.library_model import BLURRY, EDITED, NOT_RATED, UNEDITED
+from lumina.ui.flow_layout import FlowLayout
 
 FLAG_CHOICES = (
     ("All flags", None),
@@ -57,7 +59,8 @@ class FilterBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QHBoxLayout(self)
+        # Wraps onto another row rather than set the window's minimum width
+        layout = FlowLayout(self)
         self._searching = False
         self.year = self._combo("All years")
         self.camera = self._combo("All cameras")
@@ -79,24 +82,23 @@ class FilterBar(QWidget):
         divider = QFrame()
         divider.setObjectName("divider")
         divider.setFixedWidth(1)
-        layout.addWidget(divider)
+        layout.add_separator(divider)
         for combo in (self.flag, self.rating, self.edit, self.sharpness, self.keyword):
             layout.addWidget(combo)
             combo.currentIndexChanged.connect(self._update_clear)
         for combo in (self.year, self.camera, self.lens):
             combo.currentIndexChanged.connect(self._update_clear)
-        layout.addStretch(1)
         self.clear_button = QPushButton("Clear")
         # Rounded for its height in the row, not a dialog's button's
         self.clear_button.setObjectName("row")
         self.clear_button.setToolTip("Show every photo again")
         self.clear_button.clicked.connect(self.clear)
-        layout.addWidget(self.clear_button)
+        layout.add_trailing(self.clear_button)
         self.save_button = QPushButton("Save…")
         self.save_button.setObjectName("row")
         self.save_button.setToolTip("Save these filters as a smart collection")
         self.save_button.clicked.connect(self.save_requested)
-        layout.addWidget(self.save_button)
+        layout.add_trailing(self.save_button)
         # As tall and as round as the toolbar's cards and search field, whatever the font
         for combo in self._combos():
             combo.setObjectName("row")
