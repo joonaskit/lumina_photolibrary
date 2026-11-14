@@ -95,6 +95,13 @@ def queue_all(library, camera, folder, mounts, **choices):
     return reading, job
 
 
+def test_the_real_cameras_attributes_do_not_hide_its_methods():
+    # Its `info` once hid info(path), which the fake has no attribute to hide
+    camera = tether.GPhotoCamera()
+    hidden = [name for name in vars(camera) if callable(getattr(tether.GPhotoCamera, name, None))]
+    assert hidden == []
+
+
 def test_reading_a_camera_lists_its_photos_with_their_times_and_ids(library, camera, root):
     reading = importing.read_camera(library, camera)
 

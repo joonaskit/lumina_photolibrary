@@ -7,6 +7,9 @@ from lumina.core import volumes
 from lumina.integration import style, theme
 
 TIMEOUT = 20000
+# The widest a window's minimum may be: half of a 1920 px screen, less a tiling
+# compositor's gaps (#143)
+HALF_A_SCREEN = 900
 DRIVE = "uuid:TEST-DRIVE"
 
 

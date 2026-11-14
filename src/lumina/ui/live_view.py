@@ -11,7 +11,6 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -23,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from lumina.integration import style
 from lumina.qt_models import tether
+from lumina.ui.flow_layout import FlowLayout
 
 # The guides over the frame, by name and in words
 GUIDES = (("none", "No guide"), ("thirds", "Thirds"), ("grid", "Grid"), ("crop", "Preset's crop"))
@@ -362,7 +362,8 @@ class LivePanel(QWidget):
         self.shortcut_hints = [("Camera", "Move the Magnified Part", ["←", "→", "↑", "↓"])]
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
-        row = QHBoxLayout()
+        # Wraps onto another row rather than set the window's minimum width
+        row = FlowLayout()
         column.addLayout(row)
         self.start = QPushButton("Start Live View")
         self.start.setCheckable(True)
@@ -383,34 +384,33 @@ class LivePanel(QWidget):
         self.focus = QCheckBox("Focus on click")
         self.focus.setToolTip("A click on the frame focuses there")
         row.addWidget(self.focus)
-        row.addStretch(1)
         self.guide = QComboBox()
         for key, words in GUIDES:
             self.guide.addItem(words, key)
         self.guide.currentIndexChanged.connect(self._on_guide)
-        row.addWidget(self.guide)
+        row.add_trailing(self.guide)
         self.last = QCheckBox("Last shot")
         self.last.setToolTip(
             "The last photo of the session faintly over the frame, to line up a shot again"
         )
         self.last.toggled.connect(self._on_last)
-        row.addWidget(self.last)
+        row.add_trailing(self.last)
         self.opacity = QSlider(Qt.Orientation.Horizontal)
         self.opacity.setRange(10, 90)
         self.opacity.setValue(40)
         self.opacity.setToolTip("How much of the last shot shows")
         self.opacity.valueChanged.connect(self._on_last)
-        row.addWidget(self.opacity)
+        row.add_trailing(self.opacity)
         self.histogram_box = QCheckBox("Histogram")
         self.histogram_box.setChecked(True)
         self.histogram_box.toggled.connect(
             lambda on: self.histogram.setVisible(on and self.canvas.frame is not None)
         )
-        row.addWidget(self.histogram_box)
+        row.add_trailing(self.histogram_box)
         self.clipping = QCheckBox("Clipping")
         self.clipping.setToolTip("Red where a colour is at its brightest, blue where it is black")
         self.clipping.toggled.connect(self._on_clipping)
-        row.addWidget(self.clipping)
+        row.add_trailing(self.clipping)
         self.canvas = LiveCanvas()
         self.canvas.point_chosen.connect(
             lambda x, y: self.point_chosen.emit(

@@ -24,6 +24,8 @@ in [0, 1]) and every step works on linear floats until the output encoding:
 5. Detail: dehaze, noise reduction, clarity and texture, then sharpening. These look at
    the pixels around each one, so they need rows beyond a tile: see `render` (dehaze.py,
    denoise.py, detail.py and sharpen.py).
+   Local adjustments follow, after the colour and before the detail steps: each mask in
+   turn adjusts the photo and is blended in by its weight (see masks.py and `_masked`).
 6. Effects: the vignette, then the grain, on the cropped photo (see effects.py).
 7. Output: sRGB encoding to 8 or 16 bits.
 
@@ -48,10 +50,12 @@ from lumina.core.edit import (
     grading,
     hsl,
     lenscorrect,
+    masks,
     perspective,
     sharpen,
 )
 from lumina.core.edit import detail as detail_steps
+from lumina.core.edit.params import Basic
 
 # Entries of the tone LUT over linear [0, 1]
 TONE_SIZE = 65536
@@ -190,6 +194,12 @@ def _output_lut(bits):
 def _encode_table():
     # Linear [0, 1] at TONE_SIZE steps -> encoded floats, read with interpolation
     return srgb_encode(np.linspace(0.0, 1.0, TONE_SIZE)).astype(np.float32)
+
+
+@lru_cache(maxsize=1)
+def _decode_table():
+    # Encoded [0, 1] at TONE_SIZE steps -> linear floats, read with interpolation
+    return srgb_decode(np.linspace(0.0, 1.0, TONE_SIZE)).astype(np.float32)
 
 
 def _lookup(values, table):
@@ -474,12 +484,14 @@ def haze_analysis(image, params, camera=None):
 class Plan:
     """What the steps after the tone step will do to a photo of `size` (height, width) as
     rendered: `colour` (vividness, bands, grading), `detail` (the steps that look at
-    neighbours, see detail.py) and `effects` (vignette, grain), each None for nothing."""
+    neighbours, see detail.py) and `effects` (vignette, grain), each None for nothing, and
+    `local`, the masks' adjustments (`LocalStep`), none for nothing."""
 
     colour: tuple | None
     detail: tuple | None
     effects: tuple | None
     size: tuple
+    local: tuple = ()
 
 
 def _scale(image, params, full):
@@ -502,9 +514,53 @@ def _plan(params, size, scale=1.0):
     vignette = None if params.vignette.is_identity() else effects.prepare_vignette(params.vignette)
     grain = None if params.grain.is_identity() else effects.prepare_grain(params.grain, size)
     finish = (vignette, grain) if vignette is not None or grain is not None else None
-    if coloured is None and detail is None and finish is None:
+    local = _local_plan(params)
+    if coloured is None and detail is None and finish is None and not local:
         return None
-    return Plan(coloured, detail, finish, size)
+    return Plan(coloured, detail, finish, size, local)
+
+
+@dataclass(frozen=True)
+class LocalStep:
+    """One mask's adjustment, ready to apply: `gains` (a linear gain per channel from
+    exposure and white balance), `tone` (a table over encoded [0, 1] from the Basic
+    controls) and `vividness` (vibrance, saturation), each None for nothing."""
+
+    mask: object
+    gains: object
+    tone: object
+    vividness: tuple | None
+
+
+# Entries of a mask's tone table over encoded [0, 1]
+_LOCAL_TONE_SIZE = 4096
+
+
+@lru_cache(maxsize=32)
+def _local_tone(contrast, highlights, shadows, whites, blacks):
+    controls = Basic(contrast, highlights, shadows, whites, blacks)
+    return basic.evaluate(controls, np.linspace(0.0, 1.0, _LOCAL_TONE_SIZE)).astype(np.float32)
+
+
+def _local_plan(params):
+    """The `LocalStep`s for `params`' masks that are switched on and change something."""
+    steps = []
+    for mask in params.masks:
+        local = mask.local
+        if not mask.enabled or local.is_identity():
+            continue
+        gains = None
+        if local.exposure or local.temperature or local.tint:
+            gains = white_balance_gains(local.temperature, local.tint) * np.float32(
+                2.0**local.exposure
+            )
+        tone = None
+        controls = (local.contrast, local.highlights, local.shadows, local.whites, local.blacks)
+        if any(controls):
+            tone = _local_tone(*controls)
+        vividness = (local.vibrance, local.saturation)
+        steps.append(LocalStep(mask, gains, tone, vividness if any(vividness) else None))
+    return tuple(steps)
 
 
 @dataclass(frozen=True)
@@ -572,7 +628,7 @@ def _render_tile(linear, tone, desaturation, plan, bits, first):
         return _output_lut(8)[(linear * (TONE_SIZE - 1) + 0.5).astype(np.uint16)]
     encoded = _encoded(linear)
     if plan is not None:
-        _adjust(encoded, first, plan.size, plan.colour, plan.effects)
+        _adjust(encoded, first, plan.size, plan.colour, plan.effects, plan.local)
     return _quantized(encoded, bits)
 
 
@@ -589,10 +645,11 @@ def _quantized(encoded, bits):
     return encoded.astype(np.uint8 if bits == 8 else np.uint16)
 
 
-def _adjust(encoded, first, size, coloured, finishing):
-    """The colour steps, then the effects, on `encoded` (sRGB-encoded floats, the rows
-    and columns of the photo of `size` from `first`, (row, column)), a few rows at a time
-    so the temporaries stay in the CPU cache. Either may be None."""
+def _adjust(encoded, first, size, coloured, finishing, local=()):
+    """The colour steps, the local adjustments (`local`, a tuple of `LocalStep`), then the
+    effects, on `encoded` (sRGB-encoded floats, the rows and columns of the photo of
+    `size` from `first`, (row, column)), a few rows at a time so the temporaries stay in
+    the CPU cache. The colour steps and the effects may be None."""
     first_row, first_column = first
     for start in range(0, len(encoded), colour.ROWS):
         rows = encoded[start : start + colour.ROWS]
@@ -605,12 +662,35 @@ def _adjust(encoded, first, size, coloured, finishing):
                 hsl.adjust_rows(rows, bands)
             if graded is not None:
                 grading.adjust_rows(rows, graded)
+        if local:
+            _masked(rows, (row, first_column), size, local)
         if finishing is not None:
             vignette, grain = finishing
             if vignette is not None:
                 effects.vignette_rows(rows, row, size, vignette, first_column)
             if grain is not None:
                 effects.grain_rows(rows, row, size, grain, first_column)
+
+
+def _masked(rows, first, size, steps):
+    """Each of the masks' adjustments (`LocalStep`) on `rows` (sRGB-encoded floats, in
+    place), blended in by the mask's weight: the rows are what the mask before it left."""
+    for step in steps:
+        weight = masks.weights(step.mask, first[0], first[1], len(rows), rows.shape[1], size)
+        if not weight.any():
+            continue
+        adjusted = np.clip(rows, 0.0, 1.0)
+        if step.gains is not None:
+            linear = _lookup(adjusted, _decode_table())
+            linear *= step.gains
+            adjusted = _lookup(np.clip(linear, 0.0, 1.0), _encode_table())
+        if step.tone is not None:
+            adjusted = _lookup(adjusted, step.tone)
+        if step.vividness is not None:
+            colour.adjust_rows(adjusted, *step.vividness)
+        adjusted -= rows
+        adjusted *= weight[..., None]
+        rows += adjusted
 
 
 def _first_pass(view, into, tone, desaturation, plan, step, origin):
@@ -625,7 +705,9 @@ def _first_pass(view, into, tone, desaturation, plan, step, origin):
         _tone_step(tile, tone, desaturation, 16)
         encoded = _encoded(tile)
         if plan is not None:
-            _adjust(encoded, (origin[0] + start, origin[1]), plan.size, plan.colour, None)
+            _adjust(
+                encoded, (origin[0] + start, origin[1]), plan.size, plan.colour, None, plan.local
+            )
         stage[start : start + step] = _quantized(encoded, 16)
     return stage
 

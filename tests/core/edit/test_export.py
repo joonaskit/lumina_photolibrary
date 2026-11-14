@@ -87,6 +87,20 @@ def test_8_bit_formats_are_written_with_an_srgb_profile(photo, out, fmt, bits):
     assert all(abs(a - b) <= 4 for a, b in zip(pixel, (200, 100, 50), strict=True))
 
 
+def test_a_detailed_jpeg_larger_than_its_optimised_buffer_is_written(out):
+    # Optimised, Pillow holds the whole JPEG in a buffer of about a byte a pixel at this
+    # quality, which noise in full colour outgrows
+    noise = np.random.default_rng(0).integers(0, 256, (256, 256, 3), dtype=np.uint8)
+    destination = out / "noise.jpg"
+    with open(destination, "wb") as file:
+        exporting._WRITERS[("jpeg", 8)](file, noise, ExportOptions("jpeg", 8, quality=92))
+
+    with Image.open(destination) as image:
+        image.load()
+        assert image.size == (256, 256)
+        assert image.info["icc_profile"] == exporting.srgb_profile()
+
+
 def test_16_bit_png_holds_the_exact_render(photo, out):
     destination = out / "a.png"
 

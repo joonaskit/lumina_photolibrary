@@ -163,15 +163,21 @@ def srgb_profile():
 
 
 def _jpeg(file, pixels, options):
-    Image.fromarray(pixels, "RGB").save(
-        file,
-        "JPEG",
-        quality=options.quality,
+    image = Image.fromarray(pixels, "RGB")
+    settings = {
+        "quality": options.quality,
         # Full colour resolution at high quality, as photo editors do
-        subsampling=0 if options.quality >= 90 else 2,
-        optimize=True,
-        icc_profile=srgb_profile(),
-    )
+        "subsampling": 0 if options.quality >= 90 else 2,
+        "icc_profile": srgb_profile(),
+    }
+    try:
+        image.save(file, "JPEG", optimize=True, **settings)
+    except OSError:
+        # Optimised, the whole photo must fit a buffer Pillow sizes by its pixels, which
+        # a detailed one at high quality outgrows; written as it is encoded, it never is
+        file.seek(0)
+        file.truncate()
+        image.save(file, "JPEG", **settings)
 
 
 def _png8(file, pixels, options):

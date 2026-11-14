@@ -220,7 +220,7 @@ class GPhotoCamera:
 
     def __init__(self):
         self._camera = None
-        self.info = None
+        self.camera_info = None
         # A half press held to focus, and until when
         self._held = False
         self._held_until = 0.0
@@ -252,8 +252,8 @@ class GPhotoCamera:
             raise CameraError(f"{model}: {error}") from error
         self._camera = camera
         serial = self._value("serialnumber") or port
-        self.info = CameraInfo(model, serial, port)
-        return self.info
+        self.camera_info = CameraInfo(model, serial, port)
+        return self.camera_info
 
     def close(self):
         if self._camera is not None:
@@ -452,7 +452,7 @@ class GPhotoCamera:
         point = (
             canon
             and self._value("eoszoomposition") is not None
-            and self.info.model in _POINT_FRAMES
+            and self.camera_info.model in _POINT_FRAMES
         )
         focus = canon or self._value("autofocusdrive") is not None
         return LiveView(zooms, point, focus, captures=canon)
@@ -487,7 +487,7 @@ class GPhotoCamera:
         """Move what is magnified, and where it focuses, to (x, y) as shares of the frame;
         returns where it went."""
         self._no_face_tracking()
-        position, placed = canon_position((x, y), _POINT_FRAMES[self.info.model])
+        position, placed = canon_position((x, y), _POINT_FRAMES[self.camera_info.model])
         self.set("eoszoomposition", f"{position[0]},{position[1]}")
         return placed
 
@@ -559,7 +559,7 @@ class GPhotoCamera:
             found = self._gp.Camera.autodetect()
         except self._gp.GPhoto2Error:
             return False
-        port = self.info.port if self.info is not None else None
+        port = self.camera_info.port if self.camera_info is not None else None
         return any(found.get_value(i) == port for i in range(len(found)))
 
 
